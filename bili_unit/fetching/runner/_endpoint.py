@@ -12,6 +12,7 @@ from .. import (
     EndpointStatus,
     FetchingError,
     Http412Error,
+    ResourceUnavailableError,
 )
 from ..client import EndpointSpec
 from ..env import get_settings
@@ -144,6 +145,22 @@ class _EndpointMixin:
                 )
                 await asyncio.sleep(wait)
                 continue
+            except ResourceUnavailableError as exc:
+                # Permanent business-level failure (privacy / disabled / taken
+                # down).  Skip retries — the API will keep returning the same
+                # response.
+                err_id = await self._error.record(
+                    exc, uid=uid, endpoint=ep_name, retryable="false",
+                )
+                await self._update_endpoint_status(
+                    uid, ep_name, EndpointStatus.FAILED_PERMANENT,
+                    retry_count=retry_count, last_error_id=err_id,
+                )
+                logger.info(
+                    "endpoint_unavailable",
+                    extra={"uid": uid, "endpoint": ep_name, "reason": str(exc)},
+                )
+                return
             except FetchingError as exc:
                 retry_count += 1
                 err_id = await self._error.record(

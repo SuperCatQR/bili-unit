@@ -1,4 +1,4 @@
-# client — fetching scripts; strictly calls bilibili-api-python per api_info.
+# client — fetching scripts; strictly calls bilibili-api-python per bili-api-info.
 
 import asyncio
 import logging
@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from bilibili_api import Credential, request_settings, select_client, user
+from bilibili_api.article import Article
 from bilibili_api.channel_series import ChannelOrder
 from bilibili_api.exceptions import ApiException, NetworkException, ResponseCodeException
 from bilibili_api.video import Video
@@ -15,9 +16,28 @@ from . import (
     Http5xxError,
     Http412Error,
     RequestError,
+    ResourceUnavailableError,
 )
 
 logger = logging.getLogger("bili.fetching.client")
+
+
+# ---------------------------------------------------------------------------
+# Permanent (non-retryable) B站 business codes.
+#
+# These codes describe a stable state of the resource — retrying yields the
+# same response — so the runner should mark the endpoint / item permanently
+# failed without consuming the retry budget.
+#
+#   53013 — 用户隐私设置未公开 (privacy: list withheld)
+#   88214 — up未开通充电        (charging not enabled)
+#
+# Add new codes here only after confirming they are terminal: the user has
+# opted out, the resource is gated behind a permission, or the feature is
+# disabled.  Transient codes (rate limit / auth / server) must NOT live here.
+# ---------------------------------------------------------------------------
+
+_PERMANENT_BUSINESS_CODES: frozenset[int] = frozenset({53013, 88214})
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +129,10 @@ async def fetch_video_detail_item(
     except ResponseCodeException as exc:
         if exc.code == 412:
             raise Http412Error(f"video_detail[{bvid}]: get_info 412") from exc
+        if exc.code in _PERMANENT_BUSINESS_CODES:
+            raise ResourceUnavailableError(
+                f"video_detail[{bvid}]: get_info code={exc.code}: {exc.msg}",
+            ) from exc
         raise RequestError(f"video_detail[{bvid}]: get_info code={exc.code}: {exc.msg}") from exc
     except NetworkException as exc:
         raise Http5xxError(f"video_detail[{bvid}]: get_info network error {exc}") from exc
@@ -124,6 +148,10 @@ async def fetch_video_detail_item(
     except ResponseCodeException as exc:
         if exc.code == 412:
             raise Http412Error(f"video_detail[{bvid}]: get_tags 412") from exc
+        if exc.code in _PERMANENT_BUSINESS_CODES:
+            raise ResourceUnavailableError(
+                f"video_detail[{bvid}]: get_tags code={exc.code}: {exc.msg}",
+            ) from exc
         raise RequestError(f"video_detail[{bvid}]: get_tags code={exc.code}: {exc.msg}") from exc
     except NetworkException as exc:
         raise Http5xxError(f"video_detail[{bvid}]: get_tags network error {exc}") from exc
@@ -133,6 +161,134 @@ async def fetch_video_detail_item(
         raise RequestError(f"video_detail[{bvid}]: get_tags unexpected: {exc}") from exc
 
     return {"info": info, "tags": tags}
+
+
+# ---------------------------------------------------------------------------
+# Item-level fan-out helpers — article_detail (per-cvid body)
+# ---------------------------------------------------------------------------
+
+
+def _extract_cvids_from_articles(raw_payload: dict) -> list[str]:
+    """Extract all article cvids from articles endpoint raw_payload (pages shape).
+
+    The articles endpoint paginates with shape ``{pages: [{articles: [...]}]}``;
+    each ``articles[*].id`` is the cvid (int) — we stringify for stable IDs.
+    """
+    cvids: list[str] = []
+    for page in raw_payload.get("pages", []) or []:
+        if not isinstance(page, dict):
+            continue
+        for art in page.get("articles", []) or []:
+            if not isinstance(art, dict):
+                continue
+            cvid = art.get("id")
+            if cvid is not None:
+                cvids.append(str(cvid))
+    return cvids
+
+
+async def fetch_article_detail_item(
+    cvid: str,
+    credential: Credential | None,
+    timeout: float = 30.0,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """Fetch article body + info for a single cvid.
+
+    Returns ``{"info": ..., "markdown": "...", "content_json": [...]}``.
+    ``info`` is the article metadata (mirrors the list-level fields plus the
+    bits that only get_info exposes); ``markdown`` is the rendered body;
+    ``content_json`` is the structured node tree (for callers that need
+    image lists / latex / cards without re-parsing markdown).
+
+    Per docs/bili-api-info/modules/article.md: ``fetch_content`` is a
+    side-effect method — it populates internal state, then ``markdown()`` /
+    ``json()`` read from it.  We call them in sequence here, mapping
+    bilibili-api exceptions to our retry-aware Http* / RequestError types.
+    """
+    try:
+        cvid_int = int(cvid)
+    except (TypeError, ValueError) as exc:
+        raise RequestError(f"article_detail[{cvid}]: invalid cvid: {exc}") from exc
+
+    a = Article(cvid_int, credential=credential)
+
+    try:
+        info = await asyncio.wait_for(a.get_info(), timeout=timeout)
+    except TimeoutError as exc:
+        raise Http5xxError(
+            f"article_detail[{cvid}]: get_info timeout after {timeout}s",
+        ) from exc
+    except ResponseCodeException as exc:
+        if exc.code == 412:
+            raise Http412Error(f"article_detail[{cvid}]: get_info 412") from exc
+        if exc.code in _PERMANENT_BUSINESS_CODES:
+            raise ResourceUnavailableError(
+                f"article_detail[{cvid}]: get_info code={exc.code}: {exc.msg}",
+            ) from exc
+        raise RequestError(
+            f"article_detail[{cvid}]: get_info code={exc.code}: {exc.msg}",
+        ) from exc
+    except NetworkException as exc:
+        raise Http5xxError(
+            f"article_detail[{cvid}]: get_info network error {exc}",
+        ) from exc
+    except ApiException as exc:
+        raise RequestError(f"article_detail[{cvid}]: get_info {exc}") from exc
+    except Exception as exc:
+        raise RequestError(
+            f"article_detail[{cvid}]: get_info unexpected: {exc}",
+        ) from exc
+
+    try:
+        await asyncio.wait_for(a.fetch_content(), timeout=timeout)
+        markdown_text: str = a.markdown()
+        content_json: list[Any] = a.json()
+    except TimeoutError as exc:
+        raise Http5xxError(
+            f"article_detail[{cvid}]: fetch_content timeout after {timeout}s",
+        ) from exc
+    except ResponseCodeException as exc:
+        if exc.code == 412:
+            raise Http412Error(
+                f"article_detail[{cvid}]: fetch_content 412",
+            ) from exc
+        if exc.code in _PERMANENT_BUSINESS_CODES:
+            raise ResourceUnavailableError(
+                f"article_detail[{cvid}]: fetch_content code={exc.code}: {exc.msg}",
+            ) from exc
+        raise RequestError(
+            f"article_detail[{cvid}]: fetch_content code={exc.code}: {exc.msg}",
+        ) from exc
+    except NetworkException as exc:
+        raise Http5xxError(
+            f"article_detail[{cvid}]: fetch_content network error {exc}",
+        ) from exc
+    except ApiException as exc:
+        raise RequestError(
+            f"article_detail[{cvid}]: fetch_content {exc}",
+        ) from exc
+    except KeyError as exc:
+        # ``fetch_content`` scrapes the article web page and reads
+        # ``__INITIAL_STATE__.readInfo`` (see bilibili_api.article.fetch_content).
+        # When the article is taken down, gated behind risk-control, or the page
+        # shape changes, ``readInfo`` is absent and a bare ``KeyError`` escapes.
+        # Retrying yields the same KeyError — surface as a permanent failure so
+        # the runner skips it instead of burning the retry budget.
+        raise ResourceUnavailableError(
+            f"article_detail[{cvid}]: fetch_content missing key {exc} "
+            f"(article unavailable / page structure changed)",
+        ) from exc
+    except Exception as exc:
+        raise RequestError(
+            f"article_detail[{cvid}]: fetch_content unexpected: {exc}",
+        ) from exc
+
+    return {
+        "info": info,
+        "markdown": markdown_text,
+        "content_json": content_json,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +362,10 @@ async def _paginate_channel_videos(
             if exc.code == 412:
                 raise Http412Error(
                     f"channel_videos_{kind}[{sid}]: 412"
+                ) from exc
+            if exc.code in _PERMANENT_BUSINESS_CODES:
+                raise ResourceUnavailableError(
+                    f"channel_videos_{kind}[{sid}]: code={exc.code}: {exc.msg}"
                 ) from exc
             raise RequestError(
                 f"channel_videos_{kind}[{sid}]: code={exc.code}: {exc.msg}"
@@ -406,6 +566,17 @@ def _build_endpoints() -> list[EndpointSpec]:
             kind="item",
             source_endpoint="videos",
             extract_items=_extract_bvids_from_videos,
+        ),
+        # --- item-level fan-out: article_detail (专栏正文) ---
+        EndpointSpec(
+            name="article_detail",
+            callable=fetch_article_detail_item,
+            credential_required=False,
+            pagination_strategy="none",
+            rate_limit_key="article_detail",
+            kind="item",
+            source_endpoint="articles",
+            extract_items=_extract_cvids_from_articles,
         ),
         # ================================================================
         # T2 — uid-level, none pagination
@@ -634,6 +805,10 @@ async def fetch_endpoint(
     except ResponseCodeException as exc:
         if exc.code == 412:
             raise Http412Error(f"{spec.name} page={request_params}: 412") from exc
+        if exc.code in _PERMANENT_BUSINESS_CODES:
+            raise ResourceUnavailableError(
+                f"{spec.name} code={exc.code}: {exc.msg}",
+            ) from exc
         raise RequestError(f"{spec.name} code={exc.code}: {exc.msg}") from exc
     except NetworkException as exc:
         raise Http5xxError(f"{spec.name}: network error {exc}") from exc

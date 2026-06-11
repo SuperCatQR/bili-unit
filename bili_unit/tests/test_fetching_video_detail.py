@@ -9,6 +9,7 @@ from bili_unit.fetching import (
     EndpointStatus,
     Http412Error,
     RequestError,
+    ResourceUnavailableError,
     TaskStatus,
 )
 from bili_unit.fetching.client import (
@@ -78,7 +79,12 @@ def test_video_detail_endpoint_registered():
 
 
 def test_existing_endpoints_are_uid_kind():
-    _item_endpoints = {"video_detail", "channel_videos_season", "channel_videos_series"}
+    _item_endpoints = {
+        "video_detail",
+        "article_detail",
+        "channel_videos_season",
+        "channel_videos_series",
+    }
     for ep in ENDPOINTS:
         if ep.name not in _item_endpoints:
             assert ep.kind == "uid", f"{ep.name} should have kind='uid'"
@@ -125,6 +131,21 @@ async def test_fetch_video_detail_item_tags_error():
         instance.get_tags = AsyncMock(side_effect=RequestError("tags failed"))
 
         with pytest.raises(RequestError):
+            await fetch_video_detail_item("BV1", None)
+
+
+@pytest.mark.asyncio
+async def test_fetch_video_detail_item_permanent_business_code_maps_to_unavailable():
+    """Permanent business code from get_info is surfaced as ResourceUnavailableError."""
+    from bilibili_api.exceptions import ResponseCodeException
+
+    with patch("bili_unit.fetching.client.Video") as MockVideo:
+        instance = MockVideo.return_value
+        instance.get_info = AsyncMock(
+            side_effect=ResponseCodeException(53013, "用户隐私设置未公开", {}),
+        )
+
+        with pytest.raises(ResourceUnavailableError):
             await fetch_video_detail_item("BV1", None)
 
 

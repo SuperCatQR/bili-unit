@@ -63,6 +63,21 @@ class Http5xxError(RequestError):
     """Server-side error (5xx)."""
 
 
+class ResourceUnavailableError(FetchingError):
+    """Permanent business-level failure — the resource is not (and will not be) available.
+
+    Raised when:
+      * The B站 API returns a known terminal business code (e.g. 53013 "用户隐私设置未公开",
+        88214 "up未开通充电") — retrying yields the same response.
+      * Article body parsing fails because the page response carries no ``readInfo`` —
+        the article has been taken down or the page shape changed; retries cannot help.
+
+    Runner treats this as ``FAILED_PERMANENT`` (uid-level) or skips the item without
+    retry (item-level fan-out).  Distinct from :class:`AuthError` so it does NOT abort
+    a whole fan-out — only the single failing item / endpoint.
+    """
+
+
 class DataError(FetchingError):
     """Storage / serialisation failure."""
 

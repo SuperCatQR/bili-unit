@@ -9,6 +9,7 @@ from bili_unit.fetching import (
     AuthError,
     EndpointStatus,
     Http412Error,
+    ResourceUnavailableError,
     TaskStatus,
 )
 from bili_unit.fetching.client import (
@@ -843,3 +844,99 @@ async def test_incremental_anchor_pagination_new_ids(stores, rl_ctl):
     stored = await ds.get(_fetch_key(301, "upower_qa"))
     pages = stored["raw_payload"]["pages"]
     assert len(pages) == 3
+
+
+# ======================================================================
+# runner — ResourceUnavailableError handling (no retry, no fan-out abort)
+# ======================================================================
+
+@pytest.mark.asyncio
+async def test_runner_resource_unavailable_skips_retry(runner: Runner):
+    """uid-level endpoint: ResourceUnavailableError → FAILED_PERMANENT, no retries."""
+    attempts = [0]
+
+    async def fake_fetch(uid, spec, credential, request_params, **kw):
+        attempts[0] += 1
+        raise ResourceUnavailableError("subscribed_bangumi code=53013: privacy")
+
+    with patch(
+        "bili_unit.fetching.runner.fetch_endpoint",
+        new=AsyncMock(side_effect=fake_fetch),
+    ), patch("bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0]):
+        result = await runner.run_task(701, endpoints=["subscribed_bangumi"])
+
+    # Only one call — runner did NOT consume the retry budget.
+    assert attempts[0] == 1
+    assert result.endpoints["subscribed_bangumi"] == EndpointStatus.FAILED_PERMANENT
+    assert result.status == TaskStatus.FAILED_PERMANENT
+
+
+@pytest.mark.asyncio
+async def test_item_fanout_resource_unavailable_only_skips_one_item(stores, rl_ctl):
+    """item-level fan-out: ResourceUnavailableError fails the single item only,
+    sibling items continue to succeed."""
+    ds, es = stores
+
+    from bili_unit.fetching.keys import _fetch_key, _item_fetch_key, _task_key
+    from bili_unit.fetching.task import EndpointEntry, TaskValue
+
+    uid = 702
+    tv = TaskValue(uid=uid, status=TaskStatus.RUNNING)
+    tv.endpoints["video_detail"] = EndpointEntry(status=EndpointStatus.PENDING)
+    await ds.put(_task_key(uid), tv.to_dict())
+    await ds.put(_fetch_key(uid, "videos"), {
+        "uid": uid,
+        "endpoint": "videos",
+        "status": "SUCCESS",
+        "raw_payload": {
+            "pages": [
+                {"list": {"vlist": [{"bvid": "BV_ok"}, {"bvid": "BV_dead"}]}},
+            ],
+        },
+    })
+
+    call_log = []
+
+    async def fake_item(item_id, credential, **kw):
+        call_log.append(item_id)
+        if item_id == "BV_dead":
+            raise ResourceUnavailableError(
+                f"video_detail[{item_id}]: code=53013",
+            )
+        return {"info": {"bvid": item_id}, "tags": []}
+
+    spec = get_endpoint("video_detail")
+    assert spec is not None
+
+    runner = Runner(ds, es, rl_ctl)
+    with patch.object(spec, "callable", fake_item), patch(
+        "bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0],
+    ):
+        await runner._run_item_endpoint(uid, spec, credential=None, mode="full")
+
+    # BV_dead failed exactly once (no retries); BV_ok succeeded.
+    assert call_log.count("BV_dead") == 1
+    assert "BV_ok" in call_log
+    assert call_log.count("BV_ok") == 1
+
+    # video_detail status is PARTIAL_ITEM (1 success, 1 failure).
+    task_d = await ds.get(_task_key(uid))
+    assert (
+        task_d["endpoints"]["video_detail"]["status"]
+        == EndpointStatus.PARTIAL_ITEM.value
+    )
+
+    # The successful item is stored.
+    ok = await ds.get(_item_fetch_key(uid, "video_detail", "BV_ok"))
+    assert ok is not None
+    assert ok["status"] == "SUCCESS"
+
+    # Failed item is NOT stored.
+    dead = await ds.get(_item_fetch_key(uid, "video_detail", "BV_dead"))
+    assert dead is None
+
+    # Error record carries retryable=false.
+    errs = await es.list_by_uid(uid)
+    dead_errs = [e for e in errs if (e.detail or {}).get("item_id") == "BV_dead"]
+    assert len(dead_errs) == 1
+    assert dead_errs[0].retryable == "false"
