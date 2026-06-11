@@ -280,6 +280,24 @@ class ProcessingRunner:
                 raw_payloads["opus_detail"] = opus_details
                 continue
 
+            if ep == "article_list_detail":
+                # Optional fan-out enrichment: maps cvid → readlist (文集)
+                # membership.  Missing rlids degrade gracefully — articles
+                # without a list show as unaffiliated.
+                al_pairs = await self._fetch_qry.list_article_list_details(uid)
+                list_details: dict[str, dict] = {}
+                for rlid, status in al_pairs:
+                    if status != _EpStatus.SUCCESS:
+                        continue
+                    item_dto = await self._fetch_qry.get_article_list_detail(
+                        uid, rlid,
+                    )
+                    if item_dto is None or item_dto.raw_payload is None:
+                        continue
+                    list_details[rlid] = item_dto.raw_payload
+                raw_payloads["article_list_detail"] = list_details
+                continue
+
             # uid-level endpoint
             ep_dto = await self._fetch_qry.get_endpoint(uid, ep)
             if ep_dto is None or not ep_dto.available:

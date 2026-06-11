@@ -23,6 +23,7 @@ _ITEM_FANOUT_ENDPOINTS: frozenset[str] = frozenset({
     "video_detail",
     "article_detail",
     "opus_detail",
+    "article_list_detail",
 })
 
 

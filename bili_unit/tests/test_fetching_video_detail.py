@@ -83,6 +83,7 @@ def test_existing_endpoints_are_uid_kind():
         "video_detail",
         "article_detail",
         "opus_detail",
+        "article_list_detail",
         "channel_videos_season",
         "channel_videos_series",
     }

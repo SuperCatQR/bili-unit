@@ -295,3 +295,59 @@ class Query:
                 status = EndpointStatus.PENDING
             results.append((opus_id, status))
         return results
+
+    # -- article_list_detail -------------------------------------------------
+
+    async def get_article_list_detail(
+        self, uid: int, rlid: str,
+    ) -> EndpointDTO | None:
+        """Return a single readlist's roster as an EndpointDTO, or None.
+
+        Mirrors :meth:`get_article_detail`; ``rlid`` is the 文集 id stringified.
+        The raw_payload here is the cvid roster (``{list, articles, author}``),
+        not an article body.
+        """
+        key = _item_fetch_key(uid, "article_list_detail", rlid)
+        d = await self._data.get(key)
+        if d is None:
+            return None
+
+        status_str = d.get("status", "PENDING")
+        try:
+            status = EndpointStatus(status_str)
+        except ValueError:
+            status = EndpointStatus.PENDING
+        raw_payload = d.get("raw_payload")
+        fetched_at = d.get("fetched_at")
+
+        available = status == EndpointStatus.SUCCESS and raw_payload is not None
+
+        return EndpointDTO(
+            uid=uid,
+            endpoint="article_list_detail",
+            status=status,
+            available=available,
+            raw_payload=raw_payload,
+            fetched_at=fetched_at,
+        )
+
+    async def list_article_list_details(
+        self, uid: int,
+    ) -> list[tuple[str, EndpointStatus]]:
+        """Return all stored article_list_detail rlids with their status.
+
+        Does NOT load raw_payload — same memory discipline as the other
+        ``list_*_details`` helpers.
+        """
+        prefix = f"uid:{uid}:fetch:article_list_detail:"
+        rows = await self._data.list_prefix(prefix)
+        results: list[tuple[str, EndpointStatus]] = []
+        for key, value in rows:
+            rlid = key.split(":", 4)[-1] if ":" in key else key
+            status_str = value.get("status", "PENDING")
+            try:
+                status = EndpointStatus(status_str)
+            except ValueError:
+                status = EndpointStatus.PENDING
+            results.append((rlid, status))
+        return results

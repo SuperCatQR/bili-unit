@@ -156,7 +156,7 @@ class TransformHandler(Protocol):
 |-----------|------------------|---------|---------|------|
 | video_metadata | video_detail | bvid | `info` + `tags` | item-level fan-out；只处理 SUCCESS items |
 | dynamics | dynamics | id_str | `pages[*].items[*]` | 覆盖 5 类型：WORD / DRAW / AV / ARTICLE / FORWARD（外加 OPUS / COMMON major）；转发型保留 `forwarded` 子结构 |
-| articles | articles + article_detail（可选） | str(cvid) | `pages[*].articles[*]` 列表项 + `{cvid → {info, markdown, content_json}}` | 列表级字段（meta / 摘要 / 封面 / stats）+ 正文 markdown + content_json 节点树 + word_count；`optional_endpoints=("article_detail",)`，缺失时仅输出列表级字段 |
+| articles | articles + article_detail（可选）+ article_list_detail（可选） | str(cvid) | `pages[*].articles[*]` 列表项 + `{cvid → {info, markdown, content_json}}` + `{rlid → {list, articles, author}}` | 列表级字段（meta / 摘要 / 封面 / stats）+ 正文 markdown + content_json 节点树 + word_count + 文集归属 `lists: [{rlid, name}, ...]`；`optional_endpoints=("article_detail", "article_list_detail")`，缺失时降级到列表级字段并把 `lists` 留空 |
 | opus | opus + opus_detail（可选） | str(opus_id) | `pages[*].items[*]` 列表项 + `{opus_id → {info, markdown, images}}` | 列表级字段（title / summary / 封面 / stats / pub_time）+ 正文 markdown + 图片清单（width/height）+ word_count；`optional_endpoints=("opus_detail",)`，缺失时仅输出列表级字段；与 articles **不去重**——`is_article()` 为 true 的 opus 会同时出现在两条 item_type 下 |
 | user_profile | user_info + relation_info + up_stat (+ overview_stat 可选) | str(uid) | 四端点 raw_payload 平铺 | UP 主画像；`optional_endpoints=("overview_stat",)`，缺失时 `result.overview` 整段省略 |
 
@@ -476,7 +476,7 @@ fixtures/mimo_asr_response.json  MiMo 真实响应样本（uid:13991807 BV1o3Ybz
   设 `BILI_PROCESSING_ASR_BACKEND=mimo` + 配好 `BILI_PROCESSING_ASR_API_KEY` 即可使用。
 - `dynamics` 当前覆盖 WORD / DRAW / AV / ARTICLE / FORWARD 五类（含 OPUS / COMMON major）；其余长尾 type
   仍能产出工作项（带空 `text` / `major: {}`），后续可扩展更细致的字段抽取。
-- `articles` 默认输出列表级字段；当 fetching 也跑了 `article_detail`（item-level fan-out 自 `articles` 派生），handler 会附带 markdown 正文 + content_json 节点树 + word_count。`article_detail` 是 `optional_endpoints`，所以它没跑过的项依然能正常 transform，只是没有正文字段。
+- `articles` 默认输出列表级字段；当 fetching 也跑了 `article_detail`（item-level fan-out 自 `articles` 派生），handler 会附带 markdown 正文 + content_json 节点树 + word_count。当 fetching 也跑了 `article_list_detail`（item-level fan-out 自 `article_list` 派生），handler 会反向索引 cvid → 文集，附带 `lists: [{rlid, name}, ...]`。两个 detail 端点都是 `optional_endpoints`，没跑过的项依然能正常 transform，只是缺对应字段。
 - `opus` 与 `articles` 同模式：默认列表级字段，跑了 `opus_detail`（item-level fan-out 自 `opus` 派生）才会附带 markdown 正文 + 图片清单（含 width/height）+ word_count；`opus_detail` 也是 `optional_endpoints`。两条 handler **不去重**：B 站 `is_article()` 为 true 的 opus 同时出现在 `articles`（cvid 视角）与 `opus`（opus_id 视角）下，下游需要去重时自行合并。
 - `bilibili-api-python` 17.x 在某些视频上 `VideoDownloadURLDataDetecter.detect_best_streams` 会抛
   `'NoneType' object has no attribute 'value'`；audio 下载器已采用

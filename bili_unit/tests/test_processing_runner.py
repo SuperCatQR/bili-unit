@@ -403,6 +403,81 @@ async def test_processing_opus_with_opus_detail(proc_stack, fetching_stack):
 
 
 @pytest.mark.asyncio
+async def test_processing_articles_with_article_list_detail(
+    proc_stack, fetching_stack,
+):
+    """When article_list_detail is fetched, articles transform attaches the
+    cvid → readlist (文集) membership under ``result["lists"]``."""
+    cmd, qry, _pd, _pe, fd = proc_stack
+    uid = 240
+
+    # Articles listing.  Three cvids: 100 in one list, 200 in two lists,
+    # 300 unaffiliated.
+    await _seed_fetching_endpoint(fd, uid, "articles", {
+        "pages": [
+            {"articles": [
+                {"id": 100, "title": "in-readlist"},
+                {"id": 200, "title": "in-two-readlists"},
+                {"id": 300, "title": "no-readlist"},
+            ]},
+        ],
+    })
+
+    # Mark article_list_detail as SUCCESS in the task — per-rlid rows below
+    # carry the actual roster payloads.
+    existing = await fd.get(_fetch_task_key(uid))
+    tv = TaskValue.from_dict(existing) if existing else TaskValue(uid=uid)
+    tv.endpoints["article_list_detail"] = EndpointEntry(
+        status=EndpointStatus.SUCCESS,
+    )
+    await fd.put(_fetch_task_key(uid), tv.to_dict())
+
+    await fd.put(_item_fetch_key(uid, "article_list_detail", "1043430"), {
+        "uid": uid,
+        "endpoint": "article_list_detail",
+        "item_id": "1043430",
+        "status": EndpointStatus.SUCCESS.value,
+        "raw_payload": {
+            "list": {"id": 1043430, "name": "【警戒追踪】"},
+            "articles": [{"id": 100}, {"id": 200}],
+        },
+        "fetched_at": 0,
+    })
+    await fd.put(_item_fetch_key(uid, "article_list_detail", "1043431"), {
+        "uid": uid,
+        "endpoint": "article_list_detail",
+        "item_id": "1043431",
+        "status": EndpointStatus.SUCCESS.value,
+        "raw_payload": {
+            "list": {"id": 1043431, "name": "【前哨速递】"},
+            "articles": [{"id": 200}],
+        },
+        "fetched_at": 0,
+    })
+
+    result = await cmd.process_uid(uid, item_types=["articles"])
+    assert result.status == ProcessingTaskStatus.SUCCESS
+
+    arts = await qry.list_items(uid, "articles")
+    assert {it.item_id for it in arts} == {"100", "200", "300"}
+
+    by_id = {it.item_id: it for it in arts}
+
+    one = by_id["100"].result
+    assert one is not None
+    assert one["lists"] == [{"rlid": "1043430", "name": "【警戒追踪】"}]
+
+    two = by_id["200"].result
+    assert two is not None
+    rlids = {m["rlid"] for m in two["lists"]}
+    assert rlids == {"1043430", "1043431"}
+
+    none_ = by_id["300"].result
+    assert none_ is not None
+    assert none_["lists"] == []
+
+
+@pytest.mark.asyncio
 async def test_processing_user_profile_happy_path(proc_stack, fetching_stack):
     """user_profile happy path — four endpoints SUCCESS produce one DTO with overview."""
     cmd, qry, _pd, _pe, fd = proc_stack

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from bilibili_api import Credential, request_settings, select_client, user
-from bilibili_api.article import Article
+from bilibili_api.article import Article, ArticleList
 from bilibili_api.channel_series import ChannelOrder
 from bilibili_api.exceptions import (
     ApiException,
@@ -445,6 +445,89 @@ async def fetch_opus_detail_item(
 
 
 # ---------------------------------------------------------------------------
+# Item-level fan-out helpers — article_list_detail (per-rlid article list)
+# ---------------------------------------------------------------------------
+
+
+def _extract_rlids_from_article_list(raw_payload: dict) -> list[str]:
+    """Extract all rlids from article_list endpoint raw_payload.
+
+    The article_list endpoint returns ``{lists: [{id, mid, name, ...}], total}``;
+    each ``lists[*].id`` is the rlid (int) — we stringify for stable IDs.
+    """
+    ids: list[str] = []
+    for lst in raw_payload.get("lists", []) or []:
+        if not isinstance(lst, dict):
+            continue
+        rlid = lst.get("id")
+        if rlid is not None:
+            ids.append(str(rlid))
+    return ids
+
+
+async def fetch_article_list_detail_item(
+    rlid: str,
+    credential: Credential | None,
+    timeout: float = 30.0,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """Fetch the cvid roster of a single readlist (文集).
+
+    Returns the raw API payload from
+    ``https://api.bilibili.com/x/article/list/web/articles?id=<rlid>`` —
+    a dict with ``list`` (the readlist meta), ``articles`` (the cvid roster,
+    each entry includes ``id`` / ``title`` / ``stats`` / ``publish_time``),
+    and ``author``.
+
+    Per docs/bili-api-info/modules/article.md ``ArticleList.get_content()``:
+    a single API call, no scraping involved (unlike article_detail), so the
+    common bilibili-api error families suffice — no InitialState / KeyError
+    fallbacks needed.
+    """
+    try:
+        rlid_int = int(rlid)
+    except (TypeError, ValueError) as exc:
+        raise RequestError(
+            f"article_list_detail[{rlid}]: invalid rlid: {exc}",
+        ) from exc
+
+    al = ArticleList(rlid_int, credential=credential)
+
+    try:
+        result = await asyncio.wait_for(al.get_content(), timeout=timeout)
+    except TimeoutError as exc:
+        raise Http5xxError(
+            f"article_list_detail[{rlid}]: get_content timeout after {timeout}s",
+        ) from exc
+    except ResponseCodeException as exc:
+        if exc.code == 412:
+            raise Http412Error(
+                f"article_list_detail[{rlid}]: get_content 412",
+            ) from exc
+        if exc.code in _PERMANENT_BUSINESS_CODES:
+            raise ResourceUnavailableError(
+                f"article_list_detail[{rlid}]: get_content code={exc.code}: {exc.msg}",
+            ) from exc
+        raise RequestError(
+            f"article_list_detail[{rlid}]: get_content code={exc.code}: {exc.msg}",
+        ) from exc
+    except NetworkException as exc:
+        raise Http5xxError(
+            f"article_list_detail[{rlid}]: get_content network error {exc}",
+        ) from exc
+    except ApiException as exc:
+        raise RequestError(
+            f"article_list_detail[{rlid}]: get_content {exc}",
+        ) from exc
+    except Exception as exc:
+        raise RequestError(
+            f"article_list_detail[{rlid}]: get_content unexpected: {exc}",
+        ) from exc
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Item-level fan-out helpers — channel_videos_season / channel_videos_series
 # ---------------------------------------------------------------------------
 
@@ -741,6 +824,17 @@ def _build_endpoints() -> list[EndpointSpec]:
             kind="item",
             source_endpoint="opus",
             extract_items=_extract_opus_ids_from_opus,
+        ),
+        # --- item-level fan-out: article_list_detail (文集 → 文章 cvid 清单) ---
+        EndpointSpec(
+            name="article_list_detail",
+            callable=fetch_article_list_detail_item,
+            credential_required=False,
+            pagination_strategy="none",
+            rate_limit_key="article_list_detail",
+            kind="item",
+            source_endpoint="article_list",
+            extract_items=_extract_rlids_from_article_list,
         ),
         # ================================================================
         # T2 — uid-level, none pagination

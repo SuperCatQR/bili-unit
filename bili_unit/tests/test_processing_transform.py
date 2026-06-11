@@ -267,6 +267,60 @@ def test_articles_handler_extract_and_transform():
     assert out1["stats"]["view"] == 0
 
 
+def test_articles_handler_attaches_readlist_membership():
+    """When article_list_detail raw_payloads are supplied, transform emits
+    a per-article ``lists`` field with the readlist (文集) memberships."""
+    raw_articles = {
+        "pages": [
+            {"articles": [
+                {"id": 100, "title": "in-readlist"},
+                {"id": 200, "title": "in-two-readlists"},
+                {"id": 300, "title": "no-readlist"},
+            ]},
+        ],
+    }
+    raw_list_details = {
+        "1043430": {
+            "list": {"id": 1043430, "name": "【警戒追踪】"},
+            "articles": [{"id": 100}, {"id": 200}],
+        },
+        "1043431": {
+            "list": {"id": 1043431, "name": "【前哨速递】"},
+            "articles": [{"id": 200}],
+        },
+    }
+    h = articles.HANDLER
+    items = h.extract_items({
+        "articles": raw_articles,
+        "article_list_detail": raw_list_details,
+    })
+    assert [it.item_id for it in items] == ["100", "200", "300"]
+
+    out_in_one = h.transform(items[0])
+    assert out_in_one["lists"] == [
+        {"rlid": "1043430", "name": "【警戒追踪】"},
+    ]
+
+    out_in_two = h.transform(items[1])
+    # 200 is in both readlists; order follows iteration over list_details dict
+    rlids = {m["rlid"] for m in out_in_two["lists"]}
+    assert rlids == {"1043430", "1043431"}
+    names = {m["name"] for m in out_in_two["lists"]}
+    assert names == {"【警戒追踪】", "【前哨速递】"}
+
+    out_unaffiliated = h.transform(items[2])
+    assert out_unaffiliated["lists"] == []
+
+
+def test_articles_handler_lists_defaults_empty_when_absent():
+    """Missing article_list_detail raw_payload → ``lists`` is empty list, not
+    None / KeyError; back-compat with callers built before the enrichment."""
+    raw = {"pages": [{"articles": [{"id": 1, "title": "t"}]}]}
+    items = articles.HANDLER.extract_items({"articles": raw})
+    out = articles.HANDLER.transform(items[0])
+    assert out["lists"] == []
+
+
 def test_articles_handler_attaches_article_detail():
     """When article_detail raw_payloads are supplied, transform emits markdown / content_json / word_count."""
     raw_articles = {
