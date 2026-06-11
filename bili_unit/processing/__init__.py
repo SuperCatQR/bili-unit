@@ -63,6 +63,14 @@ class AudioError(ProcessingError):
     """audio 阶段错误基类。"""
 
 
+class ASRConfigError(AudioError):
+    """ASR 后端配置错误（缺 key、profile 不识别、custom 缺 base_url 等）。
+
+    与 ASRConnectionError / ASRAPIError 区分：本类是用户配置问题，重试无意义；
+    runner._is_retryable 把它视作非 retryable（继承自 AudioError 但语义层面
+    属于"立刻报错并提示如何修"）。"""
+
+
 class DownloadError(AudioError):
     """CDN 下载失败。"""
 
@@ -215,6 +223,7 @@ async def _close_fetching(fetch_data, fetch_error, fetch_cmd) -> None:
 
 __all__ = [
     "ASRAPIError",
+    "ASRConfigError",
     "ASRConnectionError",
     "AudioError",
     "AudioSizeError",

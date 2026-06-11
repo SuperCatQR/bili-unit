@@ -23,7 +23,9 @@ from .fetching import (  # noqa: F401 – public re-exports
 from .query import BiliQuery
 
 
-async def assemble() -> tuple[BiliCommand, BiliQuery, object, object]:
+async def assemble(
+    asr_backend_override: str | None = None,
+) -> tuple[BiliCommand, BiliQuery, object, object]:
     """Unified assembly for the whole bili unit.
 
     Wires every stage's stores + components, then groups them behind the
@@ -32,6 +34,11 @@ async def assemble() -> tuple[BiliCommand, BiliQuery, object, object]:
     Returns ``(cmd, qry, fetch_data, fetch_error)``. Stores are returned so
     the caller can ``await store.close()`` on shutdown. ``BiliCommand.close()``
     closes them all transitively.
+
+    Args:
+        asr_backend_override: when set, takes precedence over
+            ``BILI_PROCESSING_ASR_BACKEND``. Lets the CLI pick ``mock`` for a
+            run without editing .env, e.g. when only running transform.
     """
     from .fetching import assemble as _fetching_assemble
     from .processing.audio._asr_backend import create_asr_backend
@@ -49,7 +56,8 @@ async def assemble() -> tuple[BiliCommand, BiliQuery, object, object]:
     await proc_data.open()
     await proc_error.open()
 
-    asr_backend = create_asr_backend(s.bili_processing_asr_backend, settings=s)
+    backend_name = asr_backend_override or s.bili_processing_asr_backend
+    asr_backend = create_asr_backend(backend_name, settings=s)
 
     async def _close_processing_stores() -> None:
         await proc_data.close()

@@ -187,6 +187,7 @@ dependencies = [
     { name = "imageio-ffmpeg" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "pysilero-vad" },
     { name = "python-dotenv" },
 ]
 
@@ -213,6 +214,7 @@ requires-dist = [
     { name = "imageio-ffmpeg", specifier = ">=0.5.1" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pysilero-vad", specifier = ">=3.0.1,<3.3.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
 provides-extras = ["anti-detect"]
@@ -1140,6 +1142,18 @@ source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
 sdist = { url = "https://mirrors.aliyun.com/pypi/packages/3b/81/58d0ac84e1ef3a3843791d6954d94c0b33d526c75eeb1efbce9d0a4c4077/pyjwt-2.13.0.tar.gz", hash = "sha256:41571c89ca91598c79e8ef18a2d07367d4810fbbd6f637794879baf1b7703423" }
 wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/a3/5e/ecf12fdb62546d64385c158514e9b2b671f7832108ef2ecd2020ce0af2d1/pyjwt-2.13.0-py3-none-any.whl", hash = "sha256:66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728" },
+]
+
+[[package]]
+name = "pysilero-vad"
+version = "3.2.0"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/32/1c/7542c9e4e7e9137d429402d7b9d9f9de8a700b75032e8ff4528a64dc8428/pysilero_vad-3.2.0.tar.gz", hash = "sha256:ef1161b65b50cd25b63676d1119a6fb434c25f3aab3117e1d435e8eaf698e160" }
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/fe/24/47e580820fc6b50ee0be37ddc8daf5f8a89a8c7e1263c18e9949f5feef8e/pysilero_vad-3.2.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:1828ece02ae11fc51365796032bdf194a9f8760f43b770595f8a091279aa8696" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/c1/ed/6287d831c1d130243c5c55c42d6b51fbb891ae498eccc9c3b036c106b5b0/pysilero_vad-3.2.0-cp39-abi3-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f7048a8785b1ec28ff039797946dba0266685461a016c08e6eaeeaaff7e12551" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/c7/d7/fcb7af51e04daa65ce0a674ec78cebd4337b17dc272482b667c0088cc1fe/pysilero_vad-3.2.0-cp39-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3554805d5c219492c148b9380d2b59b1bd3eaa2956471f0f769293a5ff59217c" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/4f/a3/b6ae1c0df40f465fc0d48dcf61e87f4c0e345c7adbcefb12422ecb18cfee/pysilero_vad-3.2.0-cp39-abi3-win_amd64.whl", hash = "sha256:b45189322c8b1da1a79b693f9832d217304be0086cec4067ecdc0ab8a4ed49f8" },
 ]
 
 [[package]]

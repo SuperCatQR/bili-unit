@@ -4,9 +4,17 @@
 #   POST {BASE_URL}/chat/completions with model=mimo-v2.5-asr.
 #   Uses OpenAI-compatible ``input_audio`` content part with base64 data URI.
 #
-# Token Plan keys (tp-*) must use regional Token Plan hosts:
-#   https://token-plan-cn.xiaomimimo.com/v1  (default)
-# Pay-as-you-go keys (sk-*) use https://api.xiaomimimo.com/v1.
+# Profiles (resolved via ProcessingEnv.bili_processing_asr_profile):
+#   token_plan_cn   https://token-plan-cn.xiaomimimo.com/v1   (Token Plan, tp-* keys)
+#   token_plan_sgp  https://token-plan-sgp.xiaomimimo.com/v1
+#   token_plan_ams  https://token-plan-ams.xiaomimimo.com/v1
+#   pay_as_you_go   https://api.xiaomimimo.com/v1             (按量付费, sk-* keys)
+#   custom          BILI_PROCESSING_ASR_BASE_URL is required (relays / self-hosted)
+#
+# Token Plan keys (tp-*) and pay-as-you-go keys (sk-*) are NOT interchangeable
+# per MiMo docs. Auth header defaults to ``api-key`` (works for both official
+# endpoints); set ``auth_style="bearer"`` for relays that require
+# ``Authorization: Bearer``.
 
 from __future__ import annotations
 
@@ -16,13 +24,50 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 
-from .. import ASRAPIError, ASRConnectionError
+from .. import ASRAPIError, ASRConfigError, ASRConnectionError
 from ._asr_backend import ASRResult
 
 if TYPE_CHECKING:
     from ..env import ProcessingEnv
 
 logger = logging.getLogger("bili.processing.audio.mimo")
+
+
+# Profile → base URL mapping.  Single source of truth; users do not memorise
+# hosts — they pick a profile name from BILI_PROCESSING_ASR_PROFILE.
+PROFILE_BASE_URLS: dict[str, str] = {
+    "token_plan_cn":  "https://token-plan-cn.xiaomimimo.com/v1",
+    "token_plan_sgp": "https://token-plan-sgp.xiaomimimo.com/v1",
+    "token_plan_ams": "https://token-plan-ams.xiaomimimo.com/v1",
+    "pay_as_you_go":  "https://api.xiaomimimo.com/v1",
+}
+
+# auth_style values accepted on the wire.
+_AUTH_STYLES = ("api_key", "bearer")
+
+
+def resolve_base_url(profile: str, custom_base_url: str = "") -> str:
+    """Resolve a profile name to its base URL.
+
+    Raises :class:`ASRConfigError` on unknown profile or missing base_url
+    when profile=='custom'.
+    """
+    profile = (profile or "").strip().lower()
+    if profile == "custom":
+        url = (custom_base_url or "").strip()
+        if not url:
+            raise ASRConfigError(
+                "ASR profile 'custom' requires BILI_PROCESSING_ASR_BASE_URL "
+                "to be set (run `python -m bili_unit init-mimo` to configure).",
+            )
+        return url.rstrip("/")
+    if profile in PROFILE_BASE_URLS:
+        return PROFILE_BASE_URLS[profile]
+    raise ASRConfigError(
+        f"Unknown ASR profile {profile!r}; expected one of "
+        f"{list(PROFILE_BASE_URLS.keys()) + ['custom']}. "
+        f"Run `python -m bili_unit init-mimo` to (re)configure.",
+    )
 
 
 class MimoASRBackend:
@@ -40,22 +85,44 @@ class MimoASRBackend:
         model: str = "mimo-v2.5-asr",
         timeout: int = 300,
         max_completion_tokens: int | None = None,
+        auth_style: str = "api_key",
     ) -> None:
+        if auth_style not in _AUTH_STYLES:
+            raise ASRConfigError(
+                f"Unknown auth_style {auth_style!r}; expected one of {_AUTH_STYLES}.",
+            )
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._max_completion_tokens = max_completion_tokens
+        self._auth_style = auth_style
         self._session: aiohttp.ClientSession | None = None
 
     @property
     def model(self) -> str:
         return self._model
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @property
+    def auth_style(self) -> str:
+        return self._auth_style
+
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(timeout=self._timeout)
         return self._session
+
+    def _build_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._auth_style == "bearer":
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        else:
+            headers["api-key"] = self._api_key
+        return headers
 
     async def transcribe(
         self,
@@ -68,6 +135,13 @@ class MimoASRBackend:
         Builds the ``input_audio`` content part with a base64 data URI
         and maps the response to :class:`ASRResult`.
         """
+        if not self._api_key:
+            raise ASRConfigError(
+                "MiMo ASR API key is empty. Run "
+                "`python -m bili_unit init-mimo` to configure, or set "
+                "BILI_PROCESSING_ASR_API_KEY in .env.",
+            )
+
         session = await self._get_session()
         b64 = base64.b64encode(audio_data).decode("ascii")
 
@@ -94,10 +168,7 @@ class MimoASRBackend:
         # for input audio.
         if self._max_completion_tokens is not None:
             payload["max_tokens"] = self._max_completion_tokens
-        headers = {
-            "api-key": self._api_key,
-            "Content-Type": "application/json",
-        }
+        headers = self._build_headers()
 
         url = f"{self._base_url}/chat/completions"
         try:
@@ -156,11 +227,24 @@ class MimoASRBackend:
 
 
 def create_mimo_backend(settings: ProcessingEnv) -> MimoASRBackend:
-    """Factory: build a :class:`MimoASRBackend` from env settings."""
+    """Factory: build a :class:`MimoASRBackend` from env settings.
+
+    Resolves the base URL from ``bili_processing_asr_profile`` (or from
+    ``bili_processing_asr_base_url`` when profile=='custom'). Raises
+    :class:`ASRConfigError` on profile / base_url misconfiguration; an empty
+    API key is permitted at construction so the wizard can still introspect
+    the backend, but :meth:`MimoASRBackend.transcribe` will refuse to call
+    the API without one.
+    """
+    base_url = resolve_base_url(
+        settings.bili_processing_asr_profile,
+        settings.bili_processing_asr_base_url,
+    )
     return MimoASRBackend(
         api_key=settings.bili_processing_asr_api_key,
-        base_url=settings.bili_processing_asr_base_url,
+        base_url=base_url,
         model=settings.bili_processing_asr_model,
         timeout=settings.bili_processing_asr_timeout,
         max_completion_tokens=settings.bili_processing_asr_max_completion_tokens,
+        auth_style=settings.bili_processing_asr_auth_style,
     )

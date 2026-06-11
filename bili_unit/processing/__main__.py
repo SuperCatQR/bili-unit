@@ -111,14 +111,22 @@ def main() -> None:
     parser.add_argument("--verbose", "-v", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("process", help="Run processing for a uid")
+    p = sub.add_parser(
+        "process",
+        help="Run processing for a uid (default: all registered transform handlers)",
+    )
     p.add_argument("uid", type=int)
     p.add_argument(
         "--mode", "-m", choices=["incremental", "full"], default="incremental",
     )
-    p.add_argument(
-        "--item-types", "-t", nargs="+", default=None,
-        help="Subset of item_types (default: all registered)",
+    g = p.add_mutually_exclusive_group()
+    g.add_argument(
+        "--item-types", "-t", nargs="+", default=None, metavar="TYPE",
+        help="Subset of item_types to run (debug; mutually exclusive with -x).",
+    )
+    g.add_argument(
+        "--exclude-item-types", "-x", nargs="+", default=None, metavar="TYPE",
+        help="item_types to skip; everything else runs.",
     )
 
     pq = sub.add_parser("query", help="Show processing status for a uid")
@@ -137,7 +145,20 @@ def main() -> None:
     )
 
     if args.command == "process":
-        asyncio.run(_run_process(args.uid, args.mode, args.item_types))
+        item_types = args.item_types
+        if item_types is None and args.exclude_item_types is not None:
+            from .transform import HANDLERS
+            all_types = HANDLERS.names()
+            excluded = set(args.exclude_item_types)
+            unknown = [n for n in args.exclude_item_types if n not in set(all_types)]
+            if unknown:
+                parser.error(
+                    f"unknown item_type(s) in --exclude-item-types: {', '.join(unknown)}",
+                )
+            item_types = [n for n in all_types if n not in excluded]
+            if not item_types:
+                parser.error("--exclude-item-types removed every handler; nothing to run")
+        asyncio.run(_run_process(args.uid, args.mode, item_types))
     elif args.command == "query":
         asyncio.run(_run_query(args.uid))
     elif args.command == "list-uids":

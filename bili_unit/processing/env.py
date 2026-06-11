@@ -37,16 +37,32 @@ class ProcessingEnv(BaseSettings):
 
     # ASR backend selection / config.
     #
-    # MiMo Token Plan keys (tp-*) must use the regional Token Plan host:
-    #     https://token-plan-cn.xiaomimimo.com/v1   (默认)
-    #     https://token-plan-sgp.xiaomimimo.com/v1
-    #     https://token-plan-ams.xiaomimimo.com/v1
-    # Pay-as-you-go keys (sk-*) use https://api.xiaomimimo.com/v1 instead.
+    # Backend selection:
+    #   mimo (default)  — MiMo cloud ASR via OpenAI-compatible chat completions.
+    #   mock            — deterministic stub for tests / no-key environments.
+    #   whisper         — reserved for future local backend.
+    # CLI override: ``-b mock`` on the unified ``process`` command (see __main__).
+    #
+    # MiMo profile selects the base URL and is the recommended way to configure;
+    # users do not have to memorise hosts.
+    #     token_plan_cn   https://token-plan-cn.xiaomimimo.com/v1   (default)
+    #     token_plan_sgp  https://token-plan-sgp.xiaomimimo.com/v1
+    #     token_plan_ams  https://token-plan-ams.xiaomimimo.com/v1
+    #     pay_as_you_go   https://api.xiaomimimo.com/v1             (sk-* keys)
+    #     custom          use BILI_PROCESSING_ASR_BASE_URL verbatim (relays / self-hosted)
+    #
+    # Token Plan keys (tp-*) and pay-as-you-go keys (sk-*) are NOT interchangeable
+    # per MiMo docs. Relays usually expect ``Authorization: Bearer``; set
+    # BILI_PROCESSING_ASR_AUTH_STYLE=bearer for those (default ``api_key`` works
+    # for both official endpoints).
+    #
     # ASR endpoint reuses the OpenAI-compatible chat completions path:
     #     POST {BASE_URL}/chat/completions  with model="mimo-v2.5-asr"
-    bili_processing_asr_backend: str = "mock"  # MVP 默认 mock；后续支持 mimo / whisper
+    bili_processing_asr_backend: str = "mimo"
+    bili_processing_asr_profile: str = "token_plan_cn"
+    bili_processing_asr_auth_style: str = "api_key"  # api_key | bearer
     bili_processing_asr_api_key: str = ""
-    bili_processing_asr_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
+    bili_processing_asr_base_url: str = ""  # only consulted when profile="custom"
     bili_processing_asr_model: str = "mimo-v2.5-asr"
     bili_processing_asr_language: str = "auto"
     bili_processing_asr_timeout: int = 300
@@ -68,6 +84,44 @@ class ProcessingEnv(BaseSettings):
     bili_processing_asr_max_input_tokens: int = 5400
     bili_processing_asr_tokens_per_second: float = 6.5
     bili_processing_asr_max_completion_tokens: int = 1024
+
+    # VAD-aware segmentation (improves transcript quality on long clips).
+    #
+    # When the token-budget path triggers (clip exceeds the 5400-token cap),
+    # we run Silero VAD (ONNX, via ``pysilero-vad`` — no torch dependency)
+    # to find silence gaps and cut at those gaps instead of fixed seconds.
+    # This avoids splitting words / sentences mid-flow, which the ASR cannot
+    # recover from once it sees an incomplete leading utterance.
+    #
+    # Disable with BILI_PROCESSING_ASR_USE_VAD=false to fall back to
+    # fixed-period segmentation (the old behaviour); useful when the VAD
+    # model can't be loaded (no onnxruntime, etc.) or for A/B testing.
+    #
+    # Threshold rationale:
+    #   - 0.3 (default) is more sensitive than upstream's 0.5 default,
+    #     chosen to better detect softer / mixed-music speech in B站 content.
+    #   - Increase if too many gaps are missed (BGM mistaken for speech →
+    #     no silence to cut at → forced overlap hard-cut).
+    #   - Decrease if cuts are landing in audible speech.
+    bili_processing_asr_use_vad: bool = True
+    bili_processing_asr_vad_threshold: float = 0.3
+    bili_processing_asr_vad_min_silence_sec: float = 0.4
+    bili_processing_asr_vad_min_speech_sec: float = 0.2
+    bili_processing_asr_vad_min_seg_sec: float = 60.0
+    bili_processing_asr_vad_overlap_sec: float = 2.5
+
+    # ASR resume-from-failure cache.
+    #
+    # Each successful per-segment ASR call is cached on disk keyed by the
+    # segment's source-timeline ``(start_s, end_s)``.  When a bvid retries
+    # (network blip, quota exhaustion, process killed), already-transcribed
+    # segments are re-used and only the missing ones hit the API.  The
+    # cache is cleared when the bvid completes successfully — a healthy
+    # cache directory only contains in-flight or recently-failed work.
+    #
+    # Disable for debugging / one-shot runs that should always re-bill.
+    bili_processing_asr_cache_enabled: bool = True
+    bili_processing_asr_cache_dir: str = "data/bili/processing/asr_cache"
 
     # Retry (per-work-item, within a single process_uid run).
     #

@@ -149,6 +149,239 @@ async def test_mimo_backend_close():
     assert backend._session is None
 
 
+# ---------- profile resolution / auth_style / config errors -----------------
+
+
+def test_resolve_base_url_known_profiles():
+    from bili_unit.processing.audio._mimo_backend import (
+        PROFILE_BASE_URLS,
+        resolve_base_url,
+    )
+
+    assert resolve_base_url("token_plan_cn") == PROFILE_BASE_URLS["token_plan_cn"]
+    assert resolve_base_url("token_plan_sgp") == PROFILE_BASE_URLS["token_plan_sgp"]
+    assert resolve_base_url("token_plan_ams") == PROFILE_BASE_URLS["token_plan_ams"]
+    assert resolve_base_url("pay_as_you_go") == PROFILE_BASE_URLS["pay_as_you_go"]
+    # Trailing slash on custom URL is stripped to match preset normalisation.
+    assert (
+        resolve_base_url("custom", "https://relay.example.com/v1/")
+        == "https://relay.example.com/v1"
+    )
+
+
+def test_resolve_base_url_unknown_profile_raises():
+    from bili_unit.processing import ASRConfigError
+    from bili_unit.processing.audio._mimo_backend import resolve_base_url
+
+    with pytest.raises(ASRConfigError, match="Unknown ASR profile"):
+        resolve_base_url("token_plan_jp")
+
+
+def test_resolve_base_url_custom_without_url_raises():
+    from bili_unit.processing import ASRConfigError
+    from bili_unit.processing.audio._mimo_backend import resolve_base_url
+
+    with pytest.raises(ASRConfigError, match="requires BILI_PROCESSING_ASR_BASE_URL"):
+        resolve_base_url("custom", "")
+
+
+def test_mimo_backend_auth_style_bearer_header():
+    """auth_style='bearer' produces Authorization header instead of api-key."""
+    backend = MimoASRBackend(api_key="tp-test-key", auth_style="bearer")
+    h = backend._build_headers()
+    assert h["Authorization"] == "Bearer tp-test-key"
+    assert "api-key" not in h
+
+
+def test_mimo_backend_auth_style_api_key_header_default():
+    backend = MimoASRBackend(api_key="tp-test-key")  # default auth_style
+    h = backend._build_headers()
+    assert h["api-key"] == "tp-test-key"
+    assert "Authorization" not in h
+
+
+def test_mimo_backend_unknown_auth_style_raises():
+    from bili_unit.processing import ASRConfigError
+
+    with pytest.raises(ASRConfigError, match="Unknown auth_style"):
+        MimoASRBackend(api_key="tp-test-key", auth_style="oauth")
+
+
+@pytest.mark.asyncio
+async def test_mimo_backend_transcribe_empty_key_raises_config_error():
+    """Empty key fails fast with ASRConfigError, not a network round-trip."""
+    from bili_unit.processing import ASRConfigError
+
+    backend = MimoASRBackend(api_key="")
+    with pytest.raises(ASRConfigError, match="API key is empty"):
+        await backend.transcribe(b"\x00" * 100)
+
+
+def test_create_mimo_backend_resolves_profile_from_settings():
+    """create_mimo_backend reads profile/base_url from ProcessingEnv."""
+    from bili_unit.processing.audio._mimo_backend import (
+        PROFILE_BASE_URLS,
+        create_mimo_backend,
+    )
+    from bili_unit.processing.env import ProcessingEnv
+
+    s = ProcessingEnv(
+        bili_processing_asr_backend="mimo",
+        bili_processing_asr_profile="token_plan_sgp",
+        bili_processing_asr_api_key="tp-test",
+    )
+    backend = create_mimo_backend(s)
+    assert backend.base_url == PROFILE_BASE_URLS["token_plan_sgp"]
+    assert backend.auth_style == "api_key"
+
+
+def test_create_mimo_backend_custom_profile_uses_base_url_setting():
+    from bili_unit.processing.audio._mimo_backend import create_mimo_backend
+    from bili_unit.processing.env import ProcessingEnv
+
+    s = ProcessingEnv(
+        bili_processing_asr_backend="mimo",
+        bili_processing_asr_profile="custom",
+        bili_processing_asr_base_url="https://relay.example.com/v1",
+        bili_processing_asr_auth_style="bearer",
+        bili_processing_asr_api_key="my-relay-key",
+    )
+    backend = create_mimo_backend(s)
+    assert backend.base_url == "https://relay.example.com/v1"
+    assert backend.auth_style == "bearer"
+
+
+def test_create_mimo_backend_custom_without_base_url_raises():
+    from bili_unit.processing import ASRConfigError
+    from bili_unit.processing.audio._mimo_backend import create_mimo_backend
+    from bili_unit.processing.env import ProcessingEnv
+
+    s = ProcessingEnv(
+        bili_processing_asr_backend="mimo",
+        bili_processing_asr_profile="custom",
+        bili_processing_asr_base_url="",
+        bili_processing_asr_api_key="tp-test",
+    )
+    with pytest.raises(ASRConfigError):
+        create_mimo_backend(s)
+
+
+def test_processing_runner_treats_asr_config_error_as_non_retryable():
+    """ASRConfigError is an AudioError subclass but explicitly non-retryable."""
+    from bili_unit.processing import ASRConfigError, ConvertError
+    from bili_unit.processing.runner import ProcessingRunner
+
+    assert ProcessingRunner._is_retryable(ASRConfigError("no key")) is False
+    # Other AudioError subclasses remain retryable (regression guard).
+    assert ProcessingRunner._is_retryable(ConvertError("bad mp3")) is True
+
+
+# ---------- init_wizard -----------------------------------------------------
+
+
+def _make_reader(answers):
+    """Build a reader callable that pops queued answers in order."""
+    it = iter(answers)
+    return lambda _prompt: next(it)
+
+
+def test_init_wizard_collect_token_plan_cn():
+    from bili_unit.processing.audio._init_wizard import collect_config
+
+    reader = _make_reader([
+        "1",            # profile choice → token_plan_cn
+        "tp-mykey",     # api key
+    ])
+    fields = collect_config(reader=reader)
+    assert fields["BILI_PROCESSING_ASR_BACKEND"] == "mimo"
+    assert fields["BILI_PROCESSING_ASR_PROFILE"] == "token_plan_cn"
+    assert fields["BILI_PROCESSING_ASR_API_KEY"] == "tp-mykey"
+    assert fields["BILI_PROCESSING_ASR_AUTH_STYLE"] == "api_key"
+    assert fields["BILI_PROCESSING_ASR_BASE_URL"] == ""
+
+
+def test_init_wizard_collect_pay_as_you_go():
+    from bili_unit.processing.audio._init_wizard import collect_config
+
+    reader = _make_reader([
+        "4",            # pay_as_you_go
+        "sk-test123",   # api key
+    ])
+    fields = collect_config(reader=reader)
+    assert fields["BILI_PROCESSING_ASR_PROFILE"] == "pay_as_you_go"
+    assert fields["BILI_PROCESSING_ASR_API_KEY"] == "sk-test123"
+
+
+def test_init_wizard_collect_custom_profile():
+    from bili_unit.processing.audio._init_wizard import collect_config
+
+    reader = _make_reader([
+        "5",                                     # custom profile
+        "https://relay.example.com/v1/",         # base url (trailing slash to test strip)
+        "2",                                     # auth_style → bearer
+        "relay-key-xyz",                         # api key
+    ])
+    fields = collect_config(reader=reader)
+    assert fields["BILI_PROCESSING_ASR_PROFILE"] == "custom"
+    assert fields["BILI_PROCESSING_ASR_BASE_URL"] == "https://relay.example.com/v1"
+    assert fields["BILI_PROCESSING_ASR_AUTH_STYLE"] == "bearer"
+    assert fields["BILI_PROCESSING_ASR_API_KEY"] == "relay-key-xyz"
+
+
+def test_init_wizard_reprompts_on_invalid_then_succeeds():
+    from bili_unit.processing.audio._init_wizard import collect_config
+
+    reader = _make_reader([
+        "9",            # invalid profile (>5)
+        "abc",          # invalid (non-digit)
+        "1",            # valid → token_plan_cn
+        "",             # empty key → reprompt
+        "tp-key",       # valid key
+    ])
+    fields = collect_config(reader=reader)
+    assert fields["BILI_PROCESSING_ASR_PROFILE"] == "token_plan_cn"
+    assert fields["BILI_PROCESSING_ASR_API_KEY"] == "tp-key"
+
+
+def test_init_wizard_write_env_appends_and_overwrites(tmp_path):
+    from bili_unit.processing.audio._init_wizard import write_env
+
+    env_path = tmp_path / ".env"
+    # Pre-existing content: a fetching cred line + a stale ASR config the
+    # wizard should overwrite.
+    env_path.write_text(
+        "\n".join([
+            "BILI_SESSDATA=keep-me",
+            "BILI_PROCESSING_ASR_BACKEND=mock",
+            "BILI_PROCESSING_ASR_API_KEY=stale-key",
+            "# A comment to preserve",
+            "BILI_PROCESSING_ASR_LANGUAGE=zh",  # unmanaged ASR_* key, must survive
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    fields = {
+        "BILI_PROCESSING_ASR_BACKEND": "mimo",
+        "BILI_PROCESSING_ASR_PROFILE": "token_plan_cn",
+        "BILI_PROCESSING_ASR_API_KEY": "tp-fresh",
+        "BILI_PROCESSING_ASR_BASE_URL": "",
+        "BILI_PROCESSING_ASR_AUTH_STYLE": "api_key",
+    }
+    write_env(fields, env_path=env_path)
+
+    text = env_path.read_text(encoding="utf-8")
+    # Fetching cred preserved.
+    assert "BILI_SESSDATA=keep-me" in text
+    # Comment preserved.
+    assert "# A comment to preserve" in text
+    # Unmanaged ASR_LANGUAGE preserved.
+    assert "BILI_PROCESSING_ASR_LANGUAGE=zh" in text
+    # New values present, stale gone.
+    assert "BILI_PROCESSING_ASR_BACKEND=mimo" in text
+    assert "BILI_PROCESSING_ASR_API_KEY=tp-fresh" in text
+    assert "stale-key" not in text
+
+
 # ---------- ffmpeg discovery -------------------------------------------------
 
 def test_resolve_ffmpeg_auto_prefers_system_or_falls_back(monkeypatch):
@@ -325,7 +558,9 @@ async def test_convert_single_token_budget_no_split(tmp_path):
         )
 
     assert len(result) == 1
-    assert result[0].name == "full.mp3"
+    assert result[0].path.name == "full.mp3"
+    assert result[0].start_s == 0.0
+    assert result[0].end_s == 60.0
     assert seg_calls == []  # token budget was satisfied → no split
 
 
@@ -410,3 +645,165 @@ async def test_convert_single_falls_back_to_size_when_no_duration(tmp_path):
 
     assert len(result) == 1
     assert captured_seg["segment_seconds"] == 480  # 8 min
+
+
+# ---------- convert_single VAD routing --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_convert_single_uses_vad_when_token_budget_triggers(tmp_path):
+    """Long clip + use_vad=True → routes through detect_speech_segments + convert_at_points."""
+    from bili_unit.processing.audio import _converter as conv
+
+    in_path = tmp_path / "audio.m4s"
+    in_path.write_bytes(b"\x00")
+    out_dir = tmp_path / "out"
+
+    captured_points: dict = {}
+    detect_calls: list = []
+    fixed_seg_calls: list = []
+
+    async def fake_convert(input_path, output_path, ffmpeg_setting="auto"):  # noqa: ARG001
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"x" * 1024)
+        return Path(output_path)
+
+    async def fake_detect(input_path, *, ffmpeg_setting, threshold,  # noqa: ARG001
+                          min_silence_sec, min_speech_sec):
+        detect_calls.append({"threshold": threshold})
+        # One big silence gap from 700-720 — pick_split_points should cut at 710.
+        return [(0.0, 700.0), (720.0, 1033.0)]
+
+    async def fake_at_points(input_path, output_dir, points, ffmpeg_setting):  # noqa: ARG001
+        captured_points["points"] = points
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        files = []
+        for i in range(len(points)):
+            f = out / f"seg_{i:03d}.mp3"
+            f.write_bytes(b"y")
+            files.append(f)
+        return files
+
+    async def fake_fixed_segment(*args, **kwargs):  # noqa: ARG001
+        fixed_seg_calls.append((args, kwargs))
+        return []
+
+    with (
+        patch.object(conv, "convert_m4s_to_mp3", side_effect=fake_convert),
+        patch.object(conv, "detect_speech_segments", side_effect=fake_detect),
+        patch.object(conv, "convert_at_points", side_effect=fake_at_points),
+        patch.object(conv, "convert_and_segment", side_effect=fake_fixed_segment),
+    ):
+        result = await conv.convert_single(
+            in_path,
+            out_dir,
+            duration_seconds=1033.0,
+            max_input_tokens=5400,
+            tokens_per_second=6.5,
+            use_vad=True,
+            vad_threshold=0.3,
+        )
+
+    assert len(result) == 2
+    # VAD path used, not the fixed-period fallback.
+    assert detect_calls == [{"threshold": 0.3}]
+    assert fixed_seg_calls == []
+    # The plan must reflect the silence-aware cut at the gap midpoint.
+    points = captured_points["points"]
+    assert points[0] == (0.0, 710.0)
+    assert points[1] == (710.0, 1033.0)
+
+
+@pytest.mark.asyncio
+async def test_convert_single_vad_disabled_uses_fixed_segmentation(tmp_path):
+    """use_vad=False → token-budget path uses convert_and_segment (old behaviour)."""
+    from bili_unit.processing.audio import _converter as conv
+
+    in_path = tmp_path / "audio.m4s"
+    in_path.write_bytes(b"\x00")
+    out_dir = tmp_path / "out"
+
+    captured_seg: dict = {}
+    detect_calls: list = []
+
+    async def fake_convert(input_path, output_path, ffmpeg_setting="auto"):  # noqa: ARG001
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"x" * 1024)
+        return Path(output_path)
+
+    async def fake_detect(*args, **kwargs):  # noqa: ARG001
+        detect_calls.append(1)
+        return []
+
+    async def fake_segment(input_path, output_dir, segment_seconds, ffmpeg_setting):  # noqa: ARG001
+        captured_seg["segment_seconds"] = segment_seconds
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        f = out / "seg_000.mp3"
+        f.write_bytes(b"y")
+        return [f]
+
+    with (
+        patch.object(conv, "convert_m4s_to_mp3", side_effect=fake_convert),
+        patch.object(conv, "detect_speech_segments", side_effect=fake_detect),
+        patch.object(conv, "convert_and_segment", side_effect=fake_segment),
+    ):
+        await conv.convert_single(
+            in_path,
+            out_dir,
+            duration_seconds=1033.0,
+            max_input_tokens=5400,
+            tokens_per_second=6.5,
+            use_vad=False,
+        )
+
+    # VAD must not be called.
+    assert detect_calls == []
+    assert captured_seg["segment_seconds"] == 830
+
+
+@pytest.mark.asyncio
+async def test_convert_single_vad_failure_falls_back_to_fixed(tmp_path):
+    """VAD detection raising → graceful fallback to convert_and_segment."""
+    from bili_unit.processing.audio import _converter as conv
+
+    in_path = tmp_path / "audio.m4s"
+    in_path.write_bytes(b"\x00")
+    out_dir = tmp_path / "out"
+
+    captured_seg: dict = {}
+
+    async def fake_convert(input_path, output_path, ffmpeg_setting="auto"):  # noqa: ARG001
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"x" * 1024)
+        return Path(output_path)
+
+    async def fake_detect(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("onnxruntime missing")
+
+    async def fake_segment(input_path, output_dir, segment_seconds, ffmpeg_setting):  # noqa: ARG001
+        captured_seg["segment_seconds"] = segment_seconds
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        f = out / "seg_000.mp3"
+        f.write_bytes(b"y")
+        return [f]
+
+    with (
+        patch.object(conv, "convert_m4s_to_mp3", side_effect=fake_convert),
+        patch.object(conv, "detect_speech_segments", side_effect=fake_detect),
+        patch.object(conv, "convert_and_segment", side_effect=fake_segment),
+    ):
+        result = await conv.convert_single(
+            in_path,
+            out_dir,
+            duration_seconds=1033.0,
+            max_input_tokens=5400,
+            tokens_per_second=6.5,
+            use_vad=True,
+        )
+
+    # Fell back to fixed-period segmentation despite use_vad=True.
+    assert len(result) == 1
+    assert captured_seg["segment_seconds"] == 830
