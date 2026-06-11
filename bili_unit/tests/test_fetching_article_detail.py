@@ -169,3 +169,23 @@ async def test_fetch_article_detail_item_permanent_business_code_maps_to_unavail
 
         with pytest.raises(ResourceUnavailableError, match="53013"):
             await fetch_article_detail_item("1", None)
+
+
+@pytest.mark.asyncio
+async def test_fetch_article_detail_item_initial_state_maps_to_unavailable():
+    """``InitialStateException`` from ``fetch_content`` (taken-down articles whose
+    page no longer embeds ``window.__INITIAL_STATE__``) must surface as
+    :class:`ResourceUnavailableError` so the runner skips retries instead of
+    burning the budget on the same shell page.
+    """
+    from bilibili_api.exceptions import InitialStateException
+
+    with patch("bili_unit.fetching.client.Article") as MockArticle:
+        instance = MockArticle.return_value
+        instance.get_info = AsyncMock(return_value={"id": 1})
+        instance.fetch_content = AsyncMock(
+            side_effect=InitialStateException("未找到相关信息"),
+        )
+
+        with pytest.raises(ResourceUnavailableError, match="未找到相关信息"):
+            await fetch_article_detail_item("1", None)

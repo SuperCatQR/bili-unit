@@ -9,7 +9,12 @@ from typing import Any
 from bilibili_api import Credential, request_settings, select_client, user
 from bilibili_api.article import Article
 from bilibili_api.channel_series import ChannelOrder
-from bilibili_api.exceptions import ApiException, NetworkException, ResponseCodeException
+from bilibili_api.exceptions import (
+    ApiException,
+    InitialStateException,
+    NetworkException,
+    ResponseCodeException,
+)
 from bilibili_api.opus import Opus
 from bilibili_api.video import Video
 
@@ -264,6 +269,18 @@ async def fetch_article_detail_item(
     except NetworkException as exc:
         raise Http5xxError(
             f"article_detail[{cvid}]: fetch_content network error {exc}",
+        ) from exc
+    except InitialStateException as exc:
+        # ``fetch_content`` scrapes the article web page for
+        # ``window.__INITIAL_STATE__`` (cf. bilibili_api.utils.initial_state).
+        # When the article is taken down, gated behind risk-control, or the
+        # response is a placeholder shell, the marker is absent and bilibili-api
+        # raises ``InitialStateException("未找到相关信息")``.  Same shape as the
+        # ``readInfo`` ``KeyError`` below — retrying yields the same wall, so
+        # mark it permanent and let the runner skip it.
+        raise ResourceUnavailableError(
+            f"article_detail[{cvid}]: fetch_content {exc} "
+            f"(article unavailable / page returns no initial state)",
         ) from exc
     except ApiException as exc:
         raise RequestError(
