@@ -7,11 +7,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from ..._logging import Progress
 from .. import (
     AuthError,
     EndpointStatus,
     FetchingError,
     Http412Error,
+    ResourceUnavailableError,
 )
 from ..client import EndpointSpec
 from ..env import get_settings
@@ -105,6 +107,8 @@ class _ItemFanoutMixin:
         max_concurrent = max(settings.bili_fetching_item_concurrency, 1)
         semaphore = asyncio.Semaphore(max_concurrent)
 
+        bar = Progress(total=total_items, label=f"fetch uid={uid} {ep_name}")
+
         async def process_item(item_id: str) -> str:
             nonlocal completed_items, failed_items
             async with semaphore:
@@ -118,6 +122,8 @@ class _ItemFanoutMixin:
                 raise FetchingError("auth_permanent_fail")
             else:
                 failed_items += 1
+
+            bar.update(1, postfix=f"ok={completed_items} fail={failed_items}")
 
             # Update live progress (non-atomic; fine in single-threaded asyncio).
             now_ms = int(time.time() * 1000)
@@ -142,25 +148,28 @@ class _ItemFanoutMixin:
 
         # 3. Run all items concurrently (bounded by semaphore).
         try:
-            await asyncio.gather(
-                *[process_item(iid) for iid in items],
-                return_exceptions=False,
-            )
-        except FetchingError:
-            # AuthError from any item → abort and mark permanently failed.
-            await self._update_endpoint_status(
-                uid, ep_name, EndpointStatus.FAILED_PERMANENT,
-            )
-            now_ms = int(time.time() * 1000)
-            await self._data.put(_fetch_key(uid, ep_name), {
-                "uid": uid,
-                "endpoint": ep_name,
-                "status": EndpointStatus.FAILED_PERMANENT.value,
-                "raw_payload": None,
-                "fetched_at": now_ms,
-                "updated_at": now_ms,
-            })
-            return
+            try:
+                await asyncio.gather(
+                    *[process_item(iid) for iid in items],
+                    return_exceptions=False,
+                )
+            except FetchingError:
+                # AuthError from any item → abort and mark permanently failed.
+                await self._update_endpoint_status(
+                    uid, ep_name, EndpointStatus.FAILED_PERMANENT,
+                )
+                now_ms = int(time.time() * 1000)
+                await self._data.put(_fetch_key(uid, ep_name), {
+                    "uid": uid,
+                    "endpoint": ep_name,
+                    "status": EndpointStatus.FAILED_PERMANENT.value,
+                    "raw_payload": None,
+                    "fetched_at": now_ms,
+                    "updated_at": now_ms,
+                })
+                return
+        finally:
+            bar.close()
 
         # 4. Final status
         if failed_items > 0 and completed_items > 0:
@@ -266,6 +275,21 @@ class _ItemFanoutMixin:
                     exc, uid=uid, endpoint=ep_name, retryable="false",
                 )
                 return "permanent"
+            except ResourceUnavailableError as exc:
+                # Permanent per-item failure — skip retries.  Unlike AuthError,
+                # this only fails the single item; sibling items continue.
+                await self._error.record(
+                    exc, uid=uid, endpoint=ep_name, retryable="false",
+                    detail={"item_id": item_id},
+                )
+                logger.info(
+                    "item_endpoint_item_unavailable",
+                    extra={
+                        "uid": uid, "endpoint": ep_name,
+                        "item_id": item_id, "reason": str(exc),
+                    },
+                )
+                return "failed"
             except Http412Error as exc:
                 advice = await self._rl.record_412(spec.rate_limit_key)
                 await self._data.put("rate_limit:global", self._rl.to_state())
@@ -310,8 +334,24 @@ class _ItemFanoutMixin:
                     detail={"item_id": item_id},
                 )
                 if item_retry >= max_retries:
+                    logger.warning(
+                        "item_endpoint_item_exhausted",
+                        extra={
+                            "uid": uid, "endpoint": ep_name,
+                            "item_id": item_id, "retry": item_retry,
+                            "reason": str(exc),
+                        },
+                    )
                     return "failed"
                 wait = RETRY_DELAYS[min(item_retry - 1, len(RETRY_DELAYS) - 1)]
+                logger.info(
+                    "item_endpoint_retry",
+                    extra={
+                        "uid": uid, "endpoint": ep_name,
+                        "item_id": item_id, "wait_s": wait,
+                        "retry": item_retry, "reason": str(exc),
+                    },
+                )
                 await asyncio.sleep(wait)
                 continue
             except Exception as exc:

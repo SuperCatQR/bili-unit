@@ -12,6 +12,7 @@ import asyncio
 import logging
 import time
 
+from ..._logging import Progress
 from .. import (
     AuthError,
     EndpointStatus,
@@ -222,7 +223,11 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                     # Phase 2 will check source status after Phase 1 completes
 
         if uid_tasks:
-            await asyncio.gather(*uid_tasks, return_exceptions=True)
+            with Progress(
+                total=len(uid_tasks),
+                label=f"fetch uid={uid} endpoints",
+            ) as bar:
+                await self._gather_with_progress(uid_tasks, bar)
 
         # ---- Phase 2: item-level fan-out endpoints ----
         if item_specs:
@@ -260,7 +265,11 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                 )
 
             if item_tasks:
-                await asyncio.gather(*item_tasks, return_exceptions=True)
+                with Progress(
+                    total=len(item_tasks),
+                    label=f"fetch uid={uid} items",
+                ) as bar:
+                    await self._gather_with_progress(item_tasks, bar)
 
         # final summary
         tv = await self._load_task(uid)
@@ -275,6 +284,26 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         )
 
     # -- helpers -----------------------------------------------------------
+
+    @staticmethod
+    async def _gather_with_progress(coros: list, bar: Progress) -> None:
+        """gather() variant that ticks ``bar`` once per coro completion.
+
+        Wraps each coroutine in a small shim so we don't depend on
+        ``asyncio.as_completed`` (which loses task identity on cancel).
+        Exceptions are swallowed at this layer — endpoints already record
+        their own errors via ``self._error.record``; this matches the prior
+        ``return_exceptions=True`` behaviour.
+        """
+        async def _wrap(coro):
+            try:
+                return await coro
+            except Exception as exc:  # noqa: BLE001 — preserve gather semantics
+                return exc
+            finally:
+                bar.update(1)
+
+        await asyncio.gather(*[_wrap(c) for c in coros])
 
     async def _load_task(self, uid: int) -> TaskValue | None:
         d = await self._data.get(_task_key(uid))

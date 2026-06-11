@@ -5,6 +5,7 @@
 #   python -m bili_unit process   <uid> [options]   — run processing
 #   python -m bili_unit query     <uid>              — query all results
 #   python -m bili_unit login                        — QR code login
+#   python -m bili_unit init-mimo                    — interactive MiMo ASR setup
 #   python -m bili_unit list-uids                    — list fetched uids
 #
 # Internally goes through ``bili_unit.assemble()`` →
@@ -15,7 +16,60 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
+from pathlib import Path
+
+from ._logging import configure_logging
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_subset(
+    *,
+    flag_label: str,
+    all_names: list[str],
+    include: list[str] | None,
+    exclude: list[str] | None,
+) -> list[str] | None:
+    """Translate (include, exclude) CLI flags into the include-list passed downstream.
+
+    Default behaviour is "run everything", expressed as ``None`` so downstream layers
+    keep using their own "all registered" expansion. ``--exclude`` removes names from
+    that full set; ``--include`` selects an explicit subset (kept for debugging).
+    The two flags are mutually exclusive at the argparse layer.
+
+    Unknown names in either list raise SystemExit(2) with a helpful message — typos
+    here would silently change which endpoints/handlers run.
+    """
+    known = set(all_names)
+
+    if include is not None:
+        unknown = [n for n in include if n not in known]
+        if unknown:
+            raise SystemExit(
+                f"unknown {flag_label}(s): {', '.join(unknown)}. "
+                f"Known: {', '.join(all_names)}",
+            )
+        return list(include)
+
+    if exclude is not None:
+        unknown = [n for n in exclude if n not in known]
+        if unknown:
+            raise SystemExit(
+                f"unknown {flag_label}(s) in --exclude: {', '.join(unknown)}. "
+                f"Known: {', '.join(all_names)}",
+            )
+        excluded = set(exclude)
+        kept = [n for n in all_names if n not in excluded]
+        if not kept:
+            raise SystemExit(
+                f"--exclude removed every {flag_label}; nothing to run.",
+            )
+        return kept
+
+    # Both None → keep downstream "all registered" behaviour.
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Sub-command handlers
@@ -24,10 +78,19 @@ import logging
 async def _handle_fetch(args: argparse.Namespace) -> None:
     """Run fetching via the unit-level BiliCommand / BiliQuery."""
     from bili_unit import EndpointStatus, assemble
+    from bili_unit.fetching.client import ENDPOINTS
+
+    all_endpoints = [ep.name for ep in ENDPOINTS]
+    endpoints = _resolve_subset(
+        flag_label="endpoint",
+        all_names=all_endpoints,
+        include=args.endpoints,
+        exclude=args.exclude_endpoints,
+    )
 
     cmd, qry, data, error = await assemble()
     try:
-        result = await cmd.fetch(args.uid, endpoints=args.endpoints, mode=args.mode)
+        result = await cmd.fetch(args.uid, endpoints=endpoints, mode=args.mode)
         print(f"uid={args.uid}  status={result.status.value}")
 
         task = await qry.fetching.get_task(args.uid)
@@ -83,6 +146,17 @@ async def _handle_login(_args: argparse.Namespace) -> None:
     print(f"凭据已保存到 {path}")
 
 
+async def _handle_init_mimo(_args: argparse.Namespace) -> None:
+    """Interactive MiMo ASR backend configuration."""
+    from bili_unit.processing.audio._init_wizard import run_wizard
+
+    run_wizard()
+    print(
+        "\n下次跑 `python -m bili_unit process <uid>` 时将默认走 MiMo ASR。"
+        "\n要临时跳过 ASR，使用 `-b mock`。",
+    )
+
+
 async def _handle_list_uids(_args: argparse.Namespace) -> None:
     """List all uids with fetching data."""
     from bili_unit import assemble
@@ -103,10 +177,21 @@ async def _handle_list_uids(_args: argparse.Namespace) -> None:
 async def _handle_process(args: argparse.Namespace) -> None:
     """Run processing via the unit-level BiliCommand / BiliQuery."""
     from bili_unit import assemble
+    from bili_unit.processing.transform import HANDLERS
 
-    cmd, qry, data, error = await assemble()
+    all_item_types = HANDLERS.names()
+    item_types = _resolve_subset(
+        flag_label="item_type",
+        all_names=all_item_types,
+        include=args.item_types,
+        exclude=args.exclude_item_types,
+    )
+
+    cmd, qry, data, error = await assemble(
+        asr_backend_override=getattr(args, "asr_backend", None),
+    )
     try:
-        result = await cmd.process(args.uid, mode=args.mode, item_types=args.item_types)
+        result = await cmd.process(args.uid, mode=args.mode, item_types=item_types)
         print(f"uid={args.uid}  status={result.status.value}")
         task = await qry.processing.get_task(args.uid)
         if task is not None:
@@ -138,14 +223,33 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable debug logging",
     )
+    parser.add_argument(
+        "--quiet", "-q", action="store_true",
+        help="Only show warnings and errors (overrides --verbose)",
+    )
+    parser.add_argument(
+        "--log-file", default=None, metavar="PATH",
+        help="Also write DEBUG-level JSON Lines to PATH (handy for post-mortem)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- fetch ---
-    p_fetch = sub.add_parser("fetch", help="Run fetching for a uid")
+    p_fetch = sub.add_parser(
+        "fetch",
+        help="Run fetching for a uid (default: all 25 endpoints)",
+    )
     p_fetch.add_argument("uid", type=int, help="Target Bilibili user uid")
-    p_fetch.add_argument(
-        "--endpoints", "-e", nargs="+", default=None,
-        help="Endpoint names to fetch (default: all registered)",
+    fetch_group = p_fetch.add_mutually_exclusive_group()
+    fetch_group.add_argument(
+        "--exclude-endpoints", "-x", nargs="+", default=None, metavar="EP",
+        help=(
+            "Endpoint names to skip; everything else is fetched. "
+            "Recommended way to drop heavy/expensive endpoints (e.g. -x video_detail)."
+        ),
+    )
+    fetch_group.add_argument(
+        "--endpoints", "-e", nargs="+", default=None, metavar="EP",
+        help="Endpoint names to fetch (debug; mutually exclusive with -x).",
     )
     p_fetch.add_argument(
         "--mode", "-m",
@@ -155,7 +259,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # --- process ---
-    p_proc = sub.add_parser("process", help="Run processing for a uid")
+    p_proc = sub.add_parser(
+        "process",
+        help="Run processing for a uid (default: all registered transform handlers)",
+    )
     p_proc.add_argument("uid", type=int, help="Target Bilibili user uid")
     p_proc.add_argument(
         "--mode", "-m",
@@ -163,9 +270,26 @@ def _build_parser() -> argparse.ArgumentParser:
         default="incremental",
         help="Processing mode (default: incremental)",
     )
+    proc_group = p_proc.add_mutually_exclusive_group()
+    proc_group.add_argument(
+        "--exclude-item-types", "-x", nargs="+", default=None, metavar="TYPE",
+        help=(
+            "Transform item_types to skip; everything else runs. "
+            "Recommended way to drop heavy handlers (e.g. -x video_metadata)."
+        ),
+    )
+    proc_group.add_argument(
+        "--item-types", "-t", nargs="+", default=None, metavar="TYPE",
+        help="Subset of transform item_types to run (debug; mutually exclusive with -x).",
+    )
     p_proc.add_argument(
-        "--item-types", "-t", nargs="+", default=None,
-        help="Subset of transform item_types (default: all registered)",
+        "--asr-backend", "-b",
+        choices=["mock", "mimo", "whisper"],
+        default=None,
+        help=(
+            "Override BILI_PROCESSING_ASR_BACKEND for this run "
+            "(e.g. -b mock to skip MiMo without editing .env)."
+        ),
     )
 
     # --- query ---
@@ -174,6 +298,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # --- login ---
     sub.add_parser("login", help="QR code login to Bilibili")
+
+    # --- init-mimo ---
+    sub.add_parser(
+        "init-mimo",
+        help="Interactive MiMo ASR backend setup (writes BILI_PROCESSING_ASR_* to .env)",
+    )
 
     # --- list-uids ---
     sub.add_parser("list-uids", help="List all fetched uids")
@@ -185,9 +315,10 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    configure_logging(
+        verbose=args.verbose,
+        quiet=args.quiet,
+        log_file=Path(args.log_file) if args.log_file else None,
     )
 
     handlers = {
@@ -195,6 +326,7 @@ def main() -> None:
         "process": _handle_process,
         "query": _handle_query,
         "login": _handle_login,
+        "init-mimo": _handle_init_mimo,
         "list-uids": _handle_list_uids,
     }
 

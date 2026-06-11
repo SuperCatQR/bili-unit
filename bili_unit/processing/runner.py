@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .._logging import Progress
 from . import (
     AudioError,
     ProcessingError,
@@ -24,8 +25,10 @@ from . import (
     ProcessingPipelineStatus,
     ProcessingTaskStatus,
 )
+from .audio._asr_cache import ASRCacheStore, CachedSegment
 from .audio._converter import convert_single
 from .audio._downloader import AudioDownloader
+from .audio._stitch import stitch_transcripts
 from .keys import _proc_key, _progress_key, _task_key
 from .task import PipelineEntry, ProcessingTaskValue
 from .transform import HANDLERS, get_handler
@@ -63,6 +66,21 @@ class ProcessingRunner:
         self._fetch_qry = fetching_query
         self._settings = settings
         self._asr_backend = asr_backend
+        self._asr_cache: ASRCacheStore | None = None
+
+    def _get_asr_cache(self) -> ASRCacheStore | None:
+        """Lazy-build the ASR resume cache when enabled.
+
+        Returns None when the cache is disabled — callers should treat that
+        as "no caching" and proceed straight to the backend.
+        """
+        if not self._settings.bili_processing_asr_cache_enabled:
+            return None
+        if self._asr_cache is None:
+            self._asr_cache = ASRCacheStore(
+                self._settings.bili_processing_asr_cache_dir,
+            )
+        return self._asr_cache
 
     # -- public API --------------------------------------------------------
 
@@ -199,6 +217,9 @@ class ProcessingRunner:
         """
         from ..fetching import EndpointStatus as _EpStatus  # late import
 
+        optional_eps: tuple[str, ...] = tuple(
+            getattr(handler, "optional_endpoints", ()) or (),
+        )
         raw_payloads: dict[str, dict] = {}
         for ep in handler.source_endpoints:
             if ep == "video_detail":
@@ -223,9 +244,39 @@ class ProcessingRunner:
                     ))
                 return await self._filter_ready(uid, handler, items, mode)
 
+            if ep == "article_detail":
+                # Optional fan-out endpoint: missing entries are tolerated by
+                # the handler (it falls back to list-level fields when no
+                # detail is stored), so we collect raw_payloads keyed by cvid
+                # rather than emitting one WorkItem per detail.  The handler
+                # joins them with the parent ``articles`` list payload.
+                ad_pairs = await self._fetch_qry.list_article_details(uid)
+                article_details: dict[str, dict] = {}
+                for cvid, status in ad_pairs:
+                    if status != _EpStatus.SUCCESS:
+                        continue
+                    item_dto = await self._fetch_qry.get_article_detail(uid, cvid)
+                    if item_dto is None or item_dto.raw_payload is None:
+                        continue
+                    article_details[cvid] = item_dto.raw_payload
+                # Stash under a synthetic "article_detail" key the handler
+                # interprets as ``cvid → detail_payload``.
+                raw_payloads["article_detail"] = article_details
+                continue
+
             # uid-level endpoint
             ep_dto = await self._fetch_qry.get_endpoint(uid, ep)
             if ep_dto is None or not ep_dto.available:
+                if ep in optional_eps:
+                    # Optional endpoint missing → omit from raw_payloads but
+                    # keep the handler running (handler decides whether to
+                    # emit/skip the optional fields).
+                    logger.info(
+                        "transform_optional_endpoint_unavailable",
+                        extra={"uid": uid, "item_type": handler.item_type,
+                               "endpoint": ep},
+                    )
+                    continue
                 logger.info(
                     "transform_endpoint_unavailable",
                     extra={"uid": uid, "item_type": handler.item_type, "endpoint": ep},
@@ -274,6 +325,7 @@ class ProcessingRunner:
             maxsize=max(1, int(self._settings.bili_processing_queue_maxsize)),
         )
         rollup_lock = asyncio.Lock()
+        bar = Progress(total=len(items), label=f"transform uid={uid}")
 
         async def producer() -> None:
             for item in items:
@@ -294,6 +346,7 @@ class ProcessingRunner:
                             {"total": 0, "completed": 0, "failed": 0, "skipped": 0},
                         )
                         bucket["failed"] += 1
+                    bar.update(1, postfix=f"skip {item.item_type}")
                     continue
                 ok = await self._process_one(uid, handler, item)
                 async with rollup_lock:
@@ -305,11 +358,18 @@ class ProcessingRunner:
                         bucket["completed"] += 1
                     else:
                         bucket["failed"] += 1
+                bar.update(
+                    1,
+                    postfix=f"{item.item_type}/{item.item_id} {'ok' if ok else 'fail'}",
+                )
 
-        await asyncio.gather(
-            producer(),
-            *[worker(i) for i in range(worker_count)],
-        )
+        try:
+            await asyncio.gather(
+                producer(),
+                *[worker(i) for i in range(worker_count)],
+            )
+        finally:
+            bar.close()
 
     async def _process_one(
         self,
@@ -535,6 +595,7 @@ class ProcessingRunner:
             maxsize=max(1, int(self._settings.bili_processing_queue_maxsize)),
         )
         rollup_lock = asyncio.Lock()
+        bar = Progress(total=len(items), label=f"audio uid={uid}")
 
         async def producer() -> None:
             for item in items:
@@ -562,11 +623,18 @@ class ProcessingRunner:
                         bucket["completed"] += 1
                     else:
                         bucket["failed"] += 1
+                bar.update(
+                    1,
+                    postfix=f"bvid={item.item_id} {'ok' if ok else 'fail'}",
+                )
 
-        await asyncio.gather(
-            producer(),
-            *[worker(i) for i in range(worker_count)],
-        )
+        try:
+            await asyncio.gather(
+                producer(),
+                *[worker(i) for i in range(worker_count)],
+            )
+        finally:
+            bar.close()
 
     async def _process_audio_one(
         self,
@@ -677,6 +745,12 @@ class ProcessingRunner:
         max_input_tokens = self._settings.bili_processing_asr_max_input_tokens
         tokens_per_second = self._settings.bili_processing_asr_tokens_per_second
         asr_language = self._settings.bili_processing_asr_language
+        use_vad = self._settings.bili_processing_asr_use_vad
+        vad_threshold = self._settings.bili_processing_asr_vad_threshold
+        vad_min_silence_sec = self._settings.bili_processing_asr_vad_min_silence_sec
+        vad_min_speech_sec = self._settings.bili_processing_asr_vad_min_speech_sec
+        vad_min_seg_sec = self._settings.bili_processing_asr_vad_min_seg_sec
+        vad_overlap_sec = self._settings.bili_processing_asr_vad_overlap_sec
 
         try:
             downloader = AudioDownloader(credential=credential)
@@ -716,26 +790,80 @@ class ProcessingRunner:
                     duration_seconds=page_duration_for_split,
                     max_input_tokens=max_input_tokens,
                     tokens_per_second=tokens_per_second,
+                    use_vad=use_vad,
+                    vad_threshold=vad_threshold,
+                    vad_min_silence_sec=vad_min_silence_sec,
+                    vad_min_speech_sec=vad_min_speech_sec,
+                    vad_min_seg_sec=vad_min_seg_sec,
+                    vad_overlap_sec=vad_overlap_sec,
                 )
 
-                # 3. ASR per segment.
-                # Sum segment durations rather than overwrite, otherwise
-                # ``page_duration`` would end up holding only the last segment's
-                # length when the clip is split into multiple pieces.
-                texts: list[str] = []
+                # 3. ASR per segment — with resume cache.
+                #
+                # On retry, segments whose (start_s, end_s) match a previously
+                # cached entry skip the API call and reuse the cached text.
+                # Each fresh ASR result is persisted before moving on so a
+                # crash mid-page never re-bills already-paid segments.
+                #
+                # Sum durations from segments rather than overwrite, otherwise
+                # ``page_duration`` would only reflect the last segment when
+                # the clip is split into multiple pieces.
+                asr_cache = self._get_asr_cache()
+                page_cache = (
+                    asr_cache.load_page(uid, bvid, page_index)
+                    if asr_cache is not None else None
+                )
                 cdn_duration = audio_info.get("duration")
                 segment_duration_sum: float = 0.0
                 got_any_segment_duration = False
-                for mp3_file in mp3_files:
-                    audio_bytes = mp3_file.read_bytes()
+                cache_hits = 0
+                segment_texts: list[str] = []
+
+                for seg in mp3_files:
+                    cached: CachedSegment | None = (
+                        asr_cache.find(page_cache, seg.start_s, seg.end_s)
+                        if asr_cache is not None and page_cache is not None
+                        else None
+                    )
+                    if cached is not None:
+                        cache_hits += 1
+                        segment_texts.append(cached.text)
+                        if cached.duration is not None:
+                            segment_duration_sum += cached.duration
+                            got_any_segment_duration = True
+                        continue
+
+                    audio_bytes = seg.path.read_bytes()
                     asr_result = await self._asr_backend.transcribe(
                         audio_bytes, mime_type="audio/mp3",
                         language=asr_language,
                     )
-                    texts.append(asr_result.text)
+                    segment_texts.append(asr_result.text)
                     if asr_result.duration is not None:
                         segment_duration_sum += float(asr_result.duration)
                         got_any_segment_duration = True
+
+                    # Persist immediately — the whole point of the cache.
+                    if asr_cache is not None and page_cache is not None:
+                        asr_cache.upsert(page_cache, CachedSegment(
+                            start_s=seg.start_s,
+                            end_s=seg.end_s,
+                            text=asr_result.text,
+                            language=asr_language,
+                            duration=asr_result.duration,
+                            model=getattr(self._asr_backend, "model", ""),
+                        ))
+
+                if cache_hits > 0:
+                    logger.info(
+                        "asr_cache_hits",
+                        extra={
+                            "uid": uid, "bvid": bvid,
+                            "page_index": page_index,
+                            "hits": cache_hits,
+                            "total_segments": len(mp3_files),
+                        },
+                    )
 
                 # Prefer the page metadata's known duration in seconds (the
                 # value used to make the segmentation decision); fall back to
@@ -749,7 +877,12 @@ class ProcessingRunner:
                         float(cdn_duration) if cdn_duration is not None else None
                     )
 
-                full_text = " ".join(t for t in texts if t)
+                # When a clip is split into multiple segments we may have a
+                # small overlap between adjacent pieces (forced hard-cut on
+                # continuous-speech windows where VAD found no silence gap).
+                # ``stitch_transcripts`` deduplicates that overlap; for VAD
+                # cuts (zero overlap) it degenerates to a plain space join.
+                full_text = stitch_transcripts(segment_texts)
                 page_results.append({
                     "page_index": page_index,
                     "cid": page.get("cid", 0),
@@ -763,12 +896,19 @@ class ProcessingRunner:
                     total_duration += float(page_duration)
                 total_chars += len(full_text)
 
-            return {
+            result = {
                 "bvid": bvid,
                 "pages": page_results,
                 "total_duration": total_duration,
                 "total_chars": total_chars,
             }
+            # Bvid completed successfully — drop its resume cache.  We only
+            # clear on the success path; partial-failure cache survives so
+            # the next retry can resume cheaply.
+            asr_cache_for_clear = self._get_asr_cache()
+            if asr_cache_for_clear is not None:
+                asr_cache_for_clear.clear_bvid(uid, bvid)
+            return result
 
         finally:
             # Always clean up temp files for this bvid.
@@ -785,9 +925,17 @@ class ProcessingRunner:
         typically stem from network issues, API timeouts, or temporary
         resource problems.
 
+        ASRConfigError is the deliberate exception: it signals user-side
+        misconfiguration (missing key, unknown profile, custom profile without
+        base_url). Retrying cannot fix that — fail fast and surface the message.
+
         All other exceptions (TransformError, RuntimeError, etc.) are treated
         as non-retryable.
         """
+        from . import ASRConfigError
+
+        if isinstance(exc, ASRConfigError):
+            return False
         return isinstance(exc, AudioError)
 
     def _select_pipelines(self, pipelines: list[str] | None) -> list[str]:

@@ -4,7 +4,9 @@ import argparse
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 
+from .. import _logging as _bili_logging
 from . import EndpointStatus, assemble
 
 logger = logging.getLogger("bili.fetching.cli")
@@ -179,7 +181,18 @@ def main() -> None:
         "--endpoints", "-e",
         nargs="+",
         default=None,
-        help="Endpoint names to fetch (default: all registered)",
+        metavar="EP",
+        help="Endpoint names to fetch (debug; mutually exclusive with -x).",
+    )
+    parser.add_argument(
+        "--exclude-endpoints", "-x",
+        nargs="+",
+        default=None,
+        metavar="EP",
+        help=(
+            "Endpoint names to skip; everything else is fetched. "
+            "Mutually exclusive with -e."
+        ),
     )
     parser.add_argument(
         "--query", "-q",
@@ -201,12 +214,22 @@ def main() -> None:
         action="store_true",
         help="Enable debug logging",
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Only show warnings and errors (overrides --verbose)",
+    )
+    parser.add_argument(
+        "--log-file", default=None, metavar="PATH",
+        help="Also write DEBUG-level JSON Lines to PATH",
+    )
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    _bili_logging.configure_logging(
+        verbose=args.verbose,
+        quiet=args.quiet,
+        log_file=Path(args.log_file) if args.log_file else None,
     )
 
     if args.login:
@@ -229,7 +252,22 @@ def main() -> None:
     if args.query:
         asyncio.run(_run_query(args.uid))
     else:
-        asyncio.run(_run_fetch(args.uid, args.endpoints, mode=args.mode))
+        if args.endpoints is not None and args.exclude_endpoints is not None:
+            parser.error("--endpoints/-e and --exclude-endpoints/-x are mutually exclusive")
+        endpoints = args.endpoints
+        if endpoints is None and args.exclude_endpoints is not None:
+            from .client import ENDPOINTS
+            all_eps = [ep.name for ep in ENDPOINTS]
+            excluded = set(args.exclude_endpoints)
+            unknown = [n for n in args.exclude_endpoints if n not in set(all_eps)]
+            if unknown:
+                parser.error(
+                    f"unknown endpoint(s) in --exclude-endpoints: {', '.join(unknown)}",
+                )
+            endpoints = [n for n in all_eps if n not in excluded]
+            if not endpoints:
+                parser.error("--exclude-endpoints removed every endpoint; nothing to fetch")
+        asyncio.run(_run_fetch(args.uid, endpoints, mode=args.mode))
 
 
 if __name__ == "__main__":
