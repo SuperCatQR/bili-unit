@@ -1,0 +1,32 @@
+# Secrets
+.env
+
+# Tool / IDE metadata
+.codegraph/
+.workbuddy/
+
+# Test coverage
+.coverage
+htmlcov/
+
+# Windows artifacts
+nul
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Runtime data (defaults to data/bili/... under cwd)
+data/
+temp/
+error/
+
+# Claude Code local settings
+.claude/settings.local.json
