@@ -58,7 +58,7 @@ source_data → unit → bili
 ```text
 auth         获取 / 校验 / 提供可用认证；认证异常写入 error
 env          保存认证配置
-client       抓取脚本；Credential 由 auth 提供；只依据 api_info 调用 bilibili-api-python
+client       抓取脚本；Credential 由 auth 提供；只依据 bili-api-info 调用 bilibili-api-python
 rate_limit   控制请求频率与并发；限流状态写入 data，限流异常写入 error
 task         定义任务状态形状与枚举；任务状态持久化在 data，由 runner 读写
 runner       根据任务状态与错误状态编排抓取执行 / 重试
@@ -104,8 +104,8 @@ query        只读视图入口；读取 data / error
 ## 5. 管线对象
 
 ```text
-来源   docs/api_info/modules/user.md + docs/api_info/modules/video.md
-范围   api_info 中和目标用户 uid 有关的读取接口（uid-level），以及从 uid 抓取结果派生的 item-level 读取接口
+来源   docs/bili-api-info/modules/user.md + docs/bili-api-info/modules/video.md
+范围   bili-api-info 中和目标用户 uid 有关的读取接口（uid-level），以及从 uid 抓取结果派生的 item-level 读取接口
 单位   目标用户 uid
 分类   如下
 ```
@@ -177,7 +177,7 @@ data 存储
 ```text
 不处理抓取结果语义（在处理阶段处理）
 不固定用户相关接口清单
-不使用 api_info 之外的抓取能力
+不使用 bili-api-info 之外的抓取能力
 不跨 unit 聚合
 不做跨源归一化 / 清洗（归 index.ingestion）
 不推送
@@ -206,7 +206,7 @@ temp 处理完成后删除
 
 ```text
 bilibili-api-python [GitHub](https://github.com/nemo2011/bilibili-api)
-api_info 作为抓取脚本唯一依据
+bili-api-info 作为抓取脚本唯一依据
 Credential 认证
 Bilibili CDN        视频音频流下载
 ASR 引擎             语音转文字

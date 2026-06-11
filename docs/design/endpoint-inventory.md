@@ -1,15 +1,20 @@
 # 接口清单 — B站用户数据抓取完整端点设计
 
-> 性质：设计决策。本文从 `docs/research/api_info` 中提取所有 `User(uid)` / `Video(bvid)` 只读接口，
+> ⚠️ **状态：废弃（DEPRECATED）**
+>
+> 本文为早期端点选型记录，**不再维护**。已实现的端点清单与状态以 [docs/feature/fetching.md](../feature/fetching.md) §端点注册表
+> 为唯一真相源。本文与现状不一致时按 feature 为准。新增端点请直接更新 feature 文档。
+
+> 性质：设计决策。本文从 `docs/bili-api-info` 中提取所有 `User(uid)` / `Video(bvid)` 只读接口，
 > 划定 fetching 层的完整抓取范围，并标注实现优先级。
 > 关联文档：`docs/design/fetching.md` §10（endpoint registry 设计）、`docs/feature/fetching.md` §端点注册表（已实现状态）
 
 ## 1. 设计原则
 
 ```text
-来源        docs/research/api_info/modules/user.md（User 类 40 个方法）
-            docs/research/api_info/modules/video.md（Video 类 ~40 个方法）
-            docs/research/api_info/modules/ 下关联模块（dynamic, channel_series, article, comment）
+来源        docs/bili-api-info/modules/user.md（User 类 40 个方法）
+            docs/bili-api-info/modules/video.md（Video 类 ~40 个方法）
+            docs/bili-api-info/modules/ 下关联模块（dynamic, channel_series, article, comment）
 范围        User(uid) 只读接口 + Video(bvid) 只读接口（item-level fan-out）
 排除        所有写接口；模块级函数（get_self_*、name2uid 等）；内部令牌/同步方法；
             以及下方 §3 明确排除的端点

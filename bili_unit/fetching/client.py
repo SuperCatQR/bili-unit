@@ -10,6 +10,7 @@ from bilibili_api import Credential, request_settings, select_client, user
 from bilibili_api.article import Article
 from bilibili_api.channel_series import ChannelOrder
 from bilibili_api.exceptions import ApiException, NetworkException, ResponseCodeException
+from bilibili_api.opus import Opus
 from bilibili_api.video import Video
 
 from . import (
@@ -288,6 +289,141 @@ async def fetch_article_detail_item(
         "info": info,
         "markdown": markdown_text,
         "content_json": content_json,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Item-level fan-out helpers — opus_detail (per-opus_id body)
+# ---------------------------------------------------------------------------
+
+
+def _extract_opus_ids_from_opus(raw_payload: dict) -> list[str]:
+    """Extract all opus_ids from opus endpoint raw_payload (pages shape).
+
+    The opus endpoint paginates with shape ``{pages: [{items: [...], offset, has_more}]}``;
+    each ``items[*].opus_id`` is the opus_id (string-ish) — we coerce to ``str``
+    for stable IDs across pages.
+    """
+    ids: list[str] = []
+    for page in raw_payload.get("pages", []) or []:
+        if not isinstance(page, dict):
+            continue
+        for it in page.get("items", []) or []:
+            if not isinstance(it, dict):
+                continue
+            oid = it.get("opus_id")
+            if oid is not None:
+                ids.append(str(oid))
+    return ids
+
+
+async def fetch_opus_detail_item(
+    opus_id: str,
+    credential: Credential | None,
+    timeout: float = 30.0,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """Fetch opus body + info for a single opus_id.
+
+    Returns ``{"info": ..., "markdown": "...", "images": [...]}``.
+    ``info`` is the opus detail payload (modules, basic, stats, etc.);
+    ``markdown`` is the rendered body via ``Opus.markdown()``;
+    ``images`` is the raw image-info list (URL, width, height, ...) which
+    callers need without re-walking ``modules.module_content.paragraphs``.
+
+    Per docs/bili-api-info/modules/opus.md: ``markdown()`` /
+    ``get_images_raw_info()`` internally call ``get_info()`` and read from
+    its cached state — we still call ``get_info()`` once explicitly so that
+    a missing opus surfaces as a clean failure before we touch the body.
+    """
+    try:
+        opus_id_int = int(opus_id)
+    except (TypeError, ValueError) as exc:
+        raise RequestError(f"opus_detail[{opus_id}]: invalid opus_id: {exc}") from exc
+
+    o = Opus(opus_id_int, credential=credential)
+
+    try:
+        info = await asyncio.wait_for(o.get_info(), timeout=timeout)
+    except TimeoutError as exc:
+        raise Http5xxError(
+            f"opus_detail[{opus_id}]: get_info timeout after {timeout}s",
+        ) from exc
+    except ResponseCodeException as exc:
+        if exc.code == 412:
+            raise Http412Error(f"opus_detail[{opus_id}]: get_info 412") from exc
+        if exc.code in _PERMANENT_BUSINESS_CODES:
+            raise ResourceUnavailableError(
+                f"opus_detail[{opus_id}]: get_info code={exc.code}: {exc.msg}",
+            ) from exc
+        raise RequestError(
+            f"opus_detail[{opus_id}]: get_info code={exc.code}: {exc.msg}",
+        ) from exc
+    except NetworkException as exc:
+        raise Http5xxError(
+            f"opus_detail[{opus_id}]: get_info network error {exc}",
+        ) from exc
+    except ApiException as exc:
+        # ``Opus.get_info`` raises ArgsException("传入的 opus_id 不正确") when
+        # the API returns a fallback marker — that is a terminal state, not a
+        # retryable network failure.
+        if "opus_id 不正确" in str(exc) or "fallback" in str(exc).lower():
+            raise ResourceUnavailableError(
+                f"opus_detail[{opus_id}]: opus unavailable ({exc})",
+            ) from exc
+        raise RequestError(f"opus_detail[{opus_id}]: get_info {exc}") from exc
+    except Exception as exc:
+        raise RequestError(
+            f"opus_detail[{opus_id}]: get_info unexpected: {exc}",
+        ) from exc
+
+    try:
+        markdown_text: str = await asyncio.wait_for(o.markdown(), timeout=timeout)
+        images: list[dict[str, Any]] = await asyncio.wait_for(
+            o.get_images_raw_info(), timeout=timeout,
+        )
+    except TimeoutError as exc:
+        raise Http5xxError(
+            f"opus_detail[{opus_id}]: markdown/images timeout after {timeout}s",
+        ) from exc
+    except ResponseCodeException as exc:
+        if exc.code == 412:
+            raise Http412Error(
+                f"opus_detail[{opus_id}]: markdown 412",
+            ) from exc
+        if exc.code in _PERMANENT_BUSINESS_CODES:
+            raise ResourceUnavailableError(
+                f"opus_detail[{opus_id}]: markdown code={exc.code}: {exc.msg}",
+            ) from exc
+        raise RequestError(
+            f"opus_detail[{opus_id}]: markdown code={exc.code}: {exc.msg}",
+        ) from exc
+    except NetworkException as exc:
+        raise Http5xxError(
+            f"opus_detail[{opus_id}]: markdown network error {exc}",
+        ) from exc
+    except ApiException as exc:
+        raise RequestError(
+            f"opus_detail[{opus_id}]: markdown {exc}",
+        ) from exc
+    except KeyError as exc:
+        # ``markdown()`` walks ``info.item.modules`` and indexes nested keys;
+        # an unexpected page shape (taken-down opus, schema drift) leaks a
+        # bare ``KeyError`` — surface as permanent, the same way article_detail
+        # treats a missing ``readInfo``.
+        raise ResourceUnavailableError(
+            f"opus_detail[{opus_id}]: markdown missing key {exc} "
+            f"(opus unavailable / shape changed)",
+        ) from exc
+    except Exception as exc:
+        raise RequestError(
+            f"opus_detail[{opus_id}]: markdown unexpected: {exc}",
+        ) from exc
+
+    return {
+        "info": info,
+        "markdown": markdown_text,
+        "images": images,
     }
 
 
@@ -577,6 +713,17 @@ def _build_endpoints() -> list[EndpointSpec]:
             kind="item",
             source_endpoint="articles",
             extract_items=_extract_cvids_from_articles,
+        ),
+        # --- item-level fan-out: opus_detail (图文正文 + 图片清单) ---
+        EndpointSpec(
+            name="opus_detail",
+            callable=fetch_opus_detail_item,
+            credential_required=False,
+            pagination_strategy="none",
+            rate_limit_key="opus_detail",
+            kind="item",
+            source_endpoint="opus",
+            extract_items=_extract_opus_ids_from_opus,
         ),
         # ================================================================
         # T2 — uid-level, none pagination

@@ -1,5 +1,11 @@
 # bili unit fetching design
 
+> ⚠️ **状态：废弃（DEPRECATED）**
+>
+> 本文为早期设计稿，**不再维护**。代码现状以 [docs/feature/fetching.md](../feature/fetching.md) 为唯一真相源，
+> 结构约束以 [docs/structure/bili.md](../structure/bili.md) 为准。本文与现状不一致时按 feature/structure 为准。
+> 若需查阅最初的技术选型与设计推理，可保留参考；新增改动请直接更新 feature 文档。
+
 > 性质：实现设计。本文记录 `bili` fetching 层的技术选型、设计决策与设计规则。
 > 约束文档：`docs/structure/bili.md` 为绝对约束，本设计不与之冲突。
 > 代码现状：`docs/feature/fetching.md` 为真相源，记录代码实际能力。
@@ -22,7 +28,7 @@ docs/design → bili → fetching
 上游文档  docs/structure/unit.md
 结构约束  docs/structure/bili.md
 代码现状  docs/feature/fetching.md
-外部依赖  docs/api_info/（bilibili-api-python）
+外部依赖  docs/bili-api-info/（bilibili-api-python）
 ```
 
 ## 2. 设计定位
@@ -258,8 +264,8 @@ error 只记录错误状态，不编排重试。
 ```text
 位置              client 模块
 性质              抓取接口描述表；不是固定最终接口清单
-来源              docs/api_info/modules/user.md 中 User(uid) 相关读取接口（uid-level）
-                  docs/api_info/modules/video.md 中 Video(bvid) 相关读取接口（item-level fan-out）
+来源              docs/bili-api-info/modules/user.md 中 User(uid) 相关读取接口（uid-level）
+                  docs/bili-api-info/modules/video.md 中 Video(bvid) 相关读取接口（item-level fan-out）
 ```
 
 ```text
@@ -324,7 +330,7 @@ endpoint 类型
 
 video_detail 作为 item-level fan-out endpoint，从 videos 结果中提取 bvid 列表，逐个调用 `Video(bvid)` 方法获取完整信息。
 
-**API 范围**：`docs/api_info/modules/video.md` → `Video(bvid, credential=...)`
+**API 范围**：`docs/bili-api-info/modules/video.md` → `Video(bvid, credential=...)`
 
 入选 API：
 - `get_info() → dict` — 视频完整信息（desc, stat, pages, label, subtitle, rights, owner 等）
@@ -539,26 +545,26 @@ item-level endpoint 特有约束
   video_detail 的失败不影响 videos 的状态
 ```
 
-## 16. api_info 对照
+## 16. bili-api-info 对照
 
 ```text
-全异步                                          asyncio 运行时                          [api_info: README]
-412 限流风险                                    rate_limit + runner                    [api_info: README FAQ]
-curl_cffi > aiohttp > httpx 优先级              anti-detect extra + aiohttp 默认依赖     [api_info: request_client.md §1]
-_prepare_request 自动 WBI 加密                  rate_limit 不重复此逻辑                  [api_info: request_client.md §2.1]
-impersonate 默认空值                            client 默认 chrome131，可配置覆盖         [api_info: README L165-171]
-wbi_retry_times 默认 3                          不干预库的 WBI 重试                      [api_info: configuration.md]
-enable_auto_buvid 默认 True                     接受默认                                [api_info: configuration.md]
-enable_bili_ticket 默认 False                   暂不开启                                [api_info: configuration.md]
-request_log AsyncEvent                          logging 标准库同技术栈                   [api_info: configuration.md]
-Cookie 从浏览器 F12 手动复制                    env 存 .env，用户手动维护                [api_info: get-credential.md]
-Credential 字段包括 dedeuserid/buvid4 等         env 预留字段                             [api_info: get-credential.md]
-credential.refresh() + check_refresh()          auth 会话级刷新                          [api_info: refresh_cookies.md]
-asyncio.sleep(1) 防 412 示例                    初始 QPS 保守                            [api_info: examples/user.md L100-101]
-get_videos(pn, ps) 页码分页                     progress 存 next_request                 [api_info: examples/user.md]
-get_dynamics_new(offset) 游标分页               progress 存 next_request                 [api_info: examples/user.md]
-库不自动翻页                                    client + endpoint registry 负责循环       [api_info: examples/user.md 分页示例]
-proxy / timeout / verify_ssl 可设               保留可配置，初始默认                      [api_info: configuration.md]
+全异步                                          asyncio 运行时                          [bili-api-info: README]
+412 限流风险                                    rate_limit + runner                    [bili-api-info: README FAQ]
+curl_cffi > aiohttp > httpx 优先级              anti-detect extra + aiohttp 默认依赖     [bili-api-info: request_client.md §1]
+_prepare_request 自动 WBI 加密                  rate_limit 不重复此逻辑                  [bili-api-info: request_client.md §2.1]
+impersonate 默认空值                            client 默认 chrome131，可配置覆盖         [bili-api-info: README L165-171]
+wbi_retry_times 默认 3                          不干预库的 WBI 重试                      [bili-api-info: configuration.md]
+enable_auto_buvid 默认 True                     接受默认                                [bili-api-info: configuration.md]
+enable_bili_ticket 默认 False                   暂不开启                                [bili-api-info: configuration.md]
+request_log AsyncEvent                          logging 标准库同技术栈                   [bili-api-info: configuration.md]
+Cookie 从浏览器 F12 手动复制                    env 存 .env，用户手动维护                [bili-api-info: get-credential.md]
+Credential 字段包括 dedeuserid/buvid4 等         env 预留字段                             [bili-api-info: get-credential.md]
+credential.refresh() + check_refresh()          auth 会话级刷新                          [bili-api-info: refresh_cookies.md]
+asyncio.sleep(1) 防 412 示例                    初始 QPS 保守                            [bili-api-info: examples/user.md L100-101]
+get_videos(pn, ps) 页码分页                     progress 存 next_request                 [bili-api-info: examples/user.md]
+get_dynamics_new(offset) 游标分页               progress 存 next_request                 [bili-api-info: examples/user.md]
+库不自动翻页                                    client + endpoint registry 负责循环       [bili-api-info: examples/user.md 分页示例]
+proxy / timeout / verify_ssl 可设               保留可配置，初始默认                      [bili-api-info: configuration.md]
 ```
 
 ## 17. 开发顺序

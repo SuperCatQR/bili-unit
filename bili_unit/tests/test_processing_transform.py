@@ -5,6 +5,8 @@ from bili_unit.processing.transform import (
     articles,
     dynamics,
     get_handler,
+    opus,
+    user_profile,
     video_metadata,
 )
 
@@ -255,10 +257,230 @@ def test_articles_handler_extract_and_transform():
     assert out0["stats"]["like"] == 2
     assert out0["stats"]["reply"] == 0  # default
     assert out0["ctime"] == 1700000000
+    # No detail attached → empty markdown / content_json / zero word count.
+    assert out0["markdown"] == ""
+    assert out0["content_json"] == []
+    assert out0["word_count"] == 0
 
     out1 = h.transform(items[1])
     assert out1["title"] == "Second"
     assert out1["stats"]["view"] == 0
+
+
+def test_articles_handler_attaches_article_detail():
+    """When article_detail raw_payloads are supplied, transform emits markdown / content_json / word_count."""
+    raw_articles = {
+        "pages": [
+            {"articles": [
+                {"id": 100, "title": "with-body"},
+                {"id": 200, "title": "no-detail"},
+            ]},
+        ],
+    }
+    raw_details = {
+        "100": {
+            "info": {"id": 100, "title": "with-body"},
+            "markdown": "正文一段话。",
+            "content_json": [{"type": "ParagraphNode", "text": "正文一段话。"}],
+        },
+        # 200 has no detail → fallback path
+    }
+    h = articles.HANDLER
+    items = h.extract_items({
+        "articles": raw_articles,
+        "article_detail": raw_details,
+    })
+    assert [it.item_id for it in items] == ["100", "200"]
+
+    enriched = h.transform(items[0])
+    assert enriched["markdown"] == "正文一段话。"
+    assert enriched["content_json"] == [
+        {"type": "ParagraphNode", "text": "正文一段话。"},
+    ]
+    assert enriched["word_count"] == len("正文一段话。")
+
+    fallback = h.transform(items[1])
+    assert fallback["markdown"] == ""
+    assert fallback["content_json"] == []
+    assert fallback["word_count"] == 0
+
+
+def test_articles_handler_tolerates_legacy_bare_dict_item_data():
+    """Hand-crafted WorkItem with bare list-level dict still transforms correctly."""
+    from bili_unit.processing.transform._base import WorkItem
+
+    legacy_item = WorkItem(
+        item_type="articles",
+        item_id="900",
+        item_data={
+            "id": 900,
+            "title": "legacy",
+            "summary": "s",
+            "stats": {"view": 1},
+        },
+    )
+    out = articles.HANDLER.transform(legacy_item)
+    assert out["id"] == "900"
+    assert out["title"] == "legacy"
+    assert out["markdown"] == ""
+
+
+# ---------- opus ---------------------------------------------------------
+
+def test_opus_handler_extract_and_transform_list_only():
+    """List-level only (no opus_detail) — markdown / images empty, ctime / stats present."""
+    raw = {
+        "pages": [
+            {
+                "items": [
+                    {
+                        "opus_id": "100",
+                        "title": "图文一",
+                        "summary": "summary text",
+                        "cover": "https://i0.hdslb.com/c.jpg",
+                        "stats": {"view": 10, "like": 2},
+                        "pub_time": 1700000000,
+                        "jump_url": "//opus.bilibili.com/100",
+                    },
+                    {
+                        "opus_id": 200,
+                        "title": "图文二",
+                        "summary": "",
+                        "stats": {},
+                    },
+                    {"title": "no-id-skipped"},
+                ],
+            },
+        ],
+    }
+    h = opus.HANDLER
+    items = h.extract_items({"opus": raw})
+    # opus_id may be int or str — extract_items coerces to str.
+    assert [it.item_id for it in items] == ["100", "200"]
+
+    out0 = h.transform(items[0])
+    assert out0["id"] == "100"
+    assert out0["title"] == "图文一"
+    assert out0["summary"] == "summary text"
+    assert out0["image_urls"] == ["https://i0.hdslb.com/c.jpg"]
+    assert out0["stats"]["view"] == 10
+    assert out0["stats"]["like"] == 2
+    assert out0["stats"]["reply"] == 0  # default
+    assert out0["ctime"] == 1700000000
+    assert out0["jump_url"] == "//opus.bilibili.com/100"
+    # No detail attached → empty markdown / images / zero word count.
+    assert out0["markdown"] == ""
+    assert out0["images"] == []
+    assert out0["word_count"] == 0
+
+    out1 = h.transform(items[1])
+    assert out1["title"] == "图文二"
+    assert out1["stats"]["view"] == 0
+    assert out1["image_urls"] == []  # no cover, no body pics
+
+
+def test_opus_handler_attaches_opus_detail():
+    """When opus_detail raw_payloads are supplied, transform emits markdown / images / word_count."""
+    raw_opus = {
+        "pages": [
+            {"items": [
+                {"opus_id": "300", "title": "with-body"},
+                {"opus_id": "400", "title": "no-detail"},
+            ]},
+        ],
+    }
+    raw_details = {
+        "300": {
+            "info": {"item": {"basic": {}, "modules": []}},
+            "markdown": "正文一段话。",
+            "images": [
+                {"url": "https://i0.hdslb.com/x.jpg", "width": 100, "height": 80},
+            ],
+        },
+        # 400 has no detail → fallback path
+    }
+    h = opus.HANDLER
+    items = h.extract_items({
+        "opus": raw_opus,
+        "opus_detail": raw_details,
+    })
+    assert [it.item_id for it in items] == ["300", "400"]
+
+    enriched = h.transform(items[0])
+    assert enriched["markdown"] == "正文一段话。"
+    assert enriched["images"] == [
+        {"url": "https://i0.hdslb.com/x.jpg", "width": 100, "height": 80},
+    ]
+    assert enriched["image_urls"] == ["https://i0.hdslb.com/x.jpg"]
+    assert enriched["word_count"] == len("正文一段话。")
+
+    fallback = h.transform(items[1])
+    assert fallback["markdown"] == ""
+    assert fallback["images"] == []
+    assert fallback["word_count"] == 0
+
+
+def test_opus_handler_extracts_summary_from_modules_when_list_summary_empty():
+    """If list-level ``summary`` is empty, fall back to module_dynamic.major.opus.summary.text."""
+    raw = {
+        "pages": [
+            {"items": [
+                {
+                    "opus_id": "500",
+                    "title": "modules-only",
+                    "summary": "",
+                    "modules": {
+                        "module_dynamic": {
+                            "major": {
+                                "opus": {
+                                    "summary": {"text": "fallback summary"},
+                                    "pics": [
+                                        {"url": "https://i0.hdslb.com/p1.jpg"},
+                                        {"url": "https://i0.hdslb.com/p2.jpg"},
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                },
+            ]},
+        ],
+    }
+    items = opus.HANDLER.extract_items({"opus": raw})
+    out = opus.HANDLER.transform(items[0])
+    assert out["summary"] == "fallback summary"
+    # No detail → image_urls comes from list-level pics.
+    assert out["image_urls"] == [
+        "https://i0.hdslb.com/p1.jpg",
+        "https://i0.hdslb.com/p2.jpg",
+    ]
+
+
+def test_opus_handler_tolerates_legacy_bare_dict_item_data():
+    """Hand-crafted WorkItem with bare list-level dict still transforms correctly."""
+    from bili_unit.processing.transform._base import WorkItem
+
+    legacy_item = WorkItem(
+        item_type="opus",
+        item_id="900",
+        item_data={
+            "opus_id": 900,
+            "title": "legacy",
+            "summary": "s",
+            "stats": {"view": 1},
+        },
+    )
+    out = opus.HANDLER.transform(legacy_item)
+    assert out["id"] == "900"
+    assert out["title"] == "legacy"
+    assert out["summary"] == "s"
+    assert out["markdown"] == ""
+
+
+def test_opus_handler_empty_payload():
+    assert opus.HANDLER.extract_items({}) == []
+    assert opus.HANDLER.extract_items({"opus": {}}) == []
+    assert opus.HANDLER.extract_items({"opus": {"pages": []}}) == []
 
 
 # ---------- registry -----------------------------------------------------
@@ -267,10 +489,169 @@ def test_registry_lookup_and_iter():
     assert "video_metadata" in HANDLERS
     assert "dynamics" in HANDLERS
     assert "articles" in HANDLERS
+    assert "opus" in HANDLERS
+    assert "user_profile" in HANDLERS
     assert get_handler("video_metadata") is video_metadata.HANDLER
     assert get_handler("dynamics") is dynamics.HANDLER
     assert get_handler("articles") is articles.HANDLER
+    assert get_handler("opus") is opus.HANDLER
+    assert get_handler("user_profile") is user_profile.HANDLER
     assert get_handler("nonexistent") is None
     names = HANDLERS.names()
-    assert set(names) >= {"video_metadata", "dynamics", "articles"}
-    assert len(HANDLERS) == 3
+    assert set(names) >= {"video_metadata", "dynamics", "articles", "opus", "user_profile"}
+    assert len(HANDLERS) == 5
+
+
+# ---------- user_profile -------------------------------------------------
+
+def _user_info(**overrides):
+    base = {
+        "mid": 13991807,
+        "name": "测试 UP",
+        "sex": "男",
+        "sign": "测试签名",
+        "face": "https://i0.hdslb.com/u.jpg",
+        "birthday": "06-11",
+        "level": 6,
+        "vip": {"type": 1, "status": 1, "label": {"text": "年度大会员"}},
+        "jointime": 1500000000,
+    }
+    base.update(overrides)
+    return base
+
+
+def _relation_info(**overrides):
+    base = {"following": 120, "follower": 50000, "whisper": 0, "black": 0}
+    base.update(overrides)
+    return base
+
+
+def _up_stat(**overrides):
+    base = {
+        "archive": {"view": 12345678},
+        "article": {"view": 1234},
+        "likes": 654321,
+    }
+    base.update(overrides)
+    return base
+
+
+def _overview_stat(**overrides):
+    base = {"video": 77, "article": 1, "opus": 64}
+    base.update(overrides)
+    return base
+
+
+def test_user_profile_handler_full_happy_path():
+    h = user_profile.HANDLER
+    raw = {
+        "user_info": _user_info(),
+        "relation_info": _relation_info(),
+        "up_stat": _up_stat(),
+        "overview_stat": _overview_stat(),
+    }
+    items = h.extract_items(raw)
+    assert len(items) == 1
+    assert items[0].item_type == "user_profile"
+    assert items[0].item_id == "13991807"
+
+    out = h.transform(items[0])
+    assert out["uid"] == 13991807
+    assert out["name"] == "测试 UP"
+    assert out["sex"] == "男"
+    assert out["sign"] == "测试签名"
+    assert out["avatar"] == "https://i0.hdslb.com/u.jpg"
+    assert out["birthday"] == "06-11"
+    assert out["level"] == 6
+    assert out["vip"] == {"type": 1, "status": 1, "label": "年度大会员"}
+    assert out["join_time"] == 1500000000
+    assert out["social"] == {
+        "following": 120, "follower": 50000, "whisper": 0, "black": 0,
+    }
+    assert out["stats"] == {
+        "archive_view": 12345678, "article_view": 1234, "likes": 654321,
+    }
+    assert out["overview"] == {"video_count": 77, "article_count": 1, "opus_count": 64}
+
+
+def test_user_profile_handler_omits_overview_when_missing():
+    h = user_profile.HANDLER
+    # No overview_stat at all (runner drops optional endpoint when unavailable).
+    items = h.extract_items({
+        "user_info": _user_info(),
+        "relation_info": _relation_info(),
+        "up_stat": _up_stat(),
+    })
+    assert len(items) == 1
+    out = h.transform(items[0])
+    assert "overview" not in out
+    # Required fields still present.
+    assert out["uid"] == 13991807
+    assert out["stats"]["likes"] == 654321
+
+    # Empty overview_stat dict should also omit (treated as "not available").
+    items2 = h.extract_items({
+        "user_info": _user_info(),
+        "relation_info": _relation_info(),
+        "up_stat": _up_stat(),
+        "overview_stat": {},
+    })
+    assert "overview" not in h.transform(items2[0])
+
+
+def test_user_profile_handler_skips_when_required_missing():
+    h = user_profile.HANDLER
+    base = {
+        "user_info": _user_info(),
+        "relation_info": _relation_info(),
+        "up_stat": _up_stat(),
+    }
+    # Each required endpoint absent → empty list.
+    for ep in ("user_info", "relation_info", "up_stat"):
+        sub = {k: v for k, v in base.items() if k != ep}
+        assert h.extract_items(sub) == []
+    # Empty raw_payload for a required endpoint → empty list.
+    for ep in ("user_info", "relation_info", "up_stat"):
+        sub = dict(base)
+        sub[ep] = {}
+        assert h.extract_items(sub) == []
+    # Wholly empty input.
+    assert h.extract_items({}) == []
+
+
+def test_user_profile_handler_tolerates_field_gaps():
+    h = user_profile.HANDLER
+    # user_info has only mid; everything else missing.
+    items = h.extract_items({
+        "user_info": {"mid": 42},
+        "relation_info": {},  # empty dict counts as missing for required → skipped
+        "up_stat": _up_stat(),
+    })
+    # relation_info empty → skipped (matches "endpoint 缺失或 raw_payload 为空" rule).
+    assert items == []
+
+    # Now provide minimal but non-empty payloads for required endpoints.
+    items = h.extract_items({
+        "user_info": {"mid": 42},
+        "relation_info": {"_": 1},  # non-empty but missing typed fields
+        "up_stat": {"_": 1},
+    })
+    assert len(items) == 1
+    out = h.transform(items[0])
+    assert out["uid"] == 42
+    # String fields default to "".
+    assert out["name"] == ""
+    assert out["sign"] == ""
+    assert out["birthday"] == ""
+    assert out["avatar"] == ""
+    assert out["sex"] == ""
+    # Numeric fields default to 0.
+    assert out["level"] == 0
+    assert out["join_time"] == 0
+    # vip degrades to {type:0, status:0} when user_info has no vip block.
+    assert out["vip"] == {"type": 0, "status": 0}
+    # social / stats default to all-0 dicts.
+    assert out["social"] == {"following": 0, "follower": 0, "whisper": 0, "black": 0}
+    assert out["stats"] == {"archive_view": 0, "article_view": 0, "likes": 0}
+    # overview_stat absent → no key in result.
+    assert "overview" not in out

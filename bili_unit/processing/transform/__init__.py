@@ -7,7 +7,7 @@
 #   - 确定性：相同输入 → 相同输出
 #   - 可独立测试
 
-from . import _base, articles, dynamics, video_metadata
+from . import _base, articles, dynamics, opus, user_profile, video_metadata
 from ._base import TransformHandler, WorkItem
 from ._registry import HANDLERS, get_handler
 
@@ -19,5 +19,7 @@ __all__ = [
     "articles",
     "dynamics",
     "get_handler",
+    "opus",
+    "user_profile",
     "video_metadata",
 ]

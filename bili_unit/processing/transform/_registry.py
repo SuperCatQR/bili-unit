@@ -10,11 +10,13 @@ if TYPE_CHECKING:
 
 def _build_registry() -> dict[str, TransformHandler]:
     # Lazy import to avoid circular imports during module load.
-    from . import articles, dynamics, video_metadata
+    from . import articles, dynamics, opus, user_profile, video_metadata
     return {
         video_metadata.HANDLER.item_type: video_metadata.HANDLER,
         dynamics.HANDLER.item_type: dynamics.HANDLER,
         articles.HANDLER.item_type: articles.HANDLER,
+        opus.HANDLER.item_type: opus.HANDLER,
+        user_profile.HANDLER.item_type: user_profile.HANDLER,
     }
 
 

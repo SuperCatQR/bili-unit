@@ -1,5 +1,11 @@
 # bili unit processing design
 
+> ⚠️ **状态：废弃（DEPRECATED）**
+>
+> 本文为早期设计稿，**不再维护**。代码现状以 [docs/feature/processing.md](../feature/processing.md) 为唯一真相源，
+> 结构约束以 [docs/structure/bili.md](../structure/bili.md) 为准。本文与现状不一致时按 feature/structure 为准。
+> 若需查阅最初的技术选型与设计推理，可保留参考；新增改动请直接更新 feature 文档。
+
 > 性质：实现设计。本文记录 `bili` processing 层的技术选型、设计决策与设计规则。
 > 约束文档：`docs/structure/bili.md` §4/§6/§8 为绝对约束，本设计不与之冲突。
 > 代码现状：`docs/feature/processing.md` 为真相源，记录代码实际能力。
@@ -415,6 +421,53 @@ transform handler 接口：
       source_endpoints: list[str]              依赖的 fetching endpoint 列表
       extract_items(raw_payload) -> list[tuple[str, dict]]  从 raw_payload 提取 (item_id, item_data) 列表
       transform(item_id, item_data) -> dict    执行转换，返回 result dict
+
+可选端点（optional_endpoints）：
+  handler 可附加一个 ``optional_endpoints: tuple[str, ...]``（属于
+  source_endpoints 的子集）。runner 在 Phase 0 发现时，如果某个 optional
+  endpoint 不可用（PENDING / FAILED_*），不阻塞该 handler 入队，仅把该
+  endpoint 从 raw_payloads 中省略；handler 自行决定是否输出对应的可选字段。
+  必填端点（source_endpoints \\ optional_endpoints）任一不可用，仍按
+  §10.1 规则跳过整个 handler。
+```
+
+### 6.6 user_profile transform
+
+```text
+输入来源
+  四个 uid-level endpoint 的 raw_payload：
+    user_info       昵称、性别、签名、头像、生日、level、vip、jointime
+    relation_info   following / follower / whisper / black 计数
+    up_stat         archive.view / article.view / likes
+    overview_stat   video / article / opus 投稿计数（可选）
+
+处理逻辑
+  1. extract_items 接收 raw_payloads = {endpoint_name: raw_payload}
+  2. 必填三个端点（user_info / relation_info / up_stat）任一缺失或为空 → 返回 []
+  3. user_info.mid 缺失 → 返回 []
+  4. 否则产出唯一一个 WorkItem(item_id = str(uid))
+  5. transform 把 raw_payloads 整体作为 item_data，按 §4 schema 平铺为 result dict
+
+输出
+  每个 uid 一个结构化 dict（详见上层文档 §4 schema）：
+    身份字段     uid / name / sex / sign / avatar / birthday
+    画像字段     level / vip / join_time
+    社交计数     social = {following, follower, whisper, black}
+    创作统计     stats = {archive_view, article_view, likes}
+    投稿统计     overview = {video_count, article_count, opus_count}（可选）
+
+容错规则
+  - overview_stat 缺失或为空 → result 不含 overview 键（不写 null / {}），
+    让 ingestion 通过键存在性判断
+  - vip 字段块缺失 → 降级为 {"type": 0, "status": 0}
+  - 字符串字段（name / sign / birthday / avatar / sex）缺失 → 空字符串
+  - 数值字段（level / jointime / social / stats）缺失 → 0
+  - vip.label 在 acc/info 接口为 dict({text, ...})，兼容老版字符串
+
+注意
+  user_profile 不在 ingestion / KG 之外消费实时排行、装饰类（pendant /
+  nameplate / honours）、隐私受限类（user_medal / all_followings）等字段；
+  fetching 已存原始数据，需要时再单独提需求。
 ```
 
 ## 7. Audio 流水线设计
@@ -491,18 +544,26 @@ HTTP 下载
 API 信息
   Endpoint    POST {BASE_URL}/chat/completions
   Model       mimo-v2.5-asr
-  Auth        Header: api-key: $MIMO_API_KEY
-              （或 Authorization: Bearer $MIMO_API_KEY）
+  Auth        Header: api-key: $MIMO_API_KEY            （默认 auth_style）
+              或    Authorization: Bearer $MIMO_API_KEY（auth_style="bearer"，
+                                                        中转站常用）
   格式兼容    OpenAI Chat Completions 兼容；ASR 走 chat completion 形态
               （`input_audio` 内容部分，base64 data URI）
 
-Token Plan API Key（tp-*）的 BASE_URL（按区域绑定）
-  cn  https://token-plan-cn.xiaomimimo.com/v1   ← 默认
-  sgp https://token-plan-sgp.xiaomimimo.com/v1
-  ams https://token-plan-ams.xiaomimimo.com/v1
+Profile 模型（配置心智单一来源）
+  用户选 profile 名，runtime 解析 BASE_URL；不需要记 host：
+    token_plan_cn   https://token-plan-cn.xiaomimimo.com/v1   （默认；tp-* keys）
+    token_plan_sgp  https://token-plan-sgp.xiaomimimo.com/v1
+    token_plan_ams  https://token-plan-ams.xiaomimimo.com/v1
+    pay_as_you_go   https://api.xiaomimimo.com/v1             （按量付费 sk-* keys）
+    custom          BILI_PROCESSING_ASR_BASE_URL 必填          （中转站 / 自建）
 
-按量付费 API Key（sk-*）使用 https://api.xiaomimimo.com/v1
-两种 key 不可互换；用错域名返回 401 Invalid API Key（实测确认）。
+  Token Plan key（tp-*）和按量付费 key（sk-*）不可互换；用错域名返回 401
+  Invalid API Key（实测确认）。custom profile 配 auth_style="bearer" 是中转站
+  最常见的组合（绝大多数中转只支持 OpenAI 风格 Bearer 鉴权）。
+
+  Profile → URL 映射写在 _mimo_backend.PROFILE_BASE_URLS 单点；新集群上线只
+  需补一行。
 ```
 
 ```text
@@ -563,10 +624,27 @@ Token Plan API Key（tp-*）的 BASE_URL（按区域绑定）
 
 ```text
 ASR client 设计
-  class MimoASRClient:
-      __init__(api_key: str, base_url: str = "https://token-plan-cn.xiaomimimo.com/v1")
+  class MimoASRBackend:
+      __init__(api_key: str,
+               base_url: str = "https://token-plan-cn.xiaomimimo.com/v1",
+               model: str = "mimo-v2.5-asr",
+               timeout: int = 300,
+               max_completion_tokens: int | None = None,
+               auth_style: str = "api_key")           # "api_key" | "bearer"
       async transcribe(audio_data: bytes, mime_type: str = "audio/mp3",
                        language: str = "auto") -> ASRResult
+
+  factory create_mimo_backend(settings):
+      base_url = resolve_base_url(settings.bili_processing_asr_profile,
+                                  settings.bili_processing_asr_base_url)
+      return MimoASRBackend(api_key=..., base_url=base_url,
+                            auth_style=settings.bili_processing_asr_auth_style, ...)
+
+  ASRConfigError（AudioError 子类，但 _is_retryable 显式判 False）：
+      - api_key 为空 → 在 transcribe 入口立即抛
+      - profile 不在已知集合 → resolve_base_url 抛
+      - profile=custom 但 BASE_URL 未填 → resolve_base_url 抛
+      统一指向 `python -m bili_unit init-mimo` 修复路径。
 
   ASRResult:
       text: str                 完整转录文本（来自 choices[0].message.content）
@@ -580,6 +658,13 @@ HTTP 实现
   使用 aiohttp.ClientSession 直接调用 MiMo API。
   不依赖 openai SDK（减少依赖，API 足够简单）。
   超时配置：单次请求最长 5 分钟（长音频处理时间较长）。
+
+初始化向导
+  python -m bili_unit init-mimo
+      交互选 profile（5 选 1：3 个 token_plan + pay_as_you_go + custom），
+      自填 api_key，custom 模式追问 base_url 和 auth_style，
+      把 BILI_PROCESSING_ASR_{BACKEND,PROFILE,API_KEY,BASE_URL,AUTH_STYLE} 五个键
+      写回 .env（保留其它行不变；同名键覆盖；首次无 .env 时创建）。
 ```
 
 ### 7.5 ASR 抽象接口
@@ -964,10 +1049,12 @@ BILI_PROCESSING_QUEUE_MAXSIZE        16
 BILI_PROCESSING_AUDIO_QUALITY        64K
 BILI_PROCESSING_AUDIO_MAX_SEGMENT_MINUTES  8
 
-# ASR 配置
-BILI_PROCESSING_ASR_BACKEND          mimo
+# ASR 配置（profile 是配置入口；URL 由 profile 解析）
+BILI_PROCESSING_ASR_BACKEND          mimo                      # mimo | mock | whisper
+BILI_PROCESSING_ASR_PROFILE          token_plan_cn             # _cn / _sgp / _ams / pay_as_you_go / custom
+BILI_PROCESSING_ASR_AUTH_STYLE       api_key                   # api_key | bearer
 BILI_PROCESSING_ASR_API_KEY          ""
-BILI_PROCESSING_ASR_BASE_URL         https://api.xiaomimimo.com/v1
+BILI_PROCESSING_ASR_BASE_URL         ""                        # 仅 profile=custom 时生效
 BILI_PROCESSING_ASR_MODEL            mimo-v2.5-asr
 BILI_PROCESSING_ASR_LANGUAGE         auto
 BILI_PROCESSING_ASR_TIMEOUT          300
@@ -1111,13 +1198,17 @@ audio 实现批次（已 unblock；可立即推进）
 19. audio runner      Phase 2 worker pool；single bvid → 多 page → ASR → 合并
 20. audio 测试        mock backend 单元 + 短视频集成（小文件 fixture）
 21. 自动重试调度      可配置 max_retries + 指数退避（参考 fetching 设计）
+22. user_profile handler   user_info + relation_info + up_stat (+ overview_stat
+                      可选) → uid:{uid}:proc:user_profile:{uid}；optional_endpoints
+                      机制让 overview_stat 缺失不阻塞；ingestion 直接消费
+                      processing.list_items(uid, "user_profile") 出口
 ```
 
 ## 17. 完成标准
 
 ```text
 MVP 完成标准（transform-only）
-  - transform 流水线可用（video_metadata + dynamics + articles）
+  - transform 流水线可用（video_metadata + dynamics + articles + user_profile）
   - 队列解耦的 worker pool 可用
   - incremental / full 两种处理模式可用
   - incremental 增量处理可用（已 SUCCESS 跳过、已 FAILED 重试一次、新增自动入队）
@@ -1168,3 +1259,5 @@ articles 全文            是否需要 item-level fan-out 抓取全文
 | MiMo ASR 响应字段 | 仅 `choices[0].message.content`（完整文本）+ `usage.seconds`（音频秒数）+ `usage.prompt_tokens_details.audio_tokens`；不返回 segments / 时间戳 / 检测语言 | 实测样本（134 秒英文歌曲）确认；ASRResult.segments 永远为空，ASRResult.language 由调用时传入参数回填 |
 | 长音频分段策略 | token 预算优先 + size 兜底。runner 把 page metadata 的整数秒 duration 传给 `convert_single`；后者按 `ceil(duration * tokens_per_second)` 估算，超过 `asr_max_input_tokens` 则按 `max_input_tokens // tokens_per_second` 切段（不低于 60 秒）。size 阈值仅在 caller 未提供 duration 时作 fallback。同时把 `max_tokens` 写入 MiMo payload（默认 1024）压缩 completion 预算，给输入腾位置 | size-only 实测对长视频 100% 失败：16 kHz mono q:a 9 编码下 17 分钟视频仅 ~3 MB（永远命中不到 size 阈值），但折算 ~6500 input tokens + 默认 2048 completion = 8550 → MiMo 8192 上下文 400 BadRequest。token 预算路径才是根治。新增三个 env：`asr_max_input_tokens=5400` / `asr_tokens_per_second=6.5` / `asr_max_completion_tokens=1024`（经验值来自 fixture 134 s → 837 audio_tokens 与失败案例 1033 s → 6502 audio_tokens 反推） |
 | 多段 ASR 后 page.duration 字段 | 优先用 page metadata 已知的整数秒 duration；其次累加每段 ASR 返回的 `usage.seconds`；最后兜底 CDN audio 元数据（注：单位不是秒） | 早期实现把 ASR 单段 duration **覆盖**写入 page_duration，导致多段视频只保留最后一段时长（1033 s 视频被切两段后落盘 `duration=204`）。文本拼接是对的但 duration 字段失真，影响下游统计（total_duration、video_full 视图）。已加 2 个回归测试 |
+| user_profile handler 范围 | 字段 = 身份(name/sex/sign/avatar/birthday) + 画像(level/vip/join_time) + social(following/follower/whisper/black) + stats(archive_view/article_view/likes) + overview(video_count/article_count/opus_count，可选)；source_endpoints = (user_info, relation_info, up_stat, overview_stat)，前 3 个必填、overview_stat 可选；overview_stat 缺失或为空时 `result.overview` 整段省略，不写 null/{} | 让 ingestion 通过键存在性判断 overview 是否可用；不并入实时排行 / 装饰类（pendant/nameplate/honours）/ 隐私受限类（user_medal/all_followings），后者在 fetching 已留底，需要时单独提需求；optional_endpoints 机制由 runner._discover_items 透传（缺失即从 raw_payloads 中省略，不阻塞 handler 入队） |
+| MiMo ASR 配置 profile 化 | env 暴露 `BILI_PROCESSING_ASR_PROFILE`（5 选 1：token_plan_cn / sgp / ams / pay_as_you_go / custom）+ `AUTH_STYLE`（api_key / bearer）；BASE_URL 由 profile 解析（custom 才读 `BILI_PROCESSING_ASR_BASE_URL`）；默认 backend=mimo；CLI `process -b mock` 临时切回 mock；`python -m bili_unit init-mimo` 交互向导写回 .env | 用户不需要记 host；中转站只走 custom + bearer；不做 key 前缀自动嗅探（tp-* / sk-* 中转站会模糊；显式 profile 字段更可靠）；ASRConfigError 在 _is_retryable 中显式判 False，避免对配置错误重试浪费时间 |

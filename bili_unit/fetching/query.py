@@ -195,3 +195,103 @@ class Query:
                 status = EndpointStatus.PENDING
             results.append((bvid, status))
         return results
+
+    # -- article_detail ------------------------------------------------------
+
+    async def get_article_detail(self, uid: int, cvid: str) -> EndpointDTO | None:
+        """Return a single article's detail as an EndpointDTO, or None.
+
+        Mirrors :meth:`get_video_detail`; ``cvid`` is the cv号 stringified.
+        """
+        key = _item_fetch_key(uid, "article_detail", cvid)
+        d = await self._data.get(key)
+        if d is None:
+            return None
+
+        status_str = d.get("status", "PENDING")
+        try:
+            status = EndpointStatus(status_str)
+        except ValueError:
+            status = EndpointStatus.PENDING
+        raw_payload = d.get("raw_payload")
+        fetched_at = d.get("fetched_at")
+
+        available = status == EndpointStatus.SUCCESS and raw_payload is not None
+
+        return EndpointDTO(
+            uid=uid,
+            endpoint="article_detail",
+            status=status,
+            available=available,
+            raw_payload=raw_payload,
+            fetched_at=fetched_at,
+        )
+
+    async def list_article_details(self, uid: int) -> list[tuple[str, EndpointStatus]]:
+        """Return all stored article_detail cvids with their status.
+
+        Does NOT load raw_payload — same memory discipline as
+        :meth:`list_video_details`.
+        """
+        prefix = f"uid:{uid}:fetch:article_detail:"
+        rows = await self._data.list_prefix(prefix)
+        results: list[tuple[str, EndpointStatus]] = []
+        for key, value in rows:
+            cvid = key.split(":", 4)[-1] if ":" in key else key
+            status_str = value.get("status", "PENDING")
+            try:
+                status = EndpointStatus(status_str)
+            except ValueError:
+                status = EndpointStatus.PENDING
+            results.append((cvid, status))
+        return results
+
+    # -- opus_detail ---------------------------------------------------------
+
+    async def get_opus_detail(self, uid: int, opus_id: str) -> EndpointDTO | None:
+        """Return a single opus's detail as an EndpointDTO, or None.
+
+        Mirrors :meth:`get_article_detail`; ``opus_id`` is the图文 ID stringified.
+        """
+        key = _item_fetch_key(uid, "opus_detail", opus_id)
+        d = await self._data.get(key)
+        if d is None:
+            return None
+
+        status_str = d.get("status", "PENDING")
+        try:
+            status = EndpointStatus(status_str)
+        except ValueError:
+            status = EndpointStatus.PENDING
+        raw_payload = d.get("raw_payload")
+        fetched_at = d.get("fetched_at")
+
+        available = status == EndpointStatus.SUCCESS and raw_payload is not None
+
+        return EndpointDTO(
+            uid=uid,
+            endpoint="opus_detail",
+            status=status,
+            available=available,
+            raw_payload=raw_payload,
+            fetched_at=fetched_at,
+        )
+
+    async def list_opus_details(self, uid: int) -> list[tuple[str, EndpointStatus]]:
+        """Return all stored opus_detail opus_ids with their status.
+
+        Does NOT load raw_payload — same memory discipline as
+        :meth:`list_video_details` / :meth:`list_article_details`.
+        """
+        prefix = f"uid:{uid}:fetch:opus_detail:"
+        rows = await self._data.list_prefix(prefix)
+        results: list[tuple[str, EndpointStatus]] = []
+        for key, value in rows:
+            opus_id = key.split(":", 4)[-1] if ":" in key else key
+            status_str = value.get("status", "PENDING")
+            try:
+                status = EndpointStatus(status_str)
+            except ValueError:
+                status = EndpointStatus.PENDING
+            results.append((opus_id, status))
+        return results

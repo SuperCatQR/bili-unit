@@ -82,6 +82,7 @@ def test_existing_endpoints_are_uid_kind():
     _item_endpoints = {
         "video_detail",
         "article_detail",
+        "opus_detail",
         "channel_videos_season",
         "channel_videos_series",
     }

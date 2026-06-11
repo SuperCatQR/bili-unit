@@ -14,6 +14,18 @@ from . import RateLimitError  # noqa: F401 — reserved for future rate-limit pa
 logger = logging.getLogger("bili.fetching.rate_limit")
 
 
+# Endpoints that perform per-item fan-out (one API call per video / article /
+# etc. enumerated from an upstream listing).  These share a separate, slower
+# QPS budget so the fan-out doesn't burn the global allowance the way a
+# uid-level endpoint would.  Tracked here rather than via EndpointSpec.kind
+# to keep the rate limiter independent of the spec module.
+_ITEM_FANOUT_ENDPOINTS: frozenset[str] = frozenset({
+    "video_detail",
+    "article_detail",
+    "opus_detail",
+})
+
+
 class RateLimitController:
     """Provides per-endpoint and global rate-limit gates with QPS recovery.
 
@@ -77,7 +89,11 @@ class RateLimitController:
             async with self._lock:
                 ep_limiter = self._endpoint_limiters.get(endpoint)
                 if ep_limiter is None:
-                    qps = self._video_detail_qps if endpoint == "video_detail" else self._endpoint_qps
+                    qps = (
+                        self._video_detail_qps
+                        if endpoint in _ITEM_FANOUT_ENDPOINTS
+                        else self._endpoint_qps
+                    )
                     ep_limiter = AsyncLimiter(
                         max_rate=max(round(qps * 10), 1),
                         time_period=10,
@@ -144,7 +160,7 @@ class RateLimitController:
 
         if ep_changed or vd_changed:
             for ep_name, _limiter in list(self._endpoint_limiters.items()):
-                if ep_name == "video_detail":
+                if ep_name in _ITEM_FANOUT_ENDPOINTS:
                     if vd_changed:
                         self._endpoint_limiters[ep_name] = AsyncLimiter(
                             max_rate=max(round(self._video_detail_qps * 10), 1), time_period=10,
@@ -187,7 +203,7 @@ class RateLimitController:
             # halve endpoint QPS if limiter exists
             ep = self._endpoint_limiters.get(endpoint)
             if ep:
-                if endpoint == "video_detail":
+                if endpoint in _ITEM_FANOUT_ENDPOINTS:
                     new_ep = max(0.05, self._video_detail_qps / 2)
                     self._video_detail_qps = new_ep
                 else:

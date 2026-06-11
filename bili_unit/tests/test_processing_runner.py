@@ -47,6 +47,7 @@ def _make_settings(tmp_path, max_retries=3, retry_delays="30,60,120") -> Process
         bili_processing_queue_maxsize=8,
         bili_processing_max_retries=max_retries,
         bili_processing_retry_delays=retry_delays,
+        bili_processing_asr_cache_dir=str(tmp_path / "proc-asr-cache"),
     )
 
 
@@ -263,6 +264,203 @@ async def test_processing_dynamics_and_articles(proc_stack, fetching_stack):
 
     arts = await qry.list_items(uid, "articles")
     assert {it.item_id for it in arts} == {"1", "2"}
+
+
+@pytest.mark.asyncio
+async def test_processing_articles_with_article_detail(proc_stack, fetching_stack):
+    """When article_detail is fetched, transform enriches with markdown body."""
+    cmd, qry, _pd, _pe, fd = proc_stack
+    uid = 220
+
+    # Articles listing (parent endpoint).
+    await _seed_fetching_endpoint(fd, uid, "articles", {
+        "pages": [
+            {"articles": [
+                {"id": 11, "title": "with-body", "summary": "list-summary"},
+                {"id": 22, "title": "no-body-yet"},  # detail not fetched
+            ]},
+        ],
+    })
+
+    # Mark article_detail as RUNNING in the task (uid-level success not used
+    # for item-level fan-out; per-item rows below carry the SUCCESS status).
+    existing = await fd.get(_fetch_task_key(uid))
+    tv = TaskValue.from_dict(existing) if existing else TaskValue(uid=uid)
+    tv.endpoints["article_detail"] = EndpointEntry(status=EndpointStatus.SUCCESS)
+    await fd.put(_fetch_task_key(uid), tv.to_dict())
+
+    # Per-cvid article_detail rows — only cvid 11 has a successful payload.
+    await fd.put(_item_fetch_key(uid, "article_detail", "11"), {
+        "uid": uid,
+        "endpoint": "article_detail",
+        "item_id": "11",
+        "status": EndpointStatus.SUCCESS.value,
+        "raw_payload": {
+            "info": {"id": 11, "title": "with-body"},
+            "markdown": "# 标题\n\n这是正文内容。",
+            "content_json": [
+                {"type": "HeadingNode", "text": "标题"},
+                {"type": "ParagraphNode", "text": "这是正文内容。"},
+            ],
+        },
+        "fetched_at": 0,
+    })
+
+    result = await cmd.process_uid(uid, item_types=["articles"])
+    assert result.status == ProcessingTaskStatus.SUCCESS
+
+    arts = await qry.list_items(uid, "articles")
+    assert {it.item_id for it in arts} == {"11", "22"}
+
+    by_id = {it.item_id: it for it in arts}
+    enriched = by_id["11"].result
+    assert enriched is not None
+    assert enriched["markdown"] == "# 标题\n\n这是正文内容。"
+    assert enriched["word_count"] == len("# 标题\n\n这是正文内容。")
+    assert len(enriched["content_json"]) == 2
+
+    fallback = by_id["22"].result
+    assert fallback is not None
+    assert fallback["title"] == "no-body-yet"
+    # No detail seeded → empty body but the article still transforms.
+    assert fallback["markdown"] == ""
+    assert fallback["word_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_processing_opus_with_opus_detail(proc_stack, fetching_stack):
+    """When opus_detail is fetched, transform enriches with markdown body + image list."""
+    cmd, qry, _pd, _pe, fd = proc_stack
+    uid = 230
+
+    # Opus listing (parent endpoint).
+    await _seed_fetching_endpoint(fd, uid, "opus", {
+        "pages": [
+            {"items": [
+                {
+                    "opus_id": "33",
+                    "title": "with-body",
+                    "summary": "list-summary",
+                    "stats": {"view": 5, "like": 1},
+                    "pub_time": 1700000000,
+                },
+                {
+                    "opus_id": "44",
+                    "title": "no-body-yet",
+                    "summary": "",
+                },  # detail not fetched
+            ], "offset": "0", "has_more": False},
+        ],
+    })
+
+    # Mark opus_detail as SUCCESS in the task; per-item rows below carry the
+    # actual SUCCESS payload (item-level fan-out pattern).
+    existing = await fd.get(_fetch_task_key(uid))
+    tv = TaskValue.from_dict(existing) if existing else TaskValue(uid=uid)
+    tv.endpoints["opus_detail"] = EndpointEntry(status=EndpointStatus.SUCCESS)
+    await fd.put(_fetch_task_key(uid), tv.to_dict())
+
+    await fd.put(_item_fetch_key(uid, "opus_detail", "33"), {
+        "uid": uid,
+        "endpoint": "opus_detail",
+        "item_id": "33",
+        "status": EndpointStatus.SUCCESS.value,
+        "raw_payload": {
+            "info": {"item": {"basic": {}, "modules": []}},
+            "markdown": "# 图文标题\n\n图文正文。",
+            "images": [
+                {"url": "https://i0.hdslb.com/i.jpg", "width": 200, "height": 100},
+            ],
+        },
+        "fetched_at": 0,
+    })
+
+    result = await cmd.process_uid(uid, item_types=["opus"])
+    assert result.status == ProcessingTaskStatus.SUCCESS
+
+    items = await qry.list_items(uid, "opus")
+    assert {it.item_id for it in items} == {"33", "44"}
+
+    by_id = {it.item_id: it for it in items}
+
+    enriched = by_id["33"].result
+    assert enriched is not None
+    assert enriched["markdown"] == "# 图文标题\n\n图文正文。"
+    assert enriched["images"] == [
+        {"url": "https://i0.hdslb.com/i.jpg", "width": 200, "height": 100},
+    ]
+    assert enriched["image_urls"] == ["https://i0.hdslb.com/i.jpg"]
+    assert enriched["word_count"] == len("# 图文标题\n\n图文正文。")
+    assert enriched["stats"]["view"] == 5
+
+    fallback = by_id["44"].result
+    assert fallback is not None
+    assert fallback["title"] == "no-body-yet"
+    # No detail seeded → empty body but the opus still transforms.
+    assert fallback["markdown"] == ""
+    assert fallback["word_count"] == 0
+    assert fallback["images"] == []
+
+
+@pytest.mark.asyncio
+async def test_processing_user_profile_happy_path(proc_stack, fetching_stack):
+    """user_profile happy path — four endpoints SUCCESS produce one DTO with overview."""
+    cmd, qry, _pd, _pe, fd = proc_stack
+    uid = 250
+
+    await _seed_fetching_endpoint(fd, uid, "user_info", {
+        "mid": uid, "name": "U250", "sex": "保密", "sign": "hi",
+        "face": "https://i0.hdslb.com/u250.jpg", "birthday": "01-01",
+        "level": 5, "vip": {"type": 1, "status": 1, "label": {"text": "大会员"}},
+        "jointime": 1500000000,
+    })
+    await _seed_fetching_endpoint(fd, uid, "relation_info", {
+        "following": 10, "follower": 100, "whisper": 0, "black": 0,
+    })
+    await _seed_fetching_endpoint(fd, uid, "up_stat", {
+        "archive": {"view": 1000}, "article": {"view": 50}, "likes": 80,
+    })
+    await _seed_fetching_endpoint(fd, uid, "overview_stat", {
+        "video": 7, "article": 1, "opus": 3,
+    })
+
+    result = await cmd.process_uid(uid, item_types=["user_profile"])
+    assert result.status == ProcessingTaskStatus.SUCCESS
+
+    dto = await qry.get_item(uid, "user_profile", str(uid))
+    assert dto is not None
+    assert dto.status == ProcessingItemStatus.SUCCESS
+    assert dto.result["uid"] == uid
+    assert dto.result["name"] == "U250"
+    assert dto.result["vip"]["label"] == "大会员"
+    assert dto.result["social"]["follower"] == 100
+    assert dto.result["stats"]["archive_view"] == 1000
+    assert dto.result["overview"] == {
+        "video_count": 7, "article_count": 1, "opus_count": 3,
+    }
+
+    # Optional endpoint missing → result.overview omitted, item still SUCCESS.
+    uid2 = 251
+    await _seed_fetching_endpoint(fd, uid2, "user_info", {
+        "mid": uid2, "name": "U251",
+    })
+    await _seed_fetching_endpoint(fd, uid2, "relation_info", {"follower": 1})
+    await _seed_fetching_endpoint(fd, uid2, "up_stat", {"likes": 2})
+    # No overview_stat seeded.
+    r2 = await cmd.process_uid(uid2, item_types=["user_profile"])
+    assert r2.status == ProcessingTaskStatus.SUCCESS
+    dto2 = await qry.get_item(uid2, "user_profile", str(uid2))
+    assert dto2 is not None
+    assert dto2.status == ProcessingItemStatus.SUCCESS
+    assert "overview" not in dto2.result
+
+    # Required endpoint missing → no work item produced (handler skipped).
+    uid3 = 252
+    await _seed_fetching_endpoint(fd, uid3, "user_info", {"mid": uid3, "name": "U252"})
+    # relation_info / up_stat missing on purpose.
+    r3 = await cmd.process_uid(uid3, item_types=["user_profile"])
+    assert r3.status == ProcessingTaskStatus.SUCCESS  # empty rollup → SUCCESS
+    assert await qry.list_items(uid3, "user_profile") == []
 
 
 @pytest.mark.asyncio
@@ -802,13 +1000,14 @@ async def test_audio_duration_uses_page_metadata_not_last_segment(
     )
     mock_dl.download_to_file = AsyncMock()
 
-    # convert_single returns two fake mp3 paths.
+    # convert_single returns two fake mp3 segments (with timeline ranges).
+    from bili_unit.processing.audio import Mp3Segment
     seg_files = [
-        tmp_path / "seg_000.mp3",
-        tmp_path / "seg_001.mp3",
+        Mp3Segment(tmp_path / "seg_000.mp3", 0.0, 830.0),
+        Mp3Segment(tmp_path / "seg_001.mp3", 830.0, 1033.0),
     ]
-    for f in seg_files:
-        f.write_bytes(b"x")
+    for s in seg_files:
+        s.path.write_bytes(b"x")
 
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(side_effect=[
@@ -885,9 +1084,13 @@ async def test_audio_duration_falls_back_to_segment_sum_when_no_metadata(
     )
     mock_dl.download_to_file = AsyncMock()
 
-    seg_files = [tmp_path / "a.mp3", tmp_path / "b.mp3"]
-    for f in seg_files:
-        f.write_bytes(b"x")
+    from bili_unit.processing.audio import Mp3Segment
+    seg_files = [
+        Mp3Segment(tmp_path / "a.mp3", 0.0, 300.0),
+        Mp3Segment(tmp_path / "b.mp3", 300.0, 420.0),
+    ]
+    for s in seg_files:
+        s.path.write_bytes(b"x")
 
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(side_effect=[
@@ -911,6 +1114,262 @@ async def test_audio_duration_falls_back_to_segment_sum_when_no_metadata(
 
     assert result["pages"][0]["duration"] == 420.0  # 300 + 120, not 120
     assert result["total_duration"] == 420.0
+
+    await pd.close()
+    await pe.close()
+
+
+# ---------- ASR resume cache -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_audio_asr_cache_skips_segments_on_retry(tmp_path, fetching_stack):
+    """Segments cached from a prior run skip the ASR API on retry.
+
+    Simulates: first attempt transcribes 2 of 3 segments then crashes
+    (mid-page failure); second attempt finds the first 2 in the cache and
+    only calls ASR for the remaining one.
+    """
+    from bili_unit.processing.audio import (
+        ASRCacheStore,
+        ASRResult,
+        CachedSegment,
+        Mp3Segment,
+    )
+    from bili_unit.processing.transform._base import WorkItem
+
+    fd, _fe, fqry = fetching_stack
+    uid = 1010
+    bvid = "BVcache"
+    await _seed_fetching_video_detail(fd, uid, [bvid])
+
+    s = _make_settings(tmp_path)
+    pd = ProcessingDataStore(s.bili_processing_data_dir)
+    pe = ProcessingErrorStore(s.bili_processing_error_dir)
+    await pd.open()
+    await pe.open()
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+    )
+
+    # Pre-seed the cache as if 2 of 3 segments completed in a previous run.
+    cache = ASRCacheStore(s.bili_processing_asr_cache_dir)
+    page = cache.load_page(uid, bvid, 0)
+    cache.upsert(page, CachedSegment(
+        start_s=0.0, end_s=830.0, text="cached-A",
+        language="auto", duration=830.0, model="m",
+    ))
+    cache.upsert(page, CachedSegment(
+        start_s=830.0, end_s=1660.0, text="cached-B",
+        language="auto", duration=830.0, model="m",
+    ))
+
+    work_item = WorkItem(
+        item_type="audio", item_id=bvid,
+        item_data={
+            "bvid": bvid,
+            "pages": [{"page_index": 0, "cid": 1, "duration": 2000, "part": "p1"}],
+        },
+    )
+
+    mock_dl = AsyncMock()
+    mock_dl.get_audio_url = AsyncMock(
+        return_value={"url": "https://cdn/x", "duration": 2000.0},
+    )
+    mock_dl.download_to_file = AsyncMock()
+
+    seg_files = [
+        Mp3Segment(tmp_path / "s0.mp3", 0.0, 830.0),
+        Mp3Segment(tmp_path / "s1.mp3", 830.0, 1660.0),
+        Mp3Segment(tmp_path / "s2.mp3", 1660.0, 2000.0),
+    ]
+    for s_ in seg_files:
+        s_.path.write_bytes(b"x")
+
+    transcribe_calls = []
+
+    async def fake_transcribe(audio_bytes, mime_type="audio/mp3", language="auto"):  # noqa: ARG001
+        transcribe_calls.append(language)
+        return ASRResult(text="fresh-C", duration=340.0, model="m")
+
+    mock_asr = AsyncMock()
+    mock_asr.transcribe = fake_transcribe
+    mock_asr.model = "m"
+
+    with (
+        patch(
+            "bili_unit.processing.runner.AudioDownloader",
+            return_value=mock_dl,
+        ),
+        patch(
+            "bili_unit.processing.runner.convert_single",
+            new=AsyncMock(return_value=seg_files),
+        ),
+        patch.object(cmd._runner, "_asr_backend", mock_asr),
+    ):
+        result = await cmd._runner._do_audio_work(uid, work_item, credential=None)
+
+    # Only the third segment should have hit the ASR backend.
+    assert len(transcribe_calls) == 1
+    # Stitched text must contain all three pieces in order.
+    text = result["pages"][0]["text"]
+    assert "cached-A" in text
+    assert "cached-B" in text
+    assert "fresh-C" in text
+    # Cache cleared on success.
+    cache_dir = tmp_path / "proc-asr-cache" / str(uid) / bvid
+    assert not cache_dir.exists()
+
+    await pd.close()
+    await pe.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_asr_cache_persists_on_failure(tmp_path, fetching_stack):
+    """When ASR fails mid-page, already-completed segments survive in cache."""
+    from bili_unit.processing import ASRAPIError
+    from bili_unit.processing.audio import ASRCacheStore, ASRResult, Mp3Segment
+    from bili_unit.processing.transform._base import WorkItem
+
+    fd, _fe, fqry = fetching_stack
+    uid = 1011
+    bvid = "BVfail"
+    await _seed_fetching_video_detail(fd, uid, [bvid])
+
+    s = _make_settings(tmp_path)
+    pd = ProcessingDataStore(s.bili_processing_data_dir)
+    pe = ProcessingErrorStore(s.bili_processing_error_dir)
+    await pd.open()
+    await pe.open()
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+    )
+
+    work_item = WorkItem(
+        item_type="audio", item_id=bvid,
+        item_data={
+            "bvid": bvid,
+            "pages": [{"page_index": 0, "cid": 1, "duration": 1660, "part": "p1"}],
+        },
+    )
+
+    mock_dl = AsyncMock()
+    mock_dl.get_audio_url = AsyncMock(
+        return_value={"url": "https://cdn/x", "duration": 1660.0},
+    )
+    mock_dl.download_to_file = AsyncMock()
+
+    seg_files = [
+        Mp3Segment(tmp_path / "s0.mp3", 0.0, 830.0),
+        Mp3Segment(tmp_path / "s1.mp3", 830.0, 1660.0),
+    ]
+    for s_ in seg_files:
+        s_.path.write_bytes(b"x")
+
+    # First call succeeds, second raises (simulating quota / network error).
+    transcribe_results = [
+        ASRResult(text="part-A", duration=830.0, model="m"),
+        ASRAPIError("quota exhausted"),
+    ]
+
+    async def fake_transcribe(audio_bytes, mime_type="audio/mp3", language="auto"):  # noqa: ARG001
+        nxt = transcribe_results.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    mock_asr = AsyncMock()
+    mock_asr.transcribe = fake_transcribe
+    mock_asr.model = "m"
+
+    with (
+        patch(
+            "bili_unit.processing.runner.AudioDownloader",
+            return_value=mock_dl,
+        ),
+        patch(
+            "bili_unit.processing.runner.convert_single",
+            new=AsyncMock(return_value=seg_files),
+        ),
+        patch.object(cmd._runner, "_asr_backend", mock_asr),
+        pytest.raises(ASRAPIError),
+    ):
+        await cmd._runner._do_audio_work(uid, work_item, credential=None)
+
+    # The first segment's transcript MUST survive in the cache for retry.
+    cache = ASRCacheStore(s.bili_processing_asr_cache_dir)
+    page = cache.load_page(uid, bvid, 0)
+    assert len(page.segments) == 1
+    assert page.segments[0].start_s == 0.0
+    assert page.segments[0].end_s == 830.0
+    assert page.segments[0].text == "part-A"
+
+    await pd.close()
+    await pe.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path, fetching_stack):
+    """When the cache is disabled, neither lookup nor persist happens."""
+    from bili_unit.processing.audio import ASRResult, Mp3Segment
+    from bili_unit.processing.transform._base import WorkItem
+
+    fd, _fe, fqry = fetching_stack
+    uid = 1012
+    bvid = "BVoff"
+    await _seed_fetching_video_detail(fd, uid, [bvid])
+
+    s = _make_settings(tmp_path)
+    s.bili_processing_asr_cache_enabled = False
+    pd = ProcessingDataStore(s.bili_processing_data_dir)
+    pe = ProcessingErrorStore(s.bili_processing_error_dir)
+    await pd.open()
+    await pe.open()
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+    )
+
+    work_item = WorkItem(
+        item_type="audio", item_id=bvid,
+        item_data={
+            "bvid": bvid,
+            "pages": [{"page_index": 0, "cid": 1, "duration": 100, "part": "p1"}],
+        },
+    )
+
+    mock_dl = AsyncMock()
+    mock_dl.get_audio_url = AsyncMock(
+        return_value={"url": "https://cdn/x", "duration": 100.0},
+    )
+    mock_dl.download_to_file = AsyncMock()
+
+    seg_files = [Mp3Segment(tmp_path / "s0.mp3", 0.0, 100.0)]
+    seg_files[0].path.write_bytes(b"x")
+
+    mock_asr = AsyncMock()
+    mock_asr.transcribe = AsyncMock(
+        return_value=ASRResult(text="x", duration=100.0, model="m"),
+    )
+    mock_asr.model = "m"
+
+    with (
+        patch(
+            "bili_unit.processing.runner.AudioDownloader",
+            return_value=mock_dl,
+        ),
+        patch(
+            "bili_unit.processing.runner.convert_single",
+            new=AsyncMock(return_value=seg_files),
+        ),
+        patch.object(cmd._runner, "_asr_backend", mock_asr),
+    ):
+        await cmd._runner._do_audio_work(uid, work_item, credential=None)
+
+    # Cache directory must not have been created.
+    assert not (tmp_path / "proc-asr-cache").exists()
 
     await pd.close()
     await pe.close()

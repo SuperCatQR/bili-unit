@@ -264,6 +264,22 @@ class ProcessingRunner:
                 raw_payloads["article_detail"] = article_details
                 continue
 
+            if ep == "opus_detail":
+                # Same pattern as article_detail — opus_detail is an optional
+                # fan-out enrichment.  Missing opus_ids fall through to the
+                # list-level fields without failing the whole handler.
+                op_pairs = await self._fetch_qry.list_opus_details(uid)
+                opus_details: dict[str, dict] = {}
+                for opus_id, status in op_pairs:
+                    if status != _EpStatus.SUCCESS:
+                        continue
+                    item_dto = await self._fetch_qry.get_opus_detail(uid, opus_id)
+                    if item_dto is None or item_dto.raw_payload is None:
+                        continue
+                    opus_details[opus_id] = item_dto.raw_payload
+                raw_payloads["opus_detail"] = opus_details
+                continue
+
             # uid-level endpoint
             ep_dto = await self._fetch_qry.get_endpoint(uid, ep)
             if ep_dto is None or not ep_dto.available:
