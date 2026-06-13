@@ -52,7 +52,7 @@ from ._bilibili_adapter import (
     fetch_video_up_mid_item,
     init_http_backend,
 )
-from ._endpoint_catalog import ENDPOINTS, get_endpoint
+from ._endpoint_catalog import ENDPOINTS, PROFILES, get_endpoint, resolve_profile
 from ._endpoint_spec import EndpointSpec, PaginationStrategy
 
 __all__ = [
@@ -60,6 +60,7 @@ __all__ = [
     "EndpointSpec",
     "FetchPageResult",
     "PaginationStrategy",
+    "PROFILES",
     "_extract_bvids_from_videos",
     "_extract_cvids_from_articles",
     "_extract_opus_ids_from_opus",
@@ -106,4 +107,5 @@ __all__ = [
     "fetch_video_up_mid_item",
     "get_endpoint",
     "init_http_backend",
+    "resolve_profile",
 ]
