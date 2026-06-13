@@ -79,17 +79,11 @@ def test_video_detail_endpoint_registered():
 
 
 def test_existing_endpoints_are_uid_kind():
-    _item_endpoints = {
-        "video_detail",
-        "article_detail",
-        "opus_detail",
-        "article_list_detail",
-        "channel_videos_season",
-        "channel_videos_series",
-    }
     for ep in ENDPOINTS:
-        if ep.name not in _item_endpoints:
+        if ep.source_endpoint is None:
             assert ep.kind == "uid", f"{ep.name} should have kind='uid'"
+        else:
+            assert ep.kind == "item", f"{ep.name} should have kind='item'"
 
 
 # ======================================================================

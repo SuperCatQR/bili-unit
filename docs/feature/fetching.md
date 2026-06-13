@@ -6,7 +6,7 @@
 
 ## 概述
 
-fetching 层负责从 B站 API 异步抓取指定用户的数据，支持 28 个端点类型、4 种抓取模式（none / page / cursor / anchor）、全局与端点级限流、增量扫描和 item-level fan-out。底层使用 `bilibili-api-python` 异步封装，HTTP 后端优先 `curl_cffi`，备选 `aiohttp`。
+fetching 层负责从 B站 API 异步抓取指定用户的数据，支持 64 个端点类型、6 种抓取模式（none / page / cursor / anchor / legacy_offset / oid）、全局与端点级限流、增量扫描和 item-level fan-out。底层使用 `bilibili-api-python` 异步封装，HTTP 后端优先 `curl_cffi`，备选 `aiohttp`。
 
 ## 模块结构
 
@@ -51,7 +51,35 @@ data/error → _storage (JsonKVStore + KeyMapper)
 
 ## 端点注册表
 
-28 个端点分为两类：uid-level（直接按 uid 抓取）和 item-level（从源端点提取 items 后逐个抓取）。
+64 个端点分为两类：uid-level（直接按 uid 抓取）和 item-level（从源端点提取 items 后逐个抓取）。
+
+### 扩展后端点总览（当前真相）
+
+```text
+uid-level（34 个）
+  user_info videos access_id relation_info up_stat overview_stat articles
+  subscribed_bangumi opus dynamics dynamics_legacy audios channel_list
+  channels media_list user_medal live_info user_relation reservation
+  uplikeimg top_followers space_notice all_followings followings followers
+  same_followers top_videos masterpiece article_list cheese elec_monthly
+  user_fav_tag album upower_qa
+
+item-level（30 个）
+  video_detail video_pages video_detail_full video_ai_conclusion
+  video_danmaku_snapshot video_danmaku_view video_danmaku_xml video_danmakus
+  video_online video_pay_coins video_pbp video_player_info video_private_notes
+  video_public_notes video_related video_relation video_special_dms video_subtitle
+  video_up_mid video_snapshot video_download_url video_is_episode
+  video_is_forbid_note video_chargers article_detail opus_detail
+  article_list_detail channel_videos_season channel_videos_series upower_qa_detail
+
+credential_required
+  video_pay_coins video_private_notes video_relation user_medal user_relation
+  top_followers all_followings same_followers elec_monthly upower_qa
+  upower_qa_detail
+```
+
+历史实测表仍保留当时 T1/T2 扩展的真实运行结果；新增扩展端点目前以 mock 测试锁定注册、分页和 fan-out 行为，真实站点可用性取决于 B站权限、风控和 bilibili-api-python 对应接口状态。
 
 ### uid-level 端点（22 个）
 
@@ -137,9 +165,9 @@ T2 endpoint（已注册，已实测）
 
 ```text
 暂不实现
-  followers（all_followings 已覆盖完整关注列表）
-  media_list
-  relation / self 写接口
+  写接口（modify_relation / set_space_notice / 点赞投币收藏等副作用操作）
+  当前登录账号 self 全局数据接口（get_self_history / get_toview_list 等，不属于目标 uid 空间采集）
+  视频历史弹幕按日期全量回溯（当前只抓实时/当前可读弹幕相关接口）
 ```
 
 ```text

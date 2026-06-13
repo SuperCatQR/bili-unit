@@ -5,6 +5,7 @@ import contextlib
 import logging
 from collections.abc import Awaitable
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from bilibili_api import Credential, request_settings, select_client, user
@@ -117,6 +118,86 @@ def _resolve_dot_path(data: dict[str, Any], path: str) -> Any:
     return current
 
 
+def _json_safe(value: Any) -> Any:
+    """Convert bilibili-api return objects into JSON-serialisable values."""
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list | tuple | set):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, "__dict__"):
+        return {
+            str(k): _json_safe(v)
+            for k, v in vars(value).items()
+            if not str(k).startswith("_")
+        }
+    return str(value)
+
+
+async def _wrap_scalar_result(coro: Awaitable, key: str = "value") -> dict:
+    """Wrap scalar/list API results in a dict and make them JSON-safe."""
+    result = await coro
+    safe = _json_safe(result)
+    if isinstance(safe, dict):
+        return safe
+    return {key: safe}
+
+
+def _extract_list_items(data: dict[str, Any], path: str | None = None) -> list:
+    """Best-effort extraction for common B站 paginated list shapes."""
+    container: Any = _resolve_dot_path(data, path) if path else None
+    if isinstance(container, list):
+        return container
+    if isinstance(container, dict):
+        for key in ("list", "items", "archives", "data", "media_list"):
+            value = container.get(key)
+            if isinstance(value, list):
+                return value
+        collected: list = []
+        for value in container.values():
+            if isinstance(value, list):
+                collected.extend(value)
+        return collected
+
+    for key in ("list", "items", "archives", "data", "media_list", "cards"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            for nested in ("list", "items", "archives", "data", "media_list"):
+                nested_value = value.get(nested)
+                if isinstance(nested_value, list):
+                    return nested_value
+    return []
+
+
+def _extract_total_count(data: dict[str, Any]) -> int:
+    """Best-effort total-count extraction across known B站 shapes."""
+    for path in (
+        "page.count",
+        "page.total",
+        "items_lists.page.total",
+        "total",
+        "count",
+        "total_count",
+        "totalSize",
+    ):
+        value = _resolve_dot_path(data, path)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+def _normalise_api_result(result: Any, key: str = "data") -> dict[str, Any]:
+    safe = _json_safe(result)
+    if isinstance(safe, dict):
+        return safe
+    return {key: safe}
+
+
 # ---------------------------------------------------------------------------
 # Item-level fan-out helpers (cf. video_detail_design.md §9.3)
 # ---------------------------------------------------------------------------
@@ -139,12 +220,72 @@ async def _wrap_list_result(coro: Awaitable) -> dict:
     Some B站 APIs (e.g. get_masterpiece) return a list instead of a dict.
     ``fetch_endpoint`` requires a dict, so this adapter normalises the shape.
     """
-    result = await coro
-    if isinstance(result, list):
-        return {"list": result}
-    if isinstance(result, dict):
-        return result
-    return {"data": result}
+    return _normalise_api_result(await coro, key="list")
+
+
+async def fetch_user_channels(
+    uid: int,
+    credential: Credential | None,
+    timeout: float = 30.0,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """Fetch all ChannelSeries objects and serialise their metadata."""
+    u = user.User(uid, credential=credential)
+    async with _map_bilibili_errors("channels"):
+        channels = await asyncio.wait_for(u.get_channels(), timeout=timeout)
+
+    rows: list[dict[str, Any]] = []
+    for ch in channels:
+        try:
+            ch_type = ch.get_type()
+            ch_id = ch.get_id()
+            async with _map_bilibili_errors(f"channels[{ch_id}]: get_meta"):
+                meta = await asyncio.wait_for(ch.get_meta(), timeout=timeout)
+            rows.append({
+                "id": ch_id,
+                "type": _json_safe(ch_type),
+                "meta": _json_safe(meta),
+            })
+        except Exception as exc:
+            raise RequestError(f"channels: serialise failed: {exc}") from exc
+    return {"channels": rows}
+
+
+def _extract_qa_ids_from_upower_qa(raw_payload: dict) -> list[str]:
+    """Extract qa_ids from upower_qa pages."""
+    ids: list[str] = []
+    for page in raw_payload.get("pages", []) or []:
+        if not isinstance(page, dict):
+            continue
+        for item in page.get("list", []) or []:
+            if not isinstance(item, dict):
+                continue
+            qa_id = item.get("qa_id")
+            if qa_id is not None:
+                ids.append(str(qa_id))
+    return ids
+
+
+async def fetch_upower_qa_detail_item(
+    qa_id: str,
+    credential: Credential | None,
+    timeout: float = 30.0,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Fetch a single charging Q&A detail by qa_id."""
+    try:
+        qa_id_int = int(qa_id)
+        uid = int(kw["_uid"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RequestError(f"upower_qa_detail[{qa_id}]: invalid input: {exc}") from exc
+
+    u = user.User(uid, credential=credential)
+    async with _map_bilibili_errors(f"upower_qa_detail[{qa_id}]"):
+        result = await asyncio.wait_for(
+            u.get_upower_qa_detail(qa_id_int),
+            timeout=timeout,
+        )
+    return _normalise_api_result(result, key="detail")
 
 
 async def fetch_video_detail_item(
@@ -162,6 +303,154 @@ async def fetch_video_detail_item(
         tags = await asyncio.wait_for(v.get_tags(), timeout=timeout)
 
     return {"info": info, "tags": tags}
+
+
+async def _video_pages(
+    v: Video,
+    bvid: str,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    async with _map_bilibili_errors(f"video[{bvid}]: get_pages"):
+        pages = await asyncio.wait_for(v.get_pages(), timeout=timeout)
+    return _json_safe(pages)
+
+
+def _video_item_method(
+    method_name: str,
+    *,
+    per_page: bool = False,
+    page_arg: str = "cid",
+    result_key: str | None = None,
+    default_kwargs: dict[str, Any] | None = None,
+):
+    """Build a per-bvid fan-out callable for Video read methods."""
+    async def _fn(
+        bvid: str,
+        credential: Credential | None,
+        timeout: float = 30.0,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        v = Video(bvid, credential=credential)
+        key = result_key or method_name
+        kwargs = dict(default_kwargs or {})
+
+        if not per_page:
+            async with _map_bilibili_errors(f"{key}[{bvid}]"):
+                result = await asyncio.wait_for(
+                    getattr(v, method_name)(**kwargs),
+                    timeout=timeout,
+                )
+            return {key: _json_safe(result)}
+
+        pages = await _video_pages(v, bvid, timeout)
+        rows: list[dict[str, Any]] = []
+        for idx, page in enumerate(pages):
+            call_kwargs = dict(kwargs)
+            cid = page.get("cid") if isinstance(page, dict) else None
+            if page_arg == "cid":
+                call_kwargs["cid"] = cid
+            elif page_arg == "page_index":
+                call_kwargs["page_index"] = idx
+            elif page_arg == "both":
+                call_kwargs["cid"] = cid
+                call_kwargs["page_index"] = idx
+            async with _map_bilibili_errors(f"{key}[{bvid}][{idx}]"):
+                result = await asyncio.wait_for(
+                    getattr(v, method_name)(**call_kwargs),
+                    timeout=timeout,
+                )
+            rows.append({
+                "page_index": idx,
+                "cid": cid,
+                "part": page.get("part", "") if isinstance(page, dict) else "",
+                "result": _json_safe(result),
+            })
+        return {"pages": pages, key: rows}
+
+    return _fn
+
+
+fetch_video_pages_item = _video_item_method("get_pages", result_key="pages")
+fetch_video_detail_full_item = _video_item_method("get_detail", result_key="detail")
+fetch_video_ai_conclusion_item = _video_item_method(
+    "get_ai_conclusion", per_page=True, page_arg="both", result_key="ai_conclusion",
+)
+fetch_video_danmaku_snapshot_item = _video_item_method(
+    "get_danmaku_snapshot", result_key="danmaku_snapshot",
+)
+fetch_video_danmaku_view_item = _video_item_method(
+    "get_danmaku_view", per_page=True, page_arg="both", result_key="danmaku_view",
+)
+fetch_video_danmaku_xml_item = _video_item_method(
+    "get_danmaku_xml", per_page=True, page_arg="both", result_key="danmaku_xml",
+)
+fetch_video_danmakus_item = _video_item_method(
+    "get_danmakus", per_page=True, page_arg="both", result_key="danmakus",
+)
+fetch_video_online_item = _video_item_method(
+    "get_online", per_page=True, page_arg="both", result_key="online",
+)
+fetch_video_pay_coins_item = _video_item_method("get_pay_coins", result_key="pay_coins")
+fetch_video_pbp_item = _video_item_method(
+    "get_pbp", per_page=True, page_arg="both", result_key="pbp",
+)
+fetch_video_player_info_item = _video_item_method(
+    "get_player_info", per_page=True, page_arg="cid", result_key="player_info",
+)
+fetch_video_private_notes_item = _video_item_method(
+    "get_private_notes_list", result_key="private_notes",
+)
+fetch_video_related_item = _video_item_method("get_related", result_key="related")
+fetch_video_relation_item = _video_item_method("get_relation", result_key="relation")
+fetch_video_special_dms_item = _video_item_method(
+    "get_special_dms", per_page=True, page_arg="both", result_key="special_dms",
+)
+fetch_video_subtitle_item = _video_item_method(
+    "get_subtitle", per_page=True, page_arg="cid", result_key="subtitle",
+)
+fetch_video_up_mid_item = _video_item_method("get_up_mid", result_key="up_mid")
+fetch_video_snapshot_item = _video_item_method(
+    "get_video_snapshot",
+    per_page=True,
+    page_arg="cid",
+    result_key="video_snapshot",
+    default_kwargs={"json_index": True, "pvideo": False},
+)
+fetch_video_download_url_item = _video_item_method(
+    "get_download_url", per_page=True, page_arg="both", result_key="download_url",
+)
+fetch_video_is_episode_item = _video_item_method("is_episode", result_key="is_episode")
+fetch_video_is_forbid_note_item = _video_item_method(
+    "is_forbid_note", result_key="is_forbid_note",
+)
+fetch_video_chargers_item = _video_item_method("get_chargers", result_key="chargers")
+
+
+async def fetch_video_public_notes_item(
+    bvid: str,
+    credential: Credential | None,
+    timeout: float = 30.0,
+    ps: int = 50,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """Fetch all public note pages for a bvid."""
+    v = Video(bvid, credential=credential)
+    pages: list[dict[str, Any]] = []
+    pn = 1
+    while True:
+        async with _map_bilibili_errors(f"public_notes[{bvid}][{pn}]"):
+            data = await asyncio.wait_for(
+                v.get_public_notes_list(pn=pn, ps=ps),
+                timeout=timeout,
+            )
+        safe = _normalise_api_result(data)
+        pages.append(safe)
+        items = _extract_list_items(safe)
+        total = _extract_total_count(safe)
+        if not items or (total > 0 and pn * ps >= total) or (total == 0 and len(items) < ps):
+            break
+        pn += 1
+    return {"pages": pages}
 
 
 # ---------------------------------------------------------------------------
@@ -561,14 +850,12 @@ async def fetch_endpoint(
         #   channel_list: {"items_lists": {"page": {"total": N}, "seasons_list": [...], ...}}
         #
         # --- pagination info ---
-        page_info: dict[str, Any] = {}
-        total_count = 0
+        total_count = _extract_total_count(data)
 
         # Shape 1: standard B站 {"page": {"count": N}} (videos)
         pi = data.get("page")
         if isinstance(pi, dict):
-            page_info = pi
-            total_count = page_info.get("count", 0)
+            total_count = total_count or pi.get("count", 0)
 
         # Shape 2: audio service top-level fields
         if total_count == 0 and "totalSize" in data:
@@ -589,39 +876,7 @@ async def fetch_endpoint(
             total_count = data["total_count"]
 
         # --- items ---
-        items: list = []
-        container: Any = None
-
-        # Use items_path to locate the container holding list data
-        if spec.items_path:
-            container = _resolve_dot_path(data, spec.items_path)
-
-        if isinstance(container, list):
-            # Container is directly a list (audios: data → [...])
-            items = container
-        elif isinstance(container, dict):
-            # Container is a dict; extract items from known keys
-            items = container.get("vlist", []) or container.get("list", [])
-            if not items:
-                # Collect items from all list-valued keys
-                # (channel_list: seasons_list + series_list)
-                collected: list = []
-                for v in container.values():
-                    if isinstance(v, list):
-                        collected.extend(v)
-                items = collected
-        else:
-            # Fallback: locate items without items_path (legacy heuristics)
-            list_data = data.get("list", {})
-            if isinstance(list_data, list):
-                items = list_data
-            elif isinstance(list_data, dict):
-                items = list_data.get("vlist", []) or list_data.get("list", [])
-                if not items:
-                    for v in list_data.values():
-                        if isinstance(v, list):
-                            items = v
-                            break
+        items = _extract_list_items(data, spec.items_path)
 
         current_pn = request_params.get("pn", 1)
         ps = request_params.get("ps", 30)
@@ -645,6 +900,33 @@ async def fetch_endpoint(
             is_last = True
         else:
             next_req = {**request_params, "anchor": anchor}
+
+    elif spec.pagination_strategy == "legacy_offset":
+        next_offset = data.get("next_offset", 0)
+        has_more = data.get("has_more", 0) == 1
+        if not has_more or not next_offset:
+            is_last = True
+        else:
+            next_req = {**request_params, "offset": next_offset}
+
+    elif spec.pagination_strategy == "oid":
+        items = _extract_list_items(data, spec.items_path)
+        ps = request_params.get("ps", 100)
+        total_count = _extract_total_count(data)
+        if not items or (total_count > 0 and len(items) >= total_count):
+            is_last = True
+        else:
+            last = items[-1] if isinstance(items[-1], dict) else {}
+            next_oid = (
+                last.get("aid")
+                or last.get("id")
+                or last.get("oid")
+                or last.get("param")
+            )
+            if not next_oid or len(items) < ps:
+                is_last = True
+            else:
+                next_req = {**request_params, "oid": next_oid}
 
     return FetchPageResult(
         uid=uid,
