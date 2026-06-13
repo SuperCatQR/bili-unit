@@ -16,6 +16,7 @@
 # the fetching-specific key schema lives in :class:`FetchingKeyMapper`.
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,7 @@ class DataStore(KvDataStore):
             if entry is None:
                 entry = {"status": "PENDING", "retry_count": 0, "last_error_id": None}
                 endpoints[ep_name] = entry
+            tv["updated_at"] = int(time.time() * 1000)
             entry["status"] = status
             entry["retry_count"] = retry_count
             if last_error_id is not None:

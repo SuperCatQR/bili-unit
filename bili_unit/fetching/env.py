@@ -36,6 +36,7 @@ class BiliEnv(BaseSettings):
     bili_fetching_recovery_cooldown: float = 300.0  # seconds before QPS starts recovering after 412
     bili_fetching_item_concurrency: int = 3  # max parallel item-level fan-out requests
     bili_fetching_refresh_after_days: float = 7.0  # refresh mode: re-fetch items older than N days
+    bili_fetching_stale_running_threshold_seconds: int = 900  # issue #3: RUNNING task with updated_at older than this is treated as PARTIAL (process killed/timeout)
 
     def get_retry_delays(self) -> list[int]:
         """Parse ``bili_fetching_retry_delays`` into a sorted list of seconds."""
