@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import pytest_asyncio
 from bilibili_api import Credential
 
@@ -16,6 +17,14 @@ from bili_unit.fetching.runner import Runner
 
 # fake credential for auth-free tests
 _FAKE_CRED = Credential(sessdata="test", bili_jct="test", buvid3="test")
+
+
+# 全局屏蔽真实 sleep，防止 retry 延迟（30/60/120s）拖慢测试套件。
+# 局部 patch（如 test_retry.py 里的 side_effect=fake_sleep）会临时覆盖此 fixture，行为不变。
+@pytest.fixture(autouse=True)
+def _mock_retry_sleep():
+    with patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
+        yield
 
 
 @pytest_asyncio.fixture(autouse=True)
