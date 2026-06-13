@@ -29,7 +29,7 @@ class ProcessingItemStatus(StrEnum):
 
 
 class ProcessingPipelineStatus(StrEnum):
-    """Status of a single pipeline (transform / audio) within a task."""
+    """Status of a single pipeline (audio) within a task."""
 
     PENDING = "PENDING"
     RUNNING = "RUNNING"

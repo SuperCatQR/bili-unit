@@ -1,12 +1,13 @@
 # Integration tests for processing runner / command / query.
 #
-# After the parsing-layer migration:
-#   - Transform pipeline reads typed-object dicts from ParsingQuery.
-#   - Audio pipeline still reads from FetchingQuery.
+# After the processing-shrink refactor:
+#   - Transform pipeline removed entirely.
+#   - Audio pipeline reads from FetchingQuery (video_detail raw items).
+#   - get_video_full / list_all_videos read metadata from ParsingQuery.
 #
 # Test fixtures:
 #   fetching_stack — FetchingDataStore + Query (for audio pipeline)
-#   parsing_stack  — ParsingDataStore + Query (for transform pipeline)
+#   parsing_stack  — ParsingDataStore + Query (for video_full / list_all_videos)
 #   proc_stack     — full ProcessingCommand wired to both stacks
 
 import time
@@ -44,6 +45,7 @@ from bili_unit.processing.error import ProcessingErrorStore
 from bili_unit.processing.keys import _proc_key
 from bili_unit.processing.query import ProcessingQuery
 from bili_unit.processing.runner import ProcessingRunner
+from bili_unit.processing.runner._pipeline_executor import WorkItem
 
 
 def _make_settings(tmp_path, max_retries=3, retry_delays="30,60,120") -> ProcessingEnv:
@@ -52,7 +54,6 @@ def _make_settings(tmp_path, max_retries=3, retry_delays="30,60,120") -> Process
         bili_processing_data_dir=str(tmp_path / "proc-data"),
         bili_processing_temp_dir=str(tmp_path / "proc-temp"),
         bili_processing_error_dir=str(tmp_path / "proc-error"),
-        bili_processing_transform_workers=2,
         bili_processing_audio_workers=1,
         bili_processing_queue_maxsize=8,
         bili_processing_max_retries=max_retries,
@@ -115,7 +116,7 @@ async def parsing_stack(tmp_path):
 @pytest_asyncio.fixture
 async def proc_stack(tmp_path, fetching_stack, parsing_stack):
     fd, fe, fqry = fetching_stack
-    _pd_parse, pqry = parsing_stack
+    pd_parse, pqry = parsing_stack
     s = _make_settings(tmp_path)
     pd = ProcessingDataStore(s.bili_processing_data_dir)
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
@@ -124,9 +125,8 @@ async def proc_stack(tmp_path, fetching_stack, parsing_stack):
     cmd = ProcessingCommand(
         data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
         fetching_query=fqry, settings=s,
-        parsing_query=pqry,
     )
-    qry = ProcessingQuery(data=pd, error=pe, fetching_query=fqry)
+    qry = ProcessingQuery(data=pd, error=pe, fetching_query=fqry, parsing_query=pqry)
 
     with (
         patch.object(
@@ -218,389 +218,28 @@ async def _seed_parsing_video_details(
         })
 
 
-async def _seed_parsing_user_profile(
-    pd: ParsingDataStore, uid: int, **overrides,
-) -> None:
-    d: dict = {
-        "_model_name": "user_profile",
-        "mid": uid, "name": f"U{uid}", "sex": "保密", "sign": "",
-        "avatar": "", "birthday": "", "level": 1, "jointime": 0,
-        "vip": {"type": 0, "status": 0, "label": ""},
-        "social": {"following": 0, "follower": 0, "whisper": 0, "black": 0},
-        "stats": {"archive_view": 0, "article_view": 0, "likes": 0},
-        "overview": None,
-        "avatar_local": "",
-    }
-    d.update(overrides)
-    await pd.put(_parsing_item_key(uid, "user_profile", str(uid)), d)
-
-
-async def _seed_parsing_dynamics(
-    pd: ParsingDataStore, uid: int, dynamics: list[dict],
-) -> None:
-    for dyn in dynamics:
-        d = {
-            "_model_name": "dynamic",
-            "id_str": dyn.get("id_str", ""),
-            "type": dyn.get("type", ""),
-            "text": dyn.get("text", ""),
-            "timestamp": dyn.get("timestamp"),
-            "major": dyn.get("major", {}),
-            "forwarded": dyn.get("forwarded"),
-            "image_urls": dyn.get("image_urls", []),
-            "image_locals": [],
-        }
-        await pd.put(_parsing_item_key(uid, "dynamic", d["id_str"]), d)
-
-
-async def _seed_parsing_articles(
-    pd: ParsingDataStore, uid: int, articles: list[dict],
-) -> None:
-    for art in articles:
-        d = {
-            "_model_name": "article",
-            "id": str(art.get("id", "")),
-            "title": art.get("title", ""),
-            "summary": art.get("summary", ""),
-            "image_urls": art.get("image_urls", []),
-            "stats": art.get("stats", {}),
-            "ctime": art.get("ctime"),
-            "lists": art.get("lists", []),
-            "markdown": art.get("markdown", ""),
-            "content_json": art.get("content_json", []),
-            "image_locals": [],
-        }
-        await pd.put(_parsing_item_key(uid, "article", d["id"]), d)
-
-
-async def _seed_parsing_opus(
-    pd: ParsingDataStore, uid: int, opus_list: list[dict],
-) -> None:
-    for op in opus_list:
-        d = {
-            "_model_name": "opus",
-            "id": str(op.get("id", "")),
-            "title": op.get("title", ""),
-            "summary": op.get("summary", ""),
-            "cover": op.get("cover", ""),
-            "jump_url": op.get("jump_url", ""),
-            "stats": op.get("stats", {}),
-            "ctime": op.get("ctime"),
-            "list_images": op.get("list_images", []),
-            "markdown": op.get("markdown", ""),
-            "detail_images": op.get("detail_images", []),
-            "cover_local": "",
-            "image_locals": [],
-        }
-        await pd.put(_parsing_item_key(uid, "opus", d["id"]), d)
-
-
-# ---------- transform integration ---------------------------------------
-
-@pytest.mark.asyncio
-async def test_processing_video_metadata_happy_path(proc_stack, parsing_stack):
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    pd_parse, _pq = parsing_stack
-    uid = 100
-    bvids = ["BV001", "BV002", "BV003"]
-    await _seed_parsing_video_details(pd_parse, uid, bvids)
-
-    result = await cmd.process_uid(uid, item_types=["video_metadata"], mode="incremental")
-    assert result.status == ProcessingTaskStatus.SUCCESS
-
-    task = await qry.get_task(uid)
-    assert task is not None
-    pipe = task.pipelines["transform"]
-    assert pipe.status == ProcessingPipelineStatus.SUCCESS
-    counts = pipe.items["video_metadata"]
-    assert counts["total"] == 3
-    assert counts["completed"] == 3
-    assert counts["failed"] == 0
-
-    items = await qry.list_items(uid, "video_metadata")
-    assert sorted(it.item_id for it in items) == ["BV001", "BV002", "BV003"]
-    for it in items:
-        assert it.status == ProcessingItemStatus.SUCCESS
-        assert it.result["bvid"] == it.item_id
-        assert it.result["title"] == f"title-{it.item_id}"
-
-
-@pytest.mark.asyncio
-async def test_processing_dynamics_and_articles(proc_stack, parsing_stack):
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    pd_parse, _pq = parsing_stack
-    uid = 200
-
-    await _seed_parsing_dynamics(pd_parse, uid, [
-        {"id_str": "DYN1", "type": "T", "text": "hello", "timestamp": 1718000000},
-        {"id_str": "DYN2", "type": "T", "text": "world", "timestamp": 1718000001},
-    ])
-    await _seed_parsing_articles(pd_parse, uid, [
-        {"id": 1, "title": "A1", "summary": "s1"},
-        {"id": 2, "title": "A2", "summary": "s2"},
-    ])
-
-    result = await cmd.process_uid(uid, item_types=["dynamics", "articles"])
-    assert result.status == ProcessingTaskStatus.SUCCESS
-
-    dyns = await qry.list_items(uid, "dynamics")
-    assert {it.item_id for it in dyns} == {"DYN1", "DYN2"}
-    assert all(it.status == ProcessingItemStatus.SUCCESS for it in dyns)
-
-    arts = await qry.list_items(uid, "articles")
-    assert {it.item_id for it in arts} == {"1", "2"}
-
-
-@pytest.mark.asyncio
-async def test_processing_articles_with_article_detail(proc_stack, parsing_stack):
-    """Article with markdown from parsing (detail already merged by parsing layer)."""
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    pd_parse, _pq = parsing_stack
-    uid = 220
-
-    await _seed_parsing_articles(pd_parse, uid, [
-        {
-            "id": 11, "title": "with-body", "summary": "list-summary",
-            "markdown": "# 标题\n\n这是正文内容。",
-            "content_json": [
-                {"type": "HeadingNode", "text": "标题"},
-                {"type": "ParagraphNode", "text": "这是正文内容。"},
-            ],
-        },
-        {"id": 22, "title": "no-body-yet"},
-    ])
-
-    result = await cmd.process_uid(uid, item_types=["articles"])
-    assert result.status == ProcessingTaskStatus.SUCCESS
-
-    arts = await qry.list_items(uid, "articles")
-    assert {it.item_id for it in arts} == {"11", "22"}
-
-    by_id = {it.item_id: it for it in arts}
-    enriched = by_id["11"].result
-    assert enriched is not None
-    assert enriched["markdown"] == "# 标题\n\n这是正文内容。"
-    assert enriched["word_count"] == len("# 标题\n\n这是正文内容。")
-    assert len(enriched["content_json"]) == 2
-
-    fallback = by_id["22"].result
-    assert fallback is not None
-    assert fallback["title"] == "no-body-yet"
-    assert fallback["markdown"] == ""
-    assert fallback["word_count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_processing_opus_with_opus_detail(proc_stack, parsing_stack):
-    """Opus with markdown/images from parsing (detail already merged)."""
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    pd_parse, _pq = parsing_stack
-    uid = 230
-
-    await _seed_parsing_opus(pd_parse, uid, [
-        {
-            "id": "33", "title": "with-body", "summary": "list-summary",
-            "stats": {"view": 5, "like": 1}, "ctime": 1700000000,
-            "markdown": "# 图文标题\n\n图文正文。",
-            "detail_images": [{"url": "https://i0.hdslb.com/i.jpg", "width": 200, "height": 100}],
-        },
-        {"id": "44", "title": "no-body-yet"},
-    ])
-
-    result = await cmd.process_uid(uid, item_types=["opus"])
-    assert result.status == ProcessingTaskStatus.SUCCESS
-
-    items = await qry.list_items(uid, "opus")
-    assert {it.item_id for it in items} == {"33", "44"}
-
-    by_id = {it.item_id: it for it in items}
-
-    enriched = by_id["33"].result
-    assert enriched is not None
-    assert enriched["markdown"] == "# 图文标题\n\n图文正文。"
-    assert enriched["images"] == [{"url": "https://i0.hdslb.com/i.jpg", "width": 200, "height": 100}]
-    assert enriched["image_urls"] == ["https://i0.hdslb.com/i.jpg"]
-    assert enriched["word_count"] == len("# 图文标题\n\n图文正文。")
-    assert enriched["stats"]["view"] == 5
-
-    fallback = by_id["44"].result
-    assert fallback is not None
-    assert fallback["title"] == "no-body-yet"
-    assert fallback["markdown"] == ""
-    assert fallback["word_count"] == 0
-    assert fallback["images"] == []
-
-
-@pytest.mark.asyncio
-async def test_processing_articles_with_article_list_detail(proc_stack, parsing_stack):
-    """Readlist (文集) membership already merged by parsing layer."""
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    pd_parse, _pq = parsing_stack
-    uid = 240
-
-    await _seed_parsing_articles(pd_parse, uid, [
-        {"id": 100, "title": "in-readlist", "lists": [{"rlid": "1043430", "name": "【警戒追踪】"}]},
-        {"id": 200, "title": "in-two-readlists", "lists": [
-            {"rlid": "1043430", "name": "【警戒追踪】"},
-            {"rlid": "1043431", "name": "【前哨速递】"},
-        ]},
-        {"id": 300, "title": "no-readlist"},
-    ])
-
-    result = await cmd.process_uid(uid, item_types=["articles"])
-    assert result.status == ProcessingTaskStatus.SUCCESS
-
-    arts = await qry.list_items(uid, "articles")
-    assert {it.item_id for it in arts} == {"100", "200", "300"}
-
-    by_id = {it.item_id: it for it in arts}
-    assert by_id["100"].result["lists"] == [{"rlid": "1043430", "name": "【警戒追踪】"}]
-    two = by_id["200"].result
-    rlids = {m["rlid"] for m in two["lists"]}
-    assert rlids == {"1043430", "1043431"}
-    assert by_id["300"].result["lists"] == []
-
-
-@pytest.mark.asyncio
-async def test_processing_user_profile_happy_path(proc_stack, parsing_stack):
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    pd_parse, _pq = parsing_stack
-    uid = 250
-
-    await _seed_parsing_user_profile(
-        pd_parse, uid,
-        name="U250", sex="保密", sign="hi",
-        avatar="https://i0.hdslb.com/u250.jpg", birthday="01-01",
-        level=5, vip={"type": 1, "status": 1, "label": "大会员"},
-        jointime=1500000000,
-        social={"following": 10, "follower": 100, "whisper": 0, "black": 0},
-        stats={"archive_view": 1000, "article_view": 50, "likes": 80},
-        overview={"video_count": 7, "article_count": 1, "opus_count": 3},
-    )
-
-    result = await cmd.process_uid(uid, item_types=["user_profile"])
-    assert result.status == ProcessingTaskStatus.SUCCESS
-
-    dto = await qry.get_item(uid, "user_profile", str(uid))
-    assert dto is not None
-    assert dto.status == ProcessingItemStatus.SUCCESS
-    assert dto.result["uid"] == uid
-    assert dto.result["name"] == "U250"
-    assert dto.result["vip"]["label"] == "大会员"
-    assert dto.result["social"]["follower"] == 100
-    assert dto.result["stats"]["archive_view"] == 1000
-    assert dto.result["overview"] == {"video_count": 7, "article_count": 1, "opus_count": 3}
-
-    # No parsing data → no work items (graceful skip).
-    uid2 = 252
-    r2 = await cmd.process_uid(uid2, item_types=["user_profile"])
-    assert r2.status == ProcessingTaskStatus.SUCCESS  # empty rollup → SUCCESS
-    assert await qry.list_items(uid2, "user_profile") == []
-
-
-@pytest.mark.asyncio
-async def test_processing_incremental_skip_existing(proc_stack, parsing_stack):
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    pd_parse, _pq = parsing_stack
-    uid = 300
-    bvids = ["BVa", "BVb"]
-    await _seed_parsing_video_details(pd_parse, uid, bvids)
-
-    r1 = await cmd.process_uid(uid, item_types=["video_metadata"])
-    assert r1.status == ProcessingTaskStatus.SUCCESS
-    items1 = await qry.list_items(uid, "video_metadata")
-    ts1 = {it.item_id: it.processed_at for it in items1}
-
-    r2 = await cmd.process_uid(uid, item_types=["video_metadata"], mode="incremental")
-    assert r2.status == ProcessingTaskStatus.SUCCESS
-
-    task = await qry.get_task(uid)
-    counts = task.pipelines["transform"].items["video_metadata"]
-    assert counts["skipped"] == 2
-    assert counts["completed"] == 0
-    assert counts["total"] == 2
-
-    items2 = await qry.list_items(uid, "video_metadata")
-    ts2 = {it.item_id: it.processed_at for it in items2}
-    assert ts1 == ts2
-
-
-@pytest.mark.asyncio
-async def test_processing_full_mode_overwrites(proc_stack, parsing_stack):
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    pd_parse, _pq = parsing_stack
-    uid = 301
-    bvids = ["BVx"]
-    await _seed_parsing_video_details(pd_parse, uid, bvids)
-
-    r1 = await cmd.process_uid(uid, item_types=["video_metadata"])
-    assert r1.status == ProcessingTaskStatus.SUCCESS
-    items1 = await qry.list_items(uid, "video_metadata")
-    ts1 = items1[0].processed_at
-
-    import asyncio
-    await asyncio.sleep(0.005)
-    r2 = await cmd.process_uid(uid, item_types=["video_metadata"], mode="full")
-    assert r2.status == ProcessingTaskStatus.SUCCESS
-    items2 = await qry.list_items(uid, "video_metadata")
-    counts = (await qry.get_task(uid)).pipelines["transform"].items["video_metadata"]
-    assert counts["completed"] == 1
-    assert counts["skipped"] == 0
-    assert items2[0].processed_at >= ts1
-
-
-@pytest.mark.asyncio
-async def test_processing_endpoint_unavailable_skips_handler(proc_stack):
-    """No parsing data → no items → SUCCESS (empty rollup)."""
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    uid = 500
-    r = await cmd.process_uid(uid, item_types=["video_metadata"])
-    assert r.status == ProcessingTaskStatus.SUCCESS
-    assert await qry.list_items(uid, "video_metadata") == []
-
-
-@pytest.mark.asyncio
-async def test_processing_handler_failure_records_error(proc_stack, parsing_stack):
-    cmd, qry, _pd, _pe, _fd = proc_stack
-    pd_parse, _pq = parsing_stack
-    uid = 600
-    await _seed_parsing_video_details(pd_parse, uid, ["BVcrash"])
-
-    from bili_unit.processing.transform import video_metadata as vm
-    original = vm.HANDLER.transform
-
-    def boom(_item):
-        raise RuntimeError("kaboom")
-
-    vm.HANDLER.transform = boom  # type: ignore[method-assign]
-    try:
-        r = await cmd.process_uid(uid, item_types=["video_metadata"])
-    finally:
-        vm.HANDLER.transform = original  # type: ignore[method-assign]
-
-    assert r.status in (ProcessingTaskStatus.PARTIAL, ProcessingTaskStatus.FAILED_PERMANENT)
-    items = await qry.list_items(uid, "video_metadata")
-    assert len(items) == 1
-    assert items[0].status == ProcessingItemStatus.FAILED
-    errs = await qry.list_errors(uid=uid)
-    assert any(e.error_type == "RuntimeError" for e in errs)
-
+# ---------- video_full aggregate view -----------------------------------------
 
 @pytest.mark.asyncio
 async def test_processing_video_full_view(proc_stack, fetching_stack, parsing_stack):
+    """get_video_full returns metadata from parsing + transcription from audio."""
     cmd, qry, _pd, _pe, fd = proc_stack
     pd_parse, _pq = parsing_stack
     uid = 700
     bvids = ["BVfull"]
-    # Seed both fetching (for audio) and parsing (for transform).
+    # Seed fetching (for audio pipeline) and parsing (for metadata).
     await _seed_fetching_video_detail(fd, uid, bvids)
     await _seed_parsing_video_details(pd_parse, uid, bvids)
-    await cmd.process_uid(uid, item_types=["video_metadata"])
+
+    # Run audio pipeline so transcription record exists.
+    await cmd.process_uid(uid)
 
     full = await qry.get_video_full(uid, "BVfull")
     assert full is not None
     assert full.metadata is not None
+    # metadata.result is the parsing dict itself
     assert full.metadata.result["title"] == "title-BVfull"
+    assert full.metadata.pipeline == "parsing"
     assert full.transcription is not None
     assert full.transcription.status == ProcessingItemStatus.SUCCESS
 
@@ -608,6 +247,7 @@ async def test_processing_video_full_view(proc_stack, fetching_stack, parsing_st
     assert len(summaries) == 1
     assert summaries[0].bvid == "BVfull"
     assert summaries[0].has_transcription is True
+    assert summaries[0].title == "title-BVfull"
 
 
 # ---------- audio pipeline integration ---------------------------------------
@@ -619,7 +259,7 @@ async def test_audio_pipeline_discovers_and_processes(proc_stack, fetching_stack
     bvids = ["BVaud1", "BVaud2"]
     await _seed_fetching_video_detail(fd, uid, bvids)
 
-    result = await cmd.process_uid(uid, pipelines=["audio"], mode="incremental")
+    result = await cmd.process_uid(uid, mode="incremental")
     assert result.status == ProcessingTaskStatus.SUCCESS
 
     task = await qry.get_task(uid)
@@ -645,12 +285,12 @@ async def test_audio_pipeline_incremental_skip(proc_stack, fetching_stack):
     uid = 801
     await _seed_fetching_video_detail(fd, uid, ["BVskip"])
 
-    await cmd.process_uid(uid, pipelines=["audio"])
+    await cmd.process_uid(uid)
     items1 = await qry.list_items(uid, "audio")
     assert len(items1) == 1
     ts1 = items1[0].processed_at
 
-    r2 = await cmd.process_uid(uid, pipelines=["audio"], mode="incremental")
+    r2 = await cmd.process_uid(uid, mode="incremental")
     assert r2.status == ProcessingTaskStatus.SUCCESS
 
     task = await qry.get_task(uid)
@@ -686,7 +326,7 @@ async def test_audio_pipeline_failure_records_error(tmp_path, fetching_stack):
         patch("bili_unit.fetching.auth.get_credential", new=AsyncMock(return_value=None)),
         patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
     ):
-        result = await cmd.process_uid(uid, pipelines=["audio"])
+        result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
 
@@ -705,7 +345,7 @@ async def test_audio_pipeline_failure_records_error(tmp_path, fetching_stack):
 async def test_audio_pipeline_no_video_detail(proc_stack):
     cmd, qry, _pd, _pe, _fd = proc_stack
     uid = 803
-    result = await cmd.process_uid(uid, pipelines=["audio"])
+    result = await cmd.process_uid(uid)
     assert result.status == ProcessingTaskStatus.SUCCESS
     assert await qry.list_items(uid, "audio") == []
 
@@ -745,7 +385,7 @@ async def test_audio_retry_exhausts_then_fails(tmp_path, fetching_stack):
         patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
         patch("bili_unit.processing.runner.asyncio.sleep", new=AsyncMock()),
     ):
-        result = await cmd.process_uid(uid, pipelines=["audio"])
+        result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
 
@@ -799,7 +439,7 @@ async def test_audio_retry_succeeds_after_first_failure(tmp_path, fetching_stack
         patch.object(cmd._runner, "_asr_backend", mock_asr),
         patch("bili_unit.processing.runner.asyncio.sleep", new=AsyncMock()),
     ):
-        result = await cmd.process_uid(uid, pipelines=["audio"])
+        result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.SUCCESS
     items = await qry.list_items(uid, "audio")
@@ -839,7 +479,7 @@ async def test_audio_non_retryable_no_retry(tmp_path, fetching_stack):
         patch("bili_unit.fetching.auth.get_credential", new=AsyncMock(return_value=None)),
         patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
     ):
-        result = await cmd.process_uid(uid, pipelines=["audio"])
+        result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
     errs = await qry.list_errors(uid=uid)
@@ -874,7 +514,7 @@ async def test_audio_zero_max_retries_immediate_fail(tmp_path, fetching_stack):
         patch("bili_unit.fetching.auth.get_credential", new=AsyncMock(return_value=None)),
         patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
     ):
-        result = await cmd.process_uid(uid, pipelines=["audio"])
+        result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
     errs = await qry.list_errors(uid=uid)
@@ -890,7 +530,6 @@ async def test_audio_duration_uses_page_metadata_not_last_segment(
     tmp_path, fetching_stack,
 ):
     from bili_unit.processing.audio import ASRResult
-    from bili_unit.processing.transform._base import WorkItem
 
     fd, _fe, fqry = fetching_stack
     uid = 950
@@ -959,7 +598,6 @@ async def test_audio_duration_falls_back_to_segment_sum_when_no_metadata(
     tmp_path, fetching_stack,
 ):
     from bili_unit.processing.audio import ASRResult
-    from bili_unit.processing.transform._base import WorkItem
 
     fd, _fe, fqry = fetching_stack
     uid = 951
@@ -1029,7 +667,6 @@ async def test_audio_asr_cache_skips_segments_on_retry(tmp_path, fetching_stack)
         CachedSegment,
         Mp3Segment,
     )
-    from bili_unit.processing.transform._base import WorkItem
 
     fd, _fe, fqry = fetching_stack
     uid = 1010
@@ -1101,7 +738,6 @@ async def test_audio_asr_cache_skips_segments_on_retry(tmp_path, fetching_stack)
 async def test_audio_asr_cache_persists_on_failure(tmp_path, fetching_stack):
     from bili_unit.processing import ASRAPIError
     from bili_unit.processing.audio import ASRCacheStore, ASRResult, Mp3Segment
-    from bili_unit.processing.transform._base import WorkItem
 
     fd, _fe, fqry = fetching_stack
     uid = 1011
@@ -1171,7 +807,6 @@ async def test_audio_asr_cache_persists_on_failure(tmp_path, fetching_stack):
 @pytest.mark.asyncio
 async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path, fetching_stack):
     from bili_unit.processing.audio import ASRResult, Mp3Segment
-    from bili_unit.processing.transform._base import WorkItem
 
     fd, _fe, fqry = fetching_stack
     uid = 1012

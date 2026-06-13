@@ -20,7 +20,6 @@ class ProcessingEnv(BaseSettings):
     bili_processing_error_dir: str = "data/bili/processing/error"
 
     # Worker pools
-    bili_processing_transform_workers: int = 4
     bili_processing_audio_workers: int = 2
     bili_processing_queue_maxsize: int = 16
 

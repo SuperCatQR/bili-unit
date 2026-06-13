@@ -69,30 +69,26 @@ def test_exclude_everything_raises():
 
 
 def test_argparse_layer_rejects_both_flags():
-    """``-e`` and ``-x`` are declared mutually exclusive on the parser."""
+    """``-e`` and ``-x`` are declared mutually exclusive on the fetch parser."""
     from bili_unit.__main__ import _build_parser
 
     parser = _build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["fetch", "1", "-e", "user_info", "-x", "videos"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            ["process", "1", "-t", "video_metadata", "-x", "dynamics"],
-        )
 
 
-def test_default_subset_is_none_for_fetch_and_process():
-    """Without any flag, parser leaves both lists None — translator returns None."""
+def test_default_subset_is_none_for_fetch():
+    """Without any flag, fetch parser leaves both lists None → translator returns None.
+
+    The ``process`` subcommand no longer takes -e/-x style item-type flags after
+    the 2026-06-14 transform deletion (only one pipeline remains: audio).
+    """
     from bili_unit.__main__ import _build_parser
 
     parser = _build_parser()
     args = parser.parse_args(["fetch", "1"])
     assert args.endpoints is None
     assert args.exclude_endpoints is None
-
-    args = parser.parse_args(["process", "1"])
-    assert args.item_types is None
-    assert args.exclude_item_types is None
 
 
 # --- Tests for --profile (issue #2) ----------------------------------------

@@ -14,7 +14,6 @@ from .. import (
 )
 from ..keys import _proc_key, _task_key
 from ..task import PipelineEntry, ProcessingTaskValue
-from ..transform._base import WorkItem
 from ._audio_work import (
     audio_convert_page,
     audio_download_page,
@@ -23,6 +22,7 @@ from ._audio_work import (
 from ._pipeline_executor import (
     ItemRetryContext,
     WorkerOutcome,
+    WorkItem,
     run_item_with_retry,
     run_item_workers,
 )

@@ -4,7 +4,7 @@
 # process_uid(); MVP does not provide retry_failed() (decision §19).
 #
 # Boundaries (docs/structure/bili.md §8):
-#   - command 不直接调用 transform / audio
+#   - command 不直接调用 audio
 #   - command 不写 raw / temp / data（runner does that）
 #   - command 不提供 data / error 读取（that's query）
 
@@ -19,7 +19,6 @@ from .runner import ProcessingRunner
 
 if TYPE_CHECKING:
     from ..fetching.query import Query as FetchingQuery
-    from ..parsing.query import ParsingQuery
     from .audio._asr_backend import ASRBackend
     from .data import ProcessingDataStore
     from .env import ProcessingEnv
@@ -40,7 +39,7 @@ class ProcessingCommand:
         settings: ProcessingEnv,
         asr_backend: ASRBackend | None = None,
         fetching_close: Callable[[], Awaitable[None]] | None = None,
-        parsing_query: ParsingQuery | None = None,
+        parsing_query: object = None,  # retained for call-site compat; not used
     ) -> None:
         self._data = data
         self._error = error
@@ -53,31 +52,23 @@ class ProcessingCommand:
             fetching_query=fetching_query,
             settings=settings,
             asr_backend=asr_backend,
-            parsing_query=parsing_query,
         )
 
     async def process_uid(
         self,
         uid: int,
-        pipelines: list[str] | None = None,
-        item_types: list[str] | None = None,
         mode: str = "incremental",
     ) -> ProcessingCommandResult:
         """Trigger processing for a uid.
 
         Args:
-            pipelines: subset of {"transform", "audio"}; default all.
-            item_types: subset of registered transform item_types; default all.
             mode: "incremental" (default) | "full".
         """
         logger.info(
             "command_received",
-            extra={"uid": uid, "mode": mode, "pipelines": pipelines,
-                   "item_types": item_types},
+            extra={"uid": uid, "mode": mode},
         )
-        status: ProcessingTaskStatus = await self._runner.run(
-            uid, pipelines=pipelines, item_types=item_types, mode=mode,
-        )
+        status: ProcessingTaskStatus = await self._runner.run(uid, mode=mode)
         return ProcessingCommandResult(uid=uid, status=status)
 
     async def close(self) -> None:

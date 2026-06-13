@@ -72,7 +72,7 @@ async def test_data_progress_keys(proc_data):
     assert (await proc_data.get(k1))["done"] is False
 
     # pipeline + item_type progress
-    k2 = "uid:9:progress:transform:video_metadata"
+    k2 = "uid:9:progress:audio:transcription"
     await proc_data.put(k2, {"total_items": 10})
     assert (await proc_data.get(k2))["total_items"] == 10
 
@@ -84,19 +84,19 @@ async def test_data_update_task_pipeline(proc_data):
         "uid": 7, "status": "PENDING", "pipelines": {}, "created_at": 0,
     })
     await proc_data.update_task_pipeline(
-        key, "transform", "RUNNING",
-        items={"video_metadata": {"total": 5, "completed": 2, "failed": 0, "skipped": 0}},
+        key, "audio", "RUNNING",
+        items={"transcription": {"total": 5, "completed": 2, "failed": 0, "skipped": 0}},
     )
     val = await proc_data.get(key)
-    assert val["pipelines"]["transform"]["status"] == "RUNNING"
-    assert val["pipelines"]["transform"]["items"]["video_metadata"]["completed"] == 2
+    assert val["pipelines"]["audio"]["status"] == "RUNNING"
+    assert val["pipelines"]["audio"]["items"]["transcription"]["completed"] == 2
 
     # update without items: status only
-    await proc_data.update_task_pipeline(key, "transform", "SUCCESS")
+    await proc_data.update_task_pipeline(key, "audio", "SUCCESS")
     val = await proc_data.get(key)
-    assert val["pipelines"]["transform"]["status"] == "SUCCESS"
+    assert val["pipelines"]["audio"]["status"] == "SUCCESS"
     # items preserved
-    assert val["pipelines"]["transform"]["items"]["video_metadata"]["completed"] == 2
+    assert val["pipelines"]["audio"]["items"]["transcription"]["completed"] == 2
 
 
 # ---------- error store -------------------------------------------------
@@ -106,8 +106,8 @@ async def test_error_record_and_list(proc_error):
     e1 = await proc_error.record(
         ValueError("boom"),
         uid=42,
-        pipeline="transform",
-        item_type="video_metadata",
+        pipeline="audio",
+        item_type="transcription",
         item_id="BVa",
         retryable="false",
     )

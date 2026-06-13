@@ -101,6 +101,7 @@ async def assemble(
         data=proc_data,
         error=proc_error,
         fetching_query=fetch_qry,
+        parsing_query=parse_qry,
     )
 
     cmd = BiliCommand(fetch_cmd, parsing=parse_cmd, processing=proc_cmd)

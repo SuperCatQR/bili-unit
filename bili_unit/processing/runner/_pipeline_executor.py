@@ -30,7 +30,20 @@ from ..._retry import (
     RetryPolicy,
 )
 from .. import ProcessingItemStatus
-from ..transform._base import WorkItem
+
+
+@dataclass(frozen=True)
+class WorkItem:
+    """A single processing work unit, addressable by (item_type, item_id).
+
+    item_data carries the typed-object dict (e.g. a VideoDetail serialised
+    via to_dict()).  Keeping this self-contained makes the work call a pure
+    function.
+    """
+
+    item_type: str
+    item_id: str
+    item_data: dict[str, Any]
 
 
 @dataclass(frozen=True)
