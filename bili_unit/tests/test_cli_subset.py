@@ -93,3 +93,54 @@ def test_default_subset_is_none_for_fetch_and_process():
     args = parser.parse_args(["process", "1"])
     assert args.item_types is None
     assert args.exclude_item_types is None
+
+
+# --- Tests for --profile (issue #2) ----------------------------------------
+
+def test_profile_default_is_all():
+    """No --profile flag → defaults to "all" (backward compat)."""
+    from bili_unit.__main__ import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args(["fetch", "1"])
+    assert args.profile == "all"
+
+
+def test_profile_parsing_chosen():
+    from bili_unit.__main__ import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args(["fetch", "1", "--profile", "parsing"])
+    assert args.profile == "parsing"
+
+
+def test_profile_short_flag():
+    from bili_unit.__main__ import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args(["fetch", "1", "-p", "minimal"])
+    assert args.profile == "minimal"
+
+
+def test_profile_unknown_rejected():
+    from bili_unit.__main__ import _build_parser
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["fetch", "1", "--profile", "everything"])
+
+
+def test_profile_mutually_exclusive_with_endpoints():
+    from bili_unit.__main__ import _build_parser
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["fetch", "1", "-p", "parsing", "-e", "user_info"])
+
+
+def test_profile_mutually_exclusive_with_exclude():
+    from bili_unit.__main__ import _build_parser
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["fetch", "1", "-p", "parsing", "-x", "videos"])

@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-PaginationStrategy = str  # "none" | "page" | "cursor" | "anchor" | "oid" | "custom"
+PaginationStrategy = str  # "none" | "page" | "cursor" | "anchor" | "legacy_offset" | "oid" | "custom"
 
 
 @dataclass

@@ -81,15 +81,20 @@ def _resolve_subset(
 async def _handle_fetch(args: argparse.Namespace) -> None:
     """Run fetching via the unit-level BiliCommand / BiliQuery."""
     from bili_unit import EndpointStatus, assemble
-    from bili_unit.fetching.client import ENDPOINTS
+    from bili_unit.fetching.client import ENDPOINTS, resolve_profile
 
     all_endpoints = [ep.name for ep in ENDPOINTS]
-    endpoints = _resolve_subset(
-        flag_label="endpoint",
-        all_names=all_endpoints,
-        include=args.endpoints,
-        exclude=args.exclude_endpoints,
-    )
+
+    # Resolve endpoint subset: -e / -x take precedence; fall back to --profile.
+    if args.endpoints is not None or args.exclude_endpoints is not None:
+        endpoints = _resolve_subset(
+            flag_label="endpoint",
+            all_names=all_endpoints,
+            include=args.endpoints,
+            exclude=args.exclude_endpoints,
+        )
+    else:
+        endpoints = resolve_profile(args.profile)  # None for "all"
 
     cmd, qry, data, error = await assemble()
     try:
@@ -349,6 +354,17 @@ def _build_parser() -> argparse.ArgumentParser:
     fetch_group.add_argument(
         "--endpoints", "-e", nargs="+", default=None, metavar="EP",
         help="Endpoint names to fetch (debug; mutually exclusive with -x).",
+    )
+    fetch_group.add_argument(
+        "--profile", "-p",
+        choices=["all", "parsing", "minimal"],
+        default="all",
+        help=(
+            "Endpoint set preset (mutually exclusive with -e/-x):\n"
+            "  all     — 所有已注册端点（默认；中等账号 ~17 分钟）\n"
+            "  parsing — parsing 层实际消费的 11 个端点（≈ 2-3 分钟，推荐）\n"
+            "  minimal — 5 个 listing 端点，用于 smoke / CI"
+        ),
     )
     p_fetch.add_argument(
         "--mode", "-m",
