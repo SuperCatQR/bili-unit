@@ -41,6 +41,10 @@ async def assemble(
             run without editing .env, e.g. when only running transform.
     """
     from .fetching import assemble as _fetching_assemble
+    from .parsing.command import ParsingCommand
+    from .parsing.data import ParsingDataStore
+    from .parsing.env import get_parsing_settings
+    from .parsing.query import ParsingQuery
     from .processing.audio._asr_backend import create_asr_backend
     from .processing.command import ProcessingCommand
     from .processing.data import ProcessingDataStore
@@ -50,6 +54,15 @@ async def assemble(
 
     fetch_cmd, fetch_qry, fetch_data, fetch_error = await _fetching_assemble()
 
+    # --- parsing layer ---
+    ps = get_parsing_settings()
+    parsing_data = ParsingDataStore(ps.bili_parsing_data_dir)
+    await parsing_data.open()
+
+    parse_cmd = ParsingCommand(data=parsing_data, fetching_query=fetch_qry)
+    parse_qry = ParsingQuery(data=parsing_data)
+
+    # --- processing layer ---
     s = get_processing_settings()
     proc_data = ProcessingDataStore(s.bili_processing_data_dir)
     proc_error = ProcessingErrorStore(s.bili_processing_error_dir)
@@ -65,8 +78,12 @@ async def assemble(
         if asr_backend is not None:
             await asr_backend.close()
 
-    async def _close_fetching_stack() -> None:
+    async def _close_parsing_stack() -> None:
         await _close_processing_stores()
+        await parsing_data.close()
+
+    async def _close_fetching_stack() -> None:
+        await _close_parsing_stack()
         await fetch_data.close()
         await fetch_error.close()
 
@@ -78,6 +95,7 @@ async def assemble(
         settings=s,
         asr_backend=asr_backend,
         fetching_close=_close_fetching_stack,
+        parsing_query=parse_qry,
     )
     proc_qry = ProcessingQuery(
         data=proc_data,
@@ -85,8 +103,8 @@ async def assemble(
         fetching_query=fetch_qry,
     )
 
-    cmd = BiliCommand(fetch_cmd, processing=proc_cmd)
-    qry = BiliQuery(fetch_qry, processing=proc_qry)
+    cmd = BiliCommand(fetch_cmd, parsing=parse_cmd, processing=proc_cmd)
+    qry = BiliQuery(fetch_qry, parsing=parse_qry, processing=proc_qry)
     return cmd, qry, fetch_data, fetch_error
 
 

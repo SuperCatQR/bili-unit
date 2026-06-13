@@ -19,91 +19,39 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .._storage import JsonKVStore
+from .._storage import KvDataStore, KvSchema, PathShape, SchemaKeyMapper
 from . import DataError
 
 logger = logging.getLogger("bili.fetching.data")
 
 
-class FetchingKeyMapper:
+# Fetching key grammar (cf. SchemaKeyMapper):
+#   uid:{uid}:task                      → {uid}/task.json
+#   uid:{uid}:fetch:{ep}                → {uid}/fetch/{ep}.json
+#   uid:{uid}:fetch:{ep}:{item…}        → {uid}/fetch/{ep}/{item}.json
+#   uid:{uid}:progress:{ep}             → {uid}/progress/{ep}.json
+#   rate_limit:{key}                    → rate_limit/{key}.json
+_FETCHING_SCHEMA = KvSchema(
+    id_prefix="uid",
+    sections={
+        "task": {0: PathShape(dir_indices=(), file_index=0)},
+        "fetch": {
+            1: PathShape(dir_indices=(0,), file_index=1),
+            2: PathShape(dir_indices=(0, 1), file_index=2, overflow_join=True),
+        },
+        "progress": {1: PathShape(dir_indices=(0,), file_index=1)},
+    },
+    flat={"rate_limit": PathShape(dir_indices=(0,), file_index=1)},
+)
+
+
+class FetchingKeyMapper(SchemaKeyMapper):
     """Key ↔ path mapping for the fetching key schema."""
 
-    def to_path(self, base: Path, key: str) -> Path:
-        parts = key.split(":")
-        if len(parts) >= 3 and parts[0] == "uid":
-            uid, section = parts[1], parts[2]
-            if section == "task" and len(parts) == 3:
-                return base / uid / "task.json"
-            if section == "fetch" and len(parts) >= 4:
-                ep = parts[3]
-                if len(parts) == 4:
-                    return base / uid / "fetch" / f"{ep}.json"
-                item_id = ":".join(parts[4:])
-                return base / uid / "fetch" / ep / f"{item_id}.json"
-            if section == "progress" and len(parts) == 4:
-                return base / uid / "progress" / f"{parts[3]}.json"
-        if len(parts) >= 2 and parts[0] == "rate_limit":
-            rl_key = parts[1]
-            return base / "rate_limit" / f"{rl_key}.json"
-        # fallback (should never happen with well-formed keys)
-        safe = key.replace(":", "__")
-        return base / "_misc" / f"{safe}.json"
-
-    def to_key(self, base: Path, path: Path) -> str:
-        rel = path.relative_to(base)
-        parts = list(rel.parts)
-        name = parts[-1]
-        if name.endswith(".json"):
-            name = name[:-5]
-
-        # {uid}/task.json → uid:{uid}:task
-        if len(parts) == 2 and name == "task":
-            return f"uid:{parts[0]}:task"
-        # {uid}/fetch/{ep}.json → uid:{uid}:fetch:{ep}
-        if len(parts) == 3 and parts[1] == "fetch":
-            return f"uid:{parts[0]}:fetch:{name}"
-        # {uid}/fetch/{ep}/{item}.json → uid:{uid}:fetch:{ep}:{item}
-        if len(parts) == 4 and parts[1] == "fetch":
-            return f"uid:{parts[0]}:fetch:{parts[2]}:{name}"
-        # {uid}/progress/{ep}.json → uid:{uid}:progress:{ep}
-        if len(parts) == 3 and parts[1] == "progress":
-            return f"uid:{parts[0]}:progress:{name}"
-        # rate_limit/{key}.json → rate_limit:{key}
-        if len(parts) == 2 and parts[0] == "rate_limit":
-            return f"rate_limit:{name}"
-        return f"_unknown:{rel}"
-
-    def prefix_to_scan_dir(self, base: Path, prefix: str) -> Path:
-        """Map a key prefix to the directory that contains matching files."""
-        parts = prefix.split(":")
-        if len(parts) >= 1 and parts[0] == "uid":
-            if len(parts) == 1:
-                # "uid" → scan entire base (all uid dirs)
-                return base
-            uid = parts[1]
-            if len(parts) == 2 or (len(parts) >= 3 and parts[2] == ""):
-                # "uid:100" or "uid:100:" → scan the uid directory
-                return base / uid
-            section = parts[2]
-            if section == "fetch" and len(parts) == 3:
-                return base / uid / "fetch"
-            if section == "fetch" and len(parts) >= 4 and parts[3] != "":
-                return base / uid / "fetch" / parts[3]
-            if section == "fetch" and len(parts) >= 4 and parts[3] == "":
-                return base / uid / "fetch"
-            if section == "progress":
-                return base / uid / "progress"
-            if section == "task":
-                return base / uid
-        if len(parts) >= 1 and parts[0] == "rate_limit":
-            return base / "rate_limit"
-        # Fallback: try the path as-is; if it's a directory, scan it;
-        # otherwise scan parent.
-        target = self.to_path(base, prefix)
-        return target if target.is_dir() else target.parent
+    schema = _FETCHING_SCHEMA
 
 
-class DataStore:
+class DataStore(KvDataStore):
     """Async file-directory key-value store.
 
     Thread-unsafe by design (single asyncio event-loop).  Writes are serialised
@@ -111,31 +59,7 @@ class DataStore:
     """
 
     def __init__(self, path: str | Path) -> None:
-        self._kv = JsonKVStore(
-            path,
-            FetchingKeyMapper(),
-            decode_error_cls=DataError,
-        )
-
-    async def open(self) -> None:
-        await self._kv.open()
-
-    async def close(self) -> None:
-        await self._kv.close()
-
-    # -- basic CRUD ---------------------------------------------------------
-
-    async def get(self, key: str) -> dict[str, Any] | None:
-        return await self._kv.get(key)
-
-    async def put(self, key: str, value: dict[str, Any]) -> None:
-        await self._kv.put(key, value)
-
-    async def delete(self, key: str) -> None:
-        await self._kv.delete(key)
-
-    async def list_prefix(self, prefix: str) -> list[tuple[str, dict[str, Any]]]:
-        return await self._kv.list_prefix(prefix)
+        super().__init__(path, FetchingKeyMapper(), decode_error_cls=DataError)
 
     # -- atomic read-modify-write for task state --------------------------
 

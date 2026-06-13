@@ -1,9 +1,9 @@
 # bili_unit.command — unified write-side entry across stages.
 #
 # Per docs/structure/bili.md §10, the bili unit's outward write entry is the
-# `command/` package. Its job is to编排 fetching / processing / cleansing
-# stages (each owns its own internal command). Today fetching + processing
-# are wired; cleansing comes later.
+# `command/` package. Its job is to编排 fetching / parsing / processing /
+# cleansing stages (each owns its own internal command). Today fetching +
+# parsing + processing are wired; cleansing comes later.
 #
 # Boundaries (docs/structure/bili.md §8):
 #   - command 不直接调用 client / transform / audio
@@ -18,6 +18,8 @@ from ..fetching import CommandResult
 from ..fetching.command import Command as _FetchingCommand
 
 if TYPE_CHECKING:
+    from ..parsing import ParsingCommandResult
+    from ..parsing.command import ParsingCommand as _ParsingCommand
     from ..processing import ProcessingCommandResult
     from ..processing.command import ProcessingCommand as _ProcessingCommand
 
@@ -28,9 +30,11 @@ class BiliCommand:
     def __init__(
         self,
         fetching: _FetchingCommand,
+        parsing: _ParsingCommand | None = None,
         processing: _ProcessingCommand | None = None,
     ) -> None:
         self._fetching = fetching
+        self._parsing = parsing
         self._processing = processing
 
     # -- fetching stage ----------------------------------------------------
@@ -43,6 +47,21 @@ class BiliCommand:
     ) -> CommandResult:
         """触发 fetching 抓取流水线。"""
         return await self._fetching.fetch_uid(uid, endpoints, mode=mode)
+
+    # -- parsing stage -----------------------------------------------------
+
+    async def parse(
+        self,
+        uid: int,
+        mode: str = "full",
+        download_images: bool = False,
+    ) -> ParsingCommandResult:
+        """触发 parsing 解析流水线。"""
+        if self._parsing is None:
+            raise RuntimeError("parsing command was not assembled")
+        return await self._parsing.parse_uid(
+            uid, mode=mode, download_images=download_images,
+        )
 
     # -- processing stage --------------------------------------------------
 
@@ -65,6 +84,8 @@ class BiliCommand:
     async def close(self) -> None:
         if self._processing is not None:
             await self._processing.close()
+        if self._parsing is not None:
+            await self._parsing.close()
         await self._fetching.close()
 
 

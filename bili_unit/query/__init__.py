@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from ..fetching.query import Query as _FetchingQuery
 
 if TYPE_CHECKING:
+    from ..parsing.query import ParsingQuery as _ParsingQuery
     from ..processing.query import ProcessingQuery as _ProcessingQuery
 
 
@@ -26,14 +27,22 @@ class BiliQuery:
     def __init__(
         self,
         fetching: _FetchingQuery,
+        parsing: _ParsingQuery | None = None,
         processing: _ProcessingQuery | None = None,
     ) -> None:
         self._fetching = fetching
+        self._parsing = parsing
         self._processing = processing
 
     @property
     def fetching(self) -> _FetchingQuery:
         return self._fetching
+
+    @property
+    def parsing(self) -> _ParsingQuery:
+        if self._parsing is None:
+            raise RuntimeError("parsing query was not assembled")
+        return self._parsing
 
     @property
     def processing(self) -> _ProcessingQuery:

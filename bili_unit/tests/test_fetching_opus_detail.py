@@ -91,7 +91,7 @@ async def test_fetch_opus_detail_item_success():
     fake_md = "# Title\n\nbody text"
     fake_images = [{"url": "https://i0.hdslb.com/x.jpg", "width": 100, "height": 80}]
 
-    with patch("bili_unit.fetching.client.Opus") as MockOpus:
+    with patch("bili_unit.fetching._bilibili_adapter.Opus") as MockOpus:
         instance = MockOpus.return_value
         instance.get_info = AsyncMock(return_value=fake_info)
         instance.markdown = AsyncMock(return_value=fake_md)
@@ -121,7 +121,7 @@ async def test_fetch_opus_detail_item_invalid_id_raises_request_error():
 async def test_fetch_opus_detail_item_info_412_maps_to_http412():
     from bilibili_api.exceptions import ResponseCodeException
 
-    with patch("bili_unit.fetching.client.Opus") as MockOpus:
+    with patch("bili_unit.fetching._bilibili_adapter.Opus") as MockOpus:
         instance = MockOpus.return_value
         instance.get_info = AsyncMock(
             side_effect=ResponseCodeException(412, "too fast", {}),
@@ -136,7 +136,7 @@ async def test_fetch_opus_detail_item_markdown_keyerror_maps_to_unavailable():
     """A bare KeyError out of ``markdown()`` (taken-down opus, schema drift)
     must surface as :class:`ResourceUnavailableError` so the runner skips retries.
     """
-    with patch("bili_unit.fetching.client.Opus") as MockOpus:
+    with patch("bili_unit.fetching._bilibili_adapter.Opus") as MockOpus:
         instance = MockOpus.return_value
         instance.get_info = AsyncMock(return_value={"item": {"modules": []}})
         instance.markdown = AsyncMock(side_effect=KeyError("module_content"))
@@ -152,7 +152,7 @@ async def test_fetch_opus_detail_item_fallback_args_exception_maps_to_unavailabl
     """
     from bilibili_api.exceptions import ArgsException
 
-    with patch("bili_unit.fetching.client.Opus") as MockOpus:
+    with patch("bili_unit.fetching._bilibili_adapter.Opus") as MockOpus:
         instance = MockOpus.return_value
         instance.get_info = AsyncMock(
             side_effect=ArgsException("传入的 opus_id 不正确"),
@@ -167,7 +167,7 @@ async def test_fetch_opus_detail_item_permanent_business_code_maps_to_unavailabl
     """Permanent business codes (e.g. 53013) must surface as ResourceUnavailableError."""
     from bilibili_api.exceptions import ResponseCodeException
 
-    with patch("bili_unit.fetching.client.Opus") as MockOpus:
+    with patch("bili_unit.fetching._bilibili_adapter.Opus") as MockOpus:
         instance = MockOpus.return_value
         instance.get_info = AsyncMock(
             side_effect=ResponseCodeException(53013, "用户隐私设置未公开", {}),

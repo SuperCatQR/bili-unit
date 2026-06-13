@@ -19,6 +19,7 @@ from .runner import ProcessingRunner
 
 if TYPE_CHECKING:
     from ..fetching.query import Query as FetchingQuery
+    from ..parsing.query import ParsingQuery
     from .audio._asr_backend import ASRBackend
     from .data import ProcessingDataStore
     from .env import ProcessingEnv
@@ -39,6 +40,7 @@ class ProcessingCommand:
         settings: ProcessingEnv,
         asr_backend: ASRBackend | None = None,
         fetching_close: Callable[[], Awaitable[None]] | None = None,
+        parsing_query: ParsingQuery | None = None,
     ) -> None:
         self._data = data
         self._error = error
@@ -51,6 +53,7 @@ class ProcessingCommand:
             fetching_query=fetching_query,
             settings=settings,
             asr_backend=asr_backend,
+            parsing_query=parsing_query,
         )
 
     async def process_uid(

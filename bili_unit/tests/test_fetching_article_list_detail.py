@@ -96,7 +96,7 @@ async def test_fetch_article_list_detail_item_success():
         "author": {"mid": 3546785614137774},
     }
 
-    with patch("bili_unit.fetching.client.ArticleList") as MockArticleList:
+    with patch("bili_unit.fetching._bilibili_adapter.ArticleList") as MockArticleList:
         instance = MockArticleList.return_value
         instance.get_content = AsyncMock(return_value=fake_resp)
 
@@ -116,7 +116,7 @@ async def test_fetch_article_list_detail_item_invalid_rlid_raises_request_error(
 async def test_fetch_article_list_detail_item_412_maps_to_http412():
     from bilibili_api.exceptions import ResponseCodeException
 
-    with patch("bili_unit.fetching.client.ArticleList") as MockArticleList:
+    with patch("bili_unit.fetching._bilibili_adapter.ArticleList") as MockArticleList:
         instance = MockArticleList.return_value
         instance.get_content = AsyncMock(
             side_effect=ResponseCodeException(412, "412", {}),
@@ -131,7 +131,7 @@ async def test_fetch_article_list_detail_item_permanent_business_code_maps_to_un
     """Permanent business codes (e.g. 53013) must surface as ResourceUnavailableError."""
     from bilibili_api.exceptions import ResponseCodeException
 
-    with patch("bili_unit.fetching.client.ArticleList") as MockArticleList:
+    with patch("bili_unit.fetching._bilibili_adapter.ArticleList") as MockArticleList:
         instance = MockArticleList.return_value
         instance.get_content = AsyncMock(
             side_effect=ResponseCodeException(53013, "用户隐私设置未公开", {}),

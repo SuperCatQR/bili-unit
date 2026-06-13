@@ -12,6 +12,7 @@
 #   _transform.py  — _TransformMixin (scan / dispatch / process_one)
 #   _audio.py      — _AudioMixin (discover / dispatch / process_audio_one / do_audio_work)
 #   _audio_work.py — pure per-page helpers (download / convert / transcribe)
+#   _pipeline_executor.py — shared queue / worker / rollup mechanics
 #
 # This module retains: orchestration (run), helpers, and the runner class
 # that composes the mixins.
@@ -52,6 +53,7 @@ from ._transform import _TransformMixin
 
 if TYPE_CHECKING:
     from ...fetching.query import Query as FetchingQuery
+    from ...parsing.query import ParsingQuery
     from ..audio._asr_backend import ASRBackend
     from ..data import ProcessingDataStore
     from ..env import ProcessingEnv
@@ -75,11 +77,13 @@ class ProcessingRunner(_TransformMixin, _AudioMixin):
         fetching_query: FetchingQuery,
         settings: ProcessingEnv,
         asr_backend: ASRBackend | None = None,
+        parsing_query: ParsingQuery | None = None,
     ) -> None:
         self._data = data
         self._error = error
         self._temp_dir = temp_dir
         self._fetch_qry = fetching_query
+        self._parse_qry = parsing_query
         self._settings = settings
         self._asr_backend = asr_backend
         self._asr_cache: ASRCacheStore | None = None

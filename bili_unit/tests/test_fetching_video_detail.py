@@ -102,7 +102,7 @@ async def test_fetch_video_detail_item_success():
     fake_tags = [{"tag_id": 1, "tag_name": "python"}]
 
     with patch(
-        "bili_unit.fetching.client.Video",
+        "bili_unit.fetching._bilibili_adapter.Video",
     ) as MockVideo:
         instance = MockVideo.return_value
         instance.get_info = AsyncMock(return_value=fake_info)
@@ -117,7 +117,7 @@ async def test_fetch_video_detail_item_success():
 async def test_fetch_video_detail_item_info_412():
     from bilibili_api.exceptions import ResponseCodeException
 
-    with patch("bili_unit.fetching.client.Video") as MockVideo:
+    with patch("bili_unit.fetching._bilibili_adapter.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_info = AsyncMock(side_effect=ResponseCodeException(412, "too fast", {}))
 
@@ -127,7 +127,7 @@ async def test_fetch_video_detail_item_info_412():
 
 @pytest.mark.asyncio
 async def test_fetch_video_detail_item_tags_error():
-    with patch("bili_unit.fetching.client.Video") as MockVideo:
+    with patch("bili_unit.fetching._bilibili_adapter.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_info = AsyncMock(return_value={"bvid": "BV1"})
         instance.get_tags = AsyncMock(side_effect=RequestError("tags failed"))
@@ -141,7 +141,7 @@ async def test_fetch_video_detail_item_permanent_business_code_maps_to_unavailab
     """Permanent business code from get_info is surfaced as ResourceUnavailableError."""
     from bilibili_api.exceptions import ResponseCodeException
 
-    with patch("bili_unit.fetching.client.Video") as MockVideo:
+    with patch("bili_unit.fetching._bilibili_adapter.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_info = AsyncMock(
             side_effect=ResponseCodeException(53013, "用户隐私设置未公开", {}),

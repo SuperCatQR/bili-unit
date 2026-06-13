@@ -6,12 +6,14 @@
 
 ## 概述
 
-processing 层负责把 fetching 抓取的 raw_payload 转换为结构化处理结果。当前实现覆盖两条完整流水线：
+processing 层负责把 parsing 解析后的 typed dataclass 转换为结构化处理结果。当前实现覆盖两条完整流水线：
 
 - **transform**：五个 handler（`video_metadata` / `dynamics` / `articles` / `opus` / `user_profile`），纯计算字段提取与结构化。
 - **audio**：CDN 音频下载（bilibili-api）→ ffmpeg 转码（m4s → mp3，长视频自动分段）→ MiMo ASR 转录。
 
 两条流水线通过 asyncio.Queue + worker pool 并发调度，支持 incremental / full 两种处理模式。
+
+> 注：processing 的数据源是 parsing 层产出的 typed dataclass（`UpProfile` / `VideoDetail` / `Article` / `OpusPost` / `DynamicPost`），不再是 fetching 的 raw dict。详见 [docs/feature/parsing.md](parsing.md)。
 
 ## 现网烟雾测试结果（uid:13991807，2026-06-11）
 
@@ -87,7 +89,7 @@ import 边界：
 ```text
 command → runner, DTO
 query → data, error
-runner → task, transform, audio, data, error, env, _retry, fetching.query, fetching.auth
+runner → task, transform, audio, data, error, env, _retry, parsing.query（transform 数据源）, fetching.query（audio CDN URL）, fetching.auth
 transform → 无外部 import（纯计算）
 audio._mimo_backend → aiohttp（HTTP 调用 MiMo API）
 audio._downloader → aiohttp（CDN 下载）, bilibili_api（URL 解析）
@@ -96,8 +98,7 @@ data/error → _storage (JsonKVStore + KeyMapper)
 env → 不 import data/error/task
 ```
 
-processing 通过 `bili_unit.fetching.query.Query` 只读访问 fetching 数据；不直接访问 fetching 的
-DataStore/ErrorStore，也不写回 fetching。
+processing 通过 `bili_unit.fetching.query.Query` 只读访问 fetching 数据（audio pipeline 仍直接读取 fetching 获取 CDN URL）；transform handler 的数据源是 parsing 层的 typed-object dict（`WorkItem.item_data: dict[str, Any]`，由 ParsingQuery 提供）。不直接访问 fetching 的 DataStore/ErrorStore，也不写回 fetching。
 
 ## Audio 流水线
 
@@ -151,18 +152,19 @@ Credential 由 `fetching.auth.get_credential()` 提供，runner 在 audio pipeli
 ```python
 class TransformHandler(Protocol):
     item_type: str
-    source_endpoints: tuple[str, ...]
-    def extract_items(self, raw_payloads: dict[str, dict]) -> list[WorkItem]: ...
+    source_endpoints: tuple[str, ...]  # metadata only; runner reads from parsing store
     def transform(self, item: WorkItem) -> dict[str, Any]: ...
 ```
 
-| item_type | source_endpoints | item_id | 输入路径 | 备注 |
+runner 从 parsing store 读取 typed-object dict，构造 `WorkItem`，再分发给对应 handler。handler 的 `transform()` 是纯函数，接收 typed-object dict，输出结构化 result dict。不再实现 `extract_items()`（该方法已在 parsing 层迁移中移除）。
+
+| item_type | source_endpoints | item_id | 输入来源 | 备注 |
 |-----------|------------------|---------|---------|------|
-| video_metadata | video_detail | bvid | `info` + `tags` | item-level fan-out；只处理 SUCCESS items |
-| dynamics | dynamics | id_str | `pages[*].items[*]` | 覆盖 5 类型：WORD / DRAW / AV / ARTICLE / FORWARD（外加 OPUS / COMMON major）；转发型保留 `forwarded` 子结构 |
-| articles | articles + article_detail（可选）+ article_list_detail（可选） | str(cvid) | `pages[*].articles[*]` 列表项 + `{cvid → {info, markdown, content_json}}` + `{rlid → {list, articles, author}}` | 列表级字段（meta / 摘要 / 封面 / stats）+ 正文 markdown + content_json 节点树 + word_count + 文集归属 `lists: [{rlid, name}, ...]`；`optional_endpoints=("article_detail", "article_list_detail")`，缺失时降级到列表级字段并把 `lists` 留空 |
-| opus | opus + opus_detail（可选） | str(opus_id) | `pages[*].items[*]` 列表项 + `{opus_id → {info, markdown, images}}` | 列表级字段（title / summary / 封面 / stats / pub_time）+ 正文 markdown + 图片清单（width/height）+ word_count；`optional_endpoints=("opus_detail",)`，缺失时仅输出列表级字段；与 articles **不去重**——`is_article()` 为 true 的 opus 会同时出现在两条 item_type 下 |
-| user_profile | user_info + relation_info + up_stat (+ overview_stat 可选) | str(uid) | 四端点 raw_payload 平铺 | UP 主画像；`optional_endpoints=("overview_stat",)`，缺失时 `result.overview` 整段省略 |
+| video_metadata | video_detail | bvid | parsing: VideoDetail dict | item-level fan-out；只处理 parsing 中已有记录 |
+| dynamics | dynamics | id_str | parsing: DynamicPost dict | 覆盖 5 类型：WORD / DRAW / AV / ARTICLE / FORWARD（外加 OPUS / COMMON major）；转发型保留 `forwarded` 子结构 |
+| articles | articles + article_detail（可选）+ article_list_detail（可选） | str(cvid) | parsing: Article dict | 列表级字段（meta / 摘要 / 封面 / stats）+ 正文 markdown + content_json 节点树 + word_count + 文集归属 `lists: [{rlid, name}, ...]`；parsing 层已合并 optional endpoint 数据到 Article 对象 |
+| opus | opus + opus_detail（可选） | str(opus_id) | parsing: OpusPost dict | 列表级字段（title / summary / 封面 / stats / pub_time）+ 正文 markdown + 图片清单（width/height）+ word_count；parsing 层已合并 optional endpoint 数据到 OpusPost 对象 |
+| user_profile | user_info + relation_info + up_stat (+ overview_stat 可选) | str(uid) | parsing: UpProfile dict | UP 主画像；parsing 层已合并四端点数据到 UpProfile 对象 |
 
 > dynamics 的 `id_str` 是 B 站动态稳定字符串 ID（与 fetching 端 item_id_path 一致；见 design §19 已决）。
 > articles 端原始 `id` 是 int，store key 占位符 `{article_id}` 统一为 string。
@@ -180,24 +182,22 @@ class TransformHandler(Protocol):
 
 处理模式不向 fetching 传播；processing 不会因 mode=full 而触发 fetching refresh / full。
 
-## fetching 状态消费规则（不阻塞）
+## parsing 数据消费规则
 
-processing 不要求 fetching task 整体 SUCCESS。runner 按 endpoint 粒度逐项判断（见 design §10.1）：
+processing transform 不直接检查 fetching endpoint 状态。数据可用性由 parsing 层决定：
 
-| endpoint 类型 | endpoint 状态 | 行为 |
-|-------------|--------------|------|
-| uid-level | SUCCESS | 入队所有 extract_items 产出的工作项 |
-| uid-level | 其它 | 跳过该 endpoint，本次不处理 |
-| video_detail | PARTIAL_ITEM | 仅处理已 SUCCESS 的 item |
-| video_detail | SUCCESS | 处理全部 item |
-| video_detail | 其它 | 跳过该 handler |
+| 条件 | 行为 |
+|------|------|
+| parsing store 中存在 typed-object 记录 | 入队处理（incremental 模式下已 SUCCESS 的跳过） |
+| parsing store 中无对应记录 | 该项不可见，不处理 |
+| parsing_query 为 None（未注入） | 跳过所有 transform，记录 warning |
 
-processing 不写回 fetching 状态。被跳过的 endpoint 在下次 `process_uid` 时按当前 fetching 状态重新评估。
+如需刷新数据，应先重跑 fetching → parsing，再 process。processing 不写回 fetching 或 parsing 状态。
 
 ## 两阶段编排
 
 ```
-Phase 0  扫描     load_or_init_task → transform handler 发现工作项 + audio 发现 bvid
+Phase 0  扫描     load_or_init_task → 从 parsing store 发现 transform 工作项 + audio 发现 bvid
 Phase 1  分发执行 transform worker pool + audio worker pool 并行处理
 Phase 2  收尾     reload_task → derive_task_status → save_task → cleanup temp
 ```
@@ -376,9 +376,9 @@ await cmd.process(uid)
 task = await qry.processing.get_task(uid)
 ```
 
-`bili_unit.assemble()` 内部串调 fetching 的 `assemble()` 获取 `FetchingQuery` 注入 processing；根据
+`bili_unit.assemble()` 内部串调 fetching 的 `assemble()` 获取 `FetchingQuery` 注入 parsing + processing；`ParsingQuery` 注入 processing（transform 数据源）；根据
 `BILI_PROCESSING_ASR_BACKEND` 创建对应的 ASR backend（mock / mimo）；返回
-`BiliCommand` / `BiliQuery`（包装了 fetching + processing 的 command / query）。
+`BiliCommand` / `BiliQuery`（包装了 fetching + parsing + processing 的 command / query）。
 
 ### Command 接口
 
@@ -433,21 +433,21 @@ async def list_errors(uid: int | None = None) -> list[ErrorDTO]
 
 ## 测试状态
 
-- 324 pytest 总数全部通过
+- 419 pytest 总数全部通过（覆盖 fetching / parsing / processing / storage / CLI / retry）
 - ruff lint 全部通过
 - 无外部网络 / API 依赖；测试可在离线环境运行
 
 ### 测试矩阵
 
 ```
-test_processing_transform.py     transform handler 纯函数测试（15 tests，含 5 个 dynamics 真实形态 + 4 个 user_profile）
-test_processing_data_error.py    data store + error store 单元测试（6 tests）
-test_processing_audio.py         ASRBackend / MockASRBackend / MimoASRBackend / create_asr_backend / resolve_ffmpeg / token-budget 分段 / profile + auth_style + ASRConfigError + init-mimo 向导（39 tests）
-test_processing_runner.py        runner / command / query 集成测试 + audio pipeline + auto-retry + 多段 duration 回归（20 tests，含 user_profile 集成）
+test_processing_transform.py     transform handler 纯函数测试（typed-object dict 输入，含 5 种 dynamics 形态 + user_profile 变体）
+test_processing_data_error.py    data store + error store 单元测试
+test_processing_audio.py         ASRBackend / MockASRBackend / MimoASRBackend / create_asr_backend / resolve_ffmpeg / token-budget 分段 / profile + auth_style + ASRConfigError + init-mimo 向导
+test_processing_runner.py        runner / command / query 集成测试（transform 从 parsing store 读取 + audio pipeline + auto-retry + 多段 duration 回归）
 fixtures/mimo_asr_response.json  MiMo 真实响应样本（uid:13991807 BV1o3YbzVEEo, 134s）
 ```
 
-集成测试覆盖：
+集成测试覆盖（transform 测试全部通过 parsing store seed typed-object dict）：
 - video_metadata happy path（3 bvids 全部 SUCCESS）
 - dynamics + articles 双 handler
 - user_profile（四端点 SUCCESS / overview_stat 缺失 / 必填端点缺失三态）

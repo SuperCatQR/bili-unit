@@ -1,19 +1,15 @@
 # runner._transform — transform pipeline (scan → enqueue → workers → rollup).
+#
+# After the parsing-layer migration, transform items are discovered from
+# the parsing store (ParsingQuery), not directly from fetching raw payloads.
+# Each handler's transform() receives a WorkItem whose item_data is a typed-
+# object dict from the parsing store.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 from typing import TYPE_CHECKING, Any
 
-from ..._logging import Progress
-from ..._retry import (
-    RetryClassification,
-    RetryDriver,
-    RetryOutcome,
-    RetryPolicy,
-)
 from .. import (
     ProcessingError,
     ProcessingItemStatus,
@@ -23,32 +19,34 @@ from ..keys import _proc_key, _task_key
 from ..task import PipelineEntry, ProcessingTaskValue
 from ..transform import get_handler
 from ..transform._base import WorkItem
+from ._pipeline_executor import (
+    ItemRetryContext,
+    WorkerOutcome,
+    run_item_with_retry,
+    run_item_workers,
+)
 
 if TYPE_CHECKING:
+    from ...parsing.query import ParsingQuery
     from ..env import ProcessingEnv
 
 logger = logging.getLogger("bili.processing.runner")
 
 
 _TRANSFORM = "transform"
-_FANOUT_PAYLOAD_ENDPOINTS = frozenset({
-    "article_detail",
-    "opus_detail",
-    "article_list_detail",
-})
 
 
 class _TransformMixin:
     """Mixin providing transform pipeline methods for :class:`ProcessingRunner`.
 
-    Accesses runner state (``self._data``, ``self._error``, ``self._fetch_qry``,
+    Accesses runner state (``self._data``, ``self._error``, ``self._parse_qry``,
     ``self._settings``) and helpers (``_write_progress``, ``_derive_pipeline_status``,
     ``_is_retryable``) via the combined MRO at runtime.
     """
 
     _data: Any
     _error: Any
-    _fetch_qry: Any
+    _parse_qry: ParsingQuery | None
     _settings: ProcessingEnv
 
     async def _write_progress(
@@ -135,65 +133,66 @@ class _TransformMixin:
     ) -> tuple[list[WorkItem], int]:
         """Phase-0 discovery for a single transform handler.
 
-        Returns (ready_items, skipped_count). 'skipped' counts items already
-        SUCCESS in incremental mode.
-
-        Per processing design §10.1 fetching consumption rule: only emit
-        items when the source endpoint is SUCCESS for uid-level, or
-        PARTIAL_ITEM/SUCCESS for item-level fan-out (only the SUCCESS items
-        are enumerated).
+        Returns (ready_items, skipped_count).  Reads typed-object dicts from
+        the parsing store via ``self._parse_qry``.
         """
-        optional_eps: tuple[str, ...] = tuple(
-            getattr(handler, "optional_endpoints", ()) or (),
-        )
-        raw_payloads: dict[str, dict] = {}
-        for ep in handler.source_endpoints:
-            if ep == "video_detail":
-                # video_detail is the only fan-out source that emits one
-                # WorkItem per successful item payload instead of passing the
-                # whole {item_id -> payload} map into a parent-list handler.
-                detail_payloads = await self._fetch_qry.list_fanout_payloads(uid, ep)
-                if not detail_payloads:
-                    logger.info(
-                        "transform_endpoint_unavailable",
-                        extra={"uid": uid, "item_type": handler.item_type,
-                               "endpoint": ep},
-                    )
-                    return [], 0
-                items: list[WorkItem] = []
-                for raw_payload in detail_payloads.values():
-                    items.extend(handler.extract_items({"video_detail": raw_payload}))
-                return await self._filter_ready(uid, handler, items, mode)
+        if self._parse_qry is None:
+            logger.warning(
+                "parsing_query_unavailable",
+                extra={"uid": uid, "item_type": handler.item_type},
+            )
+            return [], 0
 
-            if ep in _FANOUT_PAYLOAD_ENDPOINTS:
-                # Optional fan-out enrichments are collected as
-                # {item_id -> raw_payload}; handlers join this map with the
-                # required uid-level listing endpoint.
-                raw_payloads[ep] = await self._fetch_qry.list_fanout_payloads(uid, ep)
-                continue
-
-            # uid-level endpoint
-            ep_dto = await self._fetch_qry.get_endpoint(uid, ep)
-            if ep_dto is None or not ep_dto.available:
-                if ep in optional_eps:
-                    # Optional endpoint missing → omit from raw_payloads but
-                    # keep the handler running (handler decides whether to
-                    # emit/skip the optional fields).
-                    logger.info(
-                        "transform_optional_endpoint_unavailable",
-                        extra={"uid": uid, "item_type": handler.item_type,
-                               "endpoint": ep},
-                    )
-                    continue
-                logger.info(
-                    "transform_endpoint_unavailable",
-                    extra={"uid": uid, "item_type": handler.item_type, "endpoint": ep},
-                )
-                return [], 0
-            raw_payloads[ep] = ep_dto.raw_payload or {}
-
-        items = handler.extract_items(raw_payloads)
+        items: list[WorkItem] = await self._read_parsing_items(uid, handler.item_type)
         return await self._filter_ready(uid, handler, items, mode)
+
+    async def _read_parsing_items(
+        self: Any,
+        uid: int,
+        item_type: str,
+    ) -> list[WorkItem]:
+        """Read typed-object dicts from the parsing store for one item_type."""
+        pq = self._parse_qry
+
+        if item_type == "user_profile":
+            d = await pq.get_user_profile(uid)
+            if d is None:
+                return []
+            return [WorkItem(item_type=item_type, item_id=str(uid), item_data=d)]
+
+        if item_type == "video_metadata":
+            rows = await pq.list_video_details(uid)
+            return [
+                WorkItem(item_type=item_type, item_id=r.get("bvid", ""), item_data=r)
+                for r in rows if isinstance(r, dict) and r.get("bvid")
+            ]
+
+        if item_type == "articles":
+            rows = await pq.list_articles(uid)
+            return [
+                WorkItem(item_type=item_type, item_id=str(r.get("id", "")), item_data=r)
+                for r in rows if isinstance(r, dict) and r.get("id")
+            ]
+
+        if item_type == "opus":
+            rows = await pq.list_opus(uid)
+            return [
+                WorkItem(item_type=item_type, item_id=str(r.get("id", "")), item_data=r)
+                for r in rows if isinstance(r, dict) and r.get("id")
+            ]
+
+        if item_type == "dynamics":
+            rows = await pq.list_dynamics(uid)
+            return [
+                WorkItem(item_type=item_type, item_id=str(r.get("id_str", "")), item_data=r)
+                for r in rows if isinstance(r, dict) and r.get("id_str")
+            ]
+
+        logger.warning(
+            "unknown_item_type",
+            extra={"uid": uid, "item_type": item_type},
+        )
+        return []
 
     async def _filter_ready(
         self: Any,
@@ -229,55 +228,32 @@ class _TransformMixin:
     ) -> None:
         """Run transform workers over ``items``; updates rollup in-place."""
         worker_count = max(1, int(self._settings.bili_processing_transform_workers))
-        queue: asyncio.Queue = asyncio.Queue(
-            maxsize=max(1, int(self._settings.bili_processing_queue_maxsize)),
-        )
-        rollup_lock = asyncio.Lock()
-        bar = Progress(total=len(items), label=f"transform uid={uid}")
 
-        async def producer() -> None:
-            for item in items:
-                await queue.put(item)
-            for _ in range(worker_count):
-                await queue.put(None)  # sentinel
-
-        async def worker(idx: int) -> None:
-            while True:
-                item = await queue.get()
-                if item is None:
-                    return
-                handler = get_handler(item.item_type)
-                if handler is None:
-                    async with rollup_lock:
-                        bucket = rollup.setdefault(
-                            item.item_type,
-                            {"total": 0, "completed": 0, "failed": 0, "skipped": 0},
-                        )
-                        bucket["failed"] += 1
-                    bar.update(1, postfix=f"skip {item.item_type}")
-                    continue
-                ok = await self._process_one(uid, handler, item)
-                async with rollup_lock:
-                    bucket = rollup.setdefault(
-                        item.item_type,
-                        {"total": 0, "completed": 0, "failed": 0, "skipped": 0},
-                    )
-                    if ok:
-                        bucket["completed"] += 1
-                    else:
-                        bucket["failed"] += 1
-                bar.update(
-                    1,
-                    postfix=f"{item.item_type}/{item.item_id} {'ok' if ok else 'fail'}",
+        async def process_item(item: WorkItem) -> WorkerOutcome:
+            handler = get_handler(item.item_type)
+            if handler is None:
+                return WorkerOutcome(
+                    bucket=item.item_type,
+                    failed=1,
+                    postfix=f"skip {item.item_type}",
                 )
 
-        try:
-            await asyncio.gather(
-                producer(),
-                *[worker(i) for i in range(worker_count)],
+            ok = await self._process_one(uid, handler, item)
+            return WorkerOutcome(
+                bucket=item.item_type,
+                completed=1 if ok else 0,
+                failed=0 if ok else 1,
+                postfix=f"{item.item_type}/{item.item_id} {'ok' if ok else 'fail'}",
             )
-        finally:
-            bar.close()
+
+        await run_item_workers(
+            items=items,
+            worker_count=worker_count,
+            queue_maxsize=int(self._settings.bili_processing_queue_maxsize),
+            label=f"transform uid={uid}",
+            rollup=rollup,
+            process_item=process_item,
+        )
 
     async def _process_one(
         self: Any,
@@ -285,94 +261,27 @@ class _TransformMixin:
         handler: Any,
         item: WorkItem,
     ) -> bool:
-        key = _proc_key(uid, item.item_type, item.item_id)
-        max_retries = self._settings.bili_processing_max_retries
-        retry_delays = self._settings.get_retry_delays()
-
-        retry_state = {"count": 0}
-
         async def _do_transform():
             return handler.transform(item)
 
-        def _classify(exc: Exception) -> RetryClassification:
-            return (
-                RetryClassification.RETRYABLE
-                if self._is_retryable(exc)
-                else RetryClassification.PERMANENT
-            )
-
-        async def _on_attempt_failed(
-            exc: Exception, outcome: RetryOutcome,
-        ) -> int | None:
-            retry_state["count"] = outcome.attempt
-            now = int(time.time() * 1000)
-            if outcome.will_retry:
-                logger.info(
-                    "transform_item_retry",
-                    extra={"uid": uid, "item_id": item.item_id,
-                           "retry": outcome.attempt, "delay_s": outcome.delay_seconds,
-                           "error": str(exc)},
-                )
-                await self._error.record(
-                    exc, uid=uid, pipeline=_TRANSFORM,
-                    item_type=item.item_type, item_id=item.item_id,
-                    retryable="true",
-                    detail={"retry_count": outcome.attempt},
-                )
-                await self._data.put(key, {
-                    "uid": uid, "pipeline": _TRANSFORM,
-                    "item_type": item.item_type, "item_id": item.item_id,
-                    "status": ProcessingItemStatus.FAILED.value,
-                    "result": None,
-                    "source_endpoints": list(handler.source_endpoints),
-                    "processed_at": now,
-                    "retry_count": outcome.attempt,
-                })
-                return None
-
-            # Final failure: PERMANENT or RETRYABLE-exhausted.  No further
-            # retry will happen, so retryable="false" is the correct label.
-            await self._error.record(
-                exc, uid=uid, pipeline=_TRANSFORM,
-                item_type=item.item_type, item_id=item.item_id,
-                retryable="false",
-                detail=(
-                    {"retry_count": outcome.attempt}
-                    if outcome.attempt > 1 else None
-                ),
-            )
-            await self._data.put(key, {
-                "uid": uid, "pipeline": _TRANSFORM,
-                "item_type": item.item_type, "item_id": item.item_id,
-                "status": ProcessingItemStatus.FAILED.value,
-                "result": None,
-                "source_endpoints": list(handler.source_endpoints),
-                "processed_at": now,
-                "retry_count": outcome.attempt if outcome.attempt > 1 else 0,
-            })
-            return None
-
-        policy = RetryPolicy(
-            max_attempts=max_retries + 1,
-            delays=retry_delays,
-            classify=_classify,
+        ctx = ItemRetryContext(
+            uid=uid,
+            pipeline=_TRANSFORM,
+            item_type=item.item_type,
+            item_id=item.item_id,
+            source_endpoints=tuple(handler.source_endpoints),
+            key=_proc_key(uid, item.item_type, item.item_id),
+            retry_event="transform_item_retry",
+            log_id_field="item_id",
+            log_id_value=item.item_id,
         )
-        driver = RetryDriver(policy)
-
-        try:
-            result = await driver.run(
-                _do_transform, on_attempt_failed=_on_attempt_failed,
-            )
-        except Exception:  # noqa: BLE001 — final state already recorded
-            return False
-
-        now = int(time.time() * 1000)
-        await self._data.put(key, {
-            "uid": uid, "pipeline": _TRANSFORM,
-            "item_type": item.item_type, "item_id": item.item_id,
-            "status": ProcessingItemStatus.SUCCESS.value,
-            "result": result,
-            "source_endpoints": list(handler.source_endpoints),
-            "processed_at": now,
-        })
-        return True
+        return await run_item_with_retry(
+            ctx,
+            data=self._data,
+            error=self._error,
+            do_work=_do_transform,
+            is_retryable=self._is_retryable,
+            max_attempts=self._settings.bili_processing_max_retries + 1,
+            delays=self._settings.get_retry_delays(),
+            logger=logger,
+        )

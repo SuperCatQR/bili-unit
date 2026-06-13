@@ -34,7 +34,7 @@ bili_unit/
 │   └── error/           # 运行时错误目录（JSON 文件）
 ├── _retry.py            # 共享 RetryDriver（RetryPolicy + RetryClassification）
 ├── _storage/            # 共享存储抽象（JsonKVStore + JsonErrorStore，asyncio.to_thread IO）
-└── tests/               # 324 个测试（14 文件 + conftest）
+└── tests/               # 417 个测试（17 文件 + conftest）
 ```
 
 ### import 边界

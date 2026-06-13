@@ -3,20 +3,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import shutil
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..._logging import Progress
-from ..._retry import (
-    RetryClassification,
-    RetryDriver,
-    RetryOutcome,
-    RetryPolicy,
-)
 from .. import (
     ProcessingItemStatus,
     ProcessingPipelineStatus,
@@ -28,6 +19,12 @@ from ._audio_work import (
     audio_convert_page,
     audio_download_page,
     audio_transcribe_page,
+)
+from ._pipeline_executor import (
+    ItemRetryContext,
+    WorkerOutcome,
+    run_item_with_retry,
+    run_item_workers,
 )
 
 if TYPE_CHECKING:
@@ -215,50 +212,32 @@ class _AudioMixin:
     ) -> None:
         """Run audio workers; updates rollup in-place."""
         worker_count = max(1, int(self._settings.bili_processing_audio_workers))
-        queue: asyncio.Queue = asyncio.Queue(
-            maxsize=max(1, int(self._settings.bili_processing_queue_maxsize)),
-        )
-        rollup_lock = asyncio.Lock()
-        bar = Progress(total=len(items), label=f"audio uid={uid}")
 
-        async def producer() -> None:
-            for item in items:
-                await queue.put(item)
-            for _ in range(worker_count):
-                await queue.put(None)
-
-        async def worker(idx: int) -> None:
-            while True:
-                item = await queue.get()
-                if item is None:
-                    return
-                try:
-                    ok = await self._process_audio_one(uid, item, credential)
-                except Exception as exc:  # noqa: BLE001 — safety net
-                    logger.error(
-                        "audio_worker_unexpected_error",
-                        extra={"uid": uid, "bvid": item.item_id,
-                               "error": str(exc)},
-                    )
-                    ok = False
-                async with rollup_lock:
-                    bucket = rollup["transcription"]
-                    if ok:
-                        bucket["completed"] += 1
-                    else:
-                        bucket["failed"] += 1
-                bar.update(
-                    1,
-                    postfix=f"bvid={item.item_id} {'ok' if ok else 'fail'}",
+        async def process_item(item: WorkItem) -> WorkerOutcome:
+            try:
+                ok = await self._process_audio_one(uid, item, credential)
+            except Exception as exc:  # noqa: BLE001 — safety net
+                logger.error(
+                    "audio_worker_unexpected_error",
+                    extra={"uid": uid, "bvid": item.item_id,
+                           "error": str(exc)},
                 )
-
-        try:
-            await asyncio.gather(
-                producer(),
-                *[worker(i) for i in range(worker_count)],
+                ok = False
+            return WorkerOutcome(
+                bucket="transcription",
+                completed=1 if ok else 0,
+                failed=0 if ok else 1,
+                postfix=f"bvid={item.item_id} {'ok' if ok else 'fail'}",
             )
-        finally:
-            bar.close()
+
+        await run_item_workers(
+            items=items,
+            worker_count=worker_count,
+            queue_maxsize=int(self._settings.bili_processing_queue_maxsize),
+            label=f"audio uid={uid}",
+            rollup=rollup,
+            process_item=process_item,
+        )
 
     async def _process_audio_one(
         self: Any,
@@ -268,102 +247,38 @@ class _AudioMixin:
     ) -> bool:
         """Process a single bvid through the audio pipeline with retry.
 
-        Drives ``_do_audio_work`` through :class:`RetryDriver`; ``_is_retryable``
-        decides whether a given exception is transient.
+        Delegates retry / error-recording / status-persistence to the shared
+        ``run_item_with_retry`` seam; ``_is_retryable`` decides whether a given
+        exception is transient.  Only the do-work body (``_do_audio_work``) and
+        the audio-specific record identity / log events live here.
         """
         bvid = item.item_id
-        key = _proc_key(uid, "audio", bvid)
-        max_retries = self._settings.bili_processing_max_retries
-        retry_delays = self._settings.get_retry_delays()
 
         async def _do_work():
             return await self._do_audio_work(uid, item, credential)
 
-        def _classify(exc: Exception) -> RetryClassification:
-            return (
-                RetryClassification.RETRYABLE
-                if self._is_retryable(exc)
-                else RetryClassification.PERMANENT
-            )
-
-        async def _on_attempt_failed(
-            exc: Exception, outcome: RetryOutcome,
-        ) -> int | None:
-            now = int(time.time() * 1000)
-            if outcome.will_retry:
-                logger.info(
-                    "audio_item_retry",
-                    extra={"uid": uid, "bvid": bvid,
-                           "retry": outcome.attempt, "delay_s": outcome.delay_seconds,
-                           "error": str(exc)},
-                )
-                await self._error.record(
-                    exc, uid=uid, pipeline=_AUDIO,
-                    item_type="transcription", item_id=bvid,
-                    retryable="true",
-                    detail={"retry_count": outcome.attempt},
-                )
-                await self._data.put(key, {
-                    "uid": uid, "pipeline": _AUDIO,
-                    "item_type": "transcription", "item_id": bvid,
-                    "status": ProcessingItemStatus.FAILED.value,
-                    "result": None,
-                    "source_endpoints": ["video_detail"],
-                    "processed_at": now,
-                    "retry_count": outcome.attempt,
-                })
-                return None
-
-            # Final failure (PERMANENT or exhausted retries).
-            logger.warning(
-                "audio_item_failed",
-                extra={"uid": uid, "bvid": bvid,
-                       "retry_count": outcome.attempt, "error": str(exc)},
-            )
-            await self._error.record(
-                exc, uid=uid, pipeline=_AUDIO,
-                item_type="transcription", item_id=bvid,
-                retryable="false",
-                detail=(
-                    {"retry_count": outcome.attempt}
-                    if outcome.attempt > 1 else None
-                ),
-            )
-            await self._data.put(key, {
-                "uid": uid, "pipeline": _AUDIO,
-                "item_type": "transcription", "item_id": bvid,
-                "status": ProcessingItemStatus.FAILED.value,
-                "result": None,
-                "source_endpoints": ["video_detail"],
-                "processed_at": now,
-                "retry_count": outcome.attempt if outcome.attempt > 1 else 0,
-            })
-            return None
-
-        policy = RetryPolicy(
-            max_attempts=max_retries + 1,
-            delays=retry_delays,
-            classify=_classify,
+        ctx = ItemRetryContext(
+            uid=uid,
+            pipeline=_AUDIO,
+            item_type="transcription",
+            item_id=bvid,
+            source_endpoints=("video_detail",),
+            key=_proc_key(uid, "audio", bvid),
+            retry_event="audio_item_retry",
+            failed_event="audio_item_failed",
+            log_id_field="bvid",
+            log_id_value=bvid,
         )
-        driver = RetryDriver(policy)
-
-        try:
-            result = await driver.run(
-                _do_work, on_attempt_failed=_on_attempt_failed,
-            )
-        except Exception:  # noqa: BLE001 — final state already recorded
-            return False
-
-        now = int(time.time() * 1000)
-        await self._data.put(key, {
-            "uid": uid, "pipeline": _AUDIO,
-            "item_type": "transcription", "item_id": bvid,
-            "status": ProcessingItemStatus.SUCCESS.value,
-            "result": result,
-            "source_endpoints": ["video_detail"],
-            "processed_at": now,
-        })
-        return True
+        return await run_item_with_retry(
+            ctx,
+            data=self._data,
+            error=self._error,
+            do_work=_do_work,
+            is_retryable=self._is_retryable,
+            max_attempts=self._settings.bili_processing_max_retries + 1,
+            delays=self._settings.get_retry_delays(),
+            logger=logger,
+        )
 
     async def _do_audio_work(
         self: Any,

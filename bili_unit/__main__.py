@@ -2,6 +2,7 @@
 #
 # Usage:
 #   python -m bili_unit fetch     <uid> [options]   — run fetching
+#   python -m bili_unit parse     <uid> [options]   — run parsing
 #   python -m bili_unit process   <uid> [options]   — run processing
 #   python -m bili_unit query     <uid>              — query all results
 #   python -m bili_unit login                        — QR code login
@@ -118,6 +119,39 @@ async def _handle_fetch(args: argparse.Namespace) -> None:
     finally:
         await data.close()
         await error.close()
+
+
+async def _handle_parse(args: argparse.Namespace) -> None:
+    """Run parsing via the unit-level BiliCommand / BiliQuery."""
+    from bili_unit import assemble
+
+    cmd, qry, data, error = await assemble()
+    try:
+        result = await cmd.parse(
+            args.uid,
+            mode=args.mode,
+            download_images=args.download_images,
+        )
+        print(f"uid={args.uid}  status={result.status.value}")
+
+        task = await qry.parsing.get_task(args.uid)
+        if task is not None:
+            for model_name, model_dto in task.models.items():
+                print(f"  {model_name}: {model_dto.status.value}  count={model_dto.count}")
+            if task.images is not None:
+                img = task.images
+                print(
+                    f"  images: total={img.total}  ok={img.ok}  "
+                    f"skipped={img.skipped}  failed={img.failed}",
+                )
+                if img.failed_urls:
+                    for url in img.failed_urls[:5]:
+                        print(f"    failed_url: {url}")
+                    if len(img.failed_urls) > 5:
+                        print(f"    ... and {len(img.failed_urls) - 5} more")
+    finally:
+        await cmd.close()
+        del data, error
 
 
 async def _handle_query(args: argparse.Namespace) -> None:
@@ -323,6 +357,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Fetching mode (default: incremental)",
     )
 
+    # --- parse ---
+    p_parse = sub.add_parser(
+        "parse",
+        help="Run parsing for a uid (converts raw payloads to typed objects)",
+    )
+    p_parse.add_argument("uid", type=int, help="Target Bilibili user uid")
+    p_parse.add_argument(
+        "--mode", "-m",
+        choices=["full", "incremental"],
+        default="full",
+        help="Parsing mode (default: full)",
+    )
+    p_parse.add_argument(
+        "--download-images", "-i",
+        action="store_true",
+        default=False,
+        help="Download images (avatar, covers, dynamic pics) after parsing",
+    )
+
     # --- process ---
     p_proc = sub.add_parser(
         "process",
@@ -401,6 +454,7 @@ def main() -> None:
 
     handlers = {
         "fetch": _handle_fetch,
+        "parse": _handle_parse,
         "process": _handle_process,
         "query": _handle_query,
         "login": _handle_login,

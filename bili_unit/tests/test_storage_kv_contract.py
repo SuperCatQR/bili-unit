@@ -1,8 +1,8 @@
 # Contract tests for bili_unit._storage.JsonKVStore.
 #
-# Both fetching and processing use the same JsonKVStore core; each ships its
-# own KeyMapper for its key schema.  These tests parametrise over both mappers
-# and exercise the shared CRUD / atomic helpers so the two stages stay
+# Fetching, parsing, and processing use the same JsonKVStore core; each ships
+# its own KeyMapper for its key schema.  These tests parametrise over the mappers
+# and exercise the shared CRUD / atomic helpers so the stages stay
 # behaviour-equivalent.
 
 from pathlib import Path
@@ -11,6 +11,7 @@ import pytest
 
 from bili_unit._storage import JsonKVStore, StorageError
 from bili_unit.fetching.data import FetchingKeyMapper
+from bili_unit.parsing.data import ParsingKeyMapper
 from bili_unit.processing.data import ProcessingKeyMapper
 
 # -- per-mapper key fixtures ------------------------------------------------
@@ -48,6 +49,20 @@ _PARAMS = [
         3,
         ("uid:9:proc:video_metadata:BVa", "uid:9:progress:transform"),
         id="processing",
+    ),
+    pytest.param(
+        ParsingKeyMapper,
+        ("uid:7:parse:video_detail:BVa", "uid:7:task"),
+        [
+            ("uid:1:parse:video_detail:BVa", {"x": 1}),
+            ("uid:1:parse:article:cv1", {"x": 2}),
+            ("uid:1:task", {"x": 3}),
+            ("uid:2:parse:video_detail:BVc", {"x": 4}),
+        ],
+        "uid:1:",
+        3,
+        ("uid:9:parse:video_detail:BVa", "uid:9:task"),
+        id="parsing",
     ),
 ]
 

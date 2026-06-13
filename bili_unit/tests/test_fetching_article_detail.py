@@ -90,7 +90,7 @@ async def test_fetch_article_detail_item_success():
     fake_md = "# Title\n\nbody text"
     fake_json = [{"type": "ParagraphNode", "text": "body text"}]
 
-    with patch("bili_unit.fetching.client.Article") as MockArticle:
+    with patch("bili_unit.fetching._bilibili_adapter.Article") as MockArticle:
         instance = MockArticle.return_value
         instance.get_info = AsyncMock(return_value=fake_info)
         instance.fetch_content = AsyncMock(return_value=None)
@@ -121,7 +121,7 @@ async def test_fetch_article_detail_item_invalid_cvid_raises_request_error():
 async def test_fetch_article_detail_item_info_412_maps_to_http412():
     from bilibili_api.exceptions import ResponseCodeException
 
-    with patch("bili_unit.fetching.client.Article") as MockArticle:
+    with patch("bili_unit.fetching._bilibili_adapter.Article") as MockArticle:
         instance = MockArticle.return_value
         instance.get_info = AsyncMock(
             side_effect=ResponseCodeException(412, "too fast", {}),
@@ -133,7 +133,7 @@ async def test_fetch_article_detail_item_info_412_maps_to_http412():
 
 @pytest.mark.asyncio
 async def test_fetch_article_detail_item_fetch_content_error_propagates():
-    with patch("bili_unit.fetching.client.Article") as MockArticle:
+    with patch("bili_unit.fetching._bilibili_adapter.Article") as MockArticle:
         instance = MockArticle.return_value
         instance.get_info = AsyncMock(return_value={"id": 1})
         instance.fetch_content = AsyncMock(side_effect=RequestError("body fetch"))
@@ -147,7 +147,7 @@ async def test_fetch_article_detail_item_keyerror_maps_to_unavailable():
     """KeyError from fetch_content (missing readInfo, taken-down articles)
     must map to :class:`ResourceUnavailableError` so the runner skips retries.
     """
-    with patch("bili_unit.fetching.client.Article") as MockArticle:
+    with patch("bili_unit.fetching._bilibili_adapter.Article") as MockArticle:
         instance = MockArticle.return_value
         instance.get_info = AsyncMock(return_value={"id": 1})
         instance.fetch_content = AsyncMock(side_effect=KeyError("readInfo"))
@@ -161,7 +161,7 @@ async def test_fetch_article_detail_item_permanent_business_code_maps_to_unavail
     """Permanent business codes (e.g. 53013) must surface as ResourceUnavailableError."""
     from bilibili_api.exceptions import ResponseCodeException
 
-    with patch("bili_unit.fetching.client.Article") as MockArticle:
+    with patch("bili_unit.fetching._bilibili_adapter.Article") as MockArticle:
         instance = MockArticle.return_value
         instance.get_info = AsyncMock(
             side_effect=ResponseCodeException(53013, "用户隐私设置未公开", {}),
@@ -180,7 +180,7 @@ async def test_fetch_article_detail_item_initial_state_maps_to_unavailable():
     """
     from bilibili_api.exceptions import InitialStateException
 
-    with patch("bili_unit.fetching.client.Article") as MockArticle:
+    with patch("bili_unit.fetching._bilibili_adapter.Article") as MockArticle:
         instance = MockArticle.return_value
         instance.get_info = AsyncMock(return_value={"id": 1})
         instance.fetch_content = AsyncMock(
