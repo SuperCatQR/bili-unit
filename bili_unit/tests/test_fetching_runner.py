@@ -940,3 +940,141 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(stores, rl_c
     dead_errs = [e for e in errs if (e.detail or {}).get("item_id") == "BV_dead"]
     assert len(dead_errs) == 1
     assert dead_errs[0].retryable == "false"
+
+
+# ---------------------------------------------------------------------------
+# Stale RUNNING takeover (issue #3)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_running_task_within_threshold_is_rejected(stores, rl_ctl):
+    """Fresh RUNNING task (recent updated_at) → returns RUNNING, no work done."""
+    import time as _time
+
+    from bili_unit.fetching.keys import _task_key
+
+    ds, es = stores
+    uid = 9001
+
+    now_ms = int(_time.time() * 1000)
+    tv = TaskValue(uid=uid, status=TaskStatus.RUNNING)
+    tv.updated_at = now_ms - 60_000  # 1 minute ago — fresh
+    tv.endpoints["user_info"] = EndpointEntry(status=EndpointStatus.RUNNING)
+    await ds.put(_task_key(uid), tv.to_dict())
+
+    runner = Runner(ds, es, rl_ctl, stale_running_threshold_ms=15 * 60 * 1000)
+    result = await runner.run_or_resume(uid, endpoints=["user_info"])
+
+    assert result.status == TaskStatus.RUNNING
+    # Endpoint not touched — still RUNNING in store
+    tv2 = TaskValue.from_dict(await ds.get(_task_key(uid)))
+    assert tv2.status == TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_running_task_past_threshold_is_taken_over(stores, rl_ctl, monkeypatch):
+    """Stale RUNNING task (updated_at older than threshold) → resumes as PARTIAL."""
+    import time as _time
+
+    from bili_unit.fetching.keys import _task_key
+
+    ds, es = stores
+    uid = 9002
+
+    # Seed the task as RUNNING — the KV store will stamp updated_at with now.
+    tv = TaskValue(uid=uid, status=TaskStatus.RUNNING)
+    tv.endpoints["user_info"] = EndpointEntry(status=EndpointStatus.PENDING)
+    await ds.put(_task_key(uid), tv.to_dict())
+
+    # Advance the clock so that the runner sees the task as 30 minutes old.
+    # We patch time.time in both runner and _storage._kv to avoid split-brain.
+    future_time = _time.time() + 30 * 60  # 30 minutes in the future
+
+    async def fake_fetch(uid_arg, spec, credential, request_params, **kw):
+        return FetchPageResult(
+            uid=uid_arg, endpoint="user_info",
+            raw_payload={"name": "ok"},
+            is_last_page=True, next_request=None,
+        )
+
+    monkeypatch.setattr("bili_unit.fetching.runner.fetch_endpoint", fake_fetch)
+    monkeypatch.setattr("bili_unit.fetching.runner.time.time", lambda: future_time)
+    monkeypatch.setattr("bili_unit._storage._kv.time.time", lambda: future_time)
+
+    runner = Runner(ds, es, rl_ctl, stale_running_threshold_ms=15 * 60 * 1000)
+    result = await runner.run_or_resume(uid, endpoints=["user_info"])
+
+    # Stale RUNNING was taken over — final status reflects actual run, not RUNNING-frozen
+    assert result.status != TaskStatus.RUNNING
+    # Endpoint actually ran
+    tv2 = TaskValue.from_dict(await ds.get(_task_key(uid)))
+    assert tv2.endpoints["user_info"].status == EndpointStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_endpoint_completion_heartbeats_task_updated_at(stores, rl_ctl):
+    """update_task_endpoint refreshes task.updated_at so long-running tasks
+    don't get falsely flagged as stale."""
+    import time as _time
+
+    from bili_unit.fetching.keys import _task_key
+
+    ds, es = stores
+    uid = 9003
+
+    initial_ts = int(_time.time() * 1000) - 10_000  # 10s ago
+    tv = TaskValue(uid=uid, status=TaskStatus.RUNNING)
+    tv.created_at = initial_ts
+    tv.updated_at = initial_ts
+    tv.endpoints["user_info"] = EndpointEntry(status=EndpointStatus.PENDING)
+    await ds.put(_task_key(uid), tv.to_dict())
+
+    # Trigger a single endpoint update — should bump task.updated_at
+    await ds.update_task_endpoint(
+        _task_key(uid), "user_info", "SUCCESS",
+        retry_count=0, last_error_id=None,
+    )
+
+    tv2 = TaskValue.from_dict(await ds.get(_task_key(uid)))
+    assert tv2.updated_at is not None
+    assert tv2.updated_at > initial_ts
+
+
+@pytest.mark.asyncio
+async def test_running_task_with_missing_updated_at_is_treated_as_stale(
+    stores, rl_ctl, monkeypatch,
+):
+    """Defensive: tv.updated_at == None → age_ms huge → stale → takeover.
+
+    The KV store always stamps updated_at on put(), so we simulate a missing
+    updated_at by patching the runner's time.time to return a value far enough
+    in the future that even a brand-new task looks stale.
+    """
+    import time as _time
+
+    from bili_unit.fetching.keys import _task_key
+
+    ds, es = stores
+    uid = 9004
+
+    tv = TaskValue(uid=uid, status=TaskStatus.RUNNING)
+    tv.endpoints["user_info"] = EndpointEntry(status=EndpointStatus.PENDING)
+    await ds.put(_task_key(uid), tv.to_dict())
+
+    # Set runner clock 30 minutes ahead so any recently-stored task looks stale.
+    future_time = _time.time() + 30 * 60
+
+    async def fake_fetch(uid_arg, spec, credential, request_params, **kw):
+        return FetchPageResult(
+            uid=uid_arg, endpoint="user_info",
+            raw_payload={"name": "ok"},
+            is_last_page=True, next_request=None,
+        )
+
+    monkeypatch.setattr("bili_unit.fetching.runner.fetch_endpoint", fake_fetch)
+    monkeypatch.setattr("bili_unit.fetching.runner.time.time", lambda: future_time)
+    monkeypatch.setattr("bili_unit._storage._kv.time.time", lambda: future_time)
+
+    runner = Runner(ds, es, rl_ctl, stale_running_threshold_ms=15 * 60 * 1000)
+    result = await runner.run_or_resume(uid, endpoints=["user_info"])
+    assert result.status != TaskStatus.RUNNING

@@ -19,6 +19,15 @@ from bili_unit.parsing.data import ParsingDataStore
 from bili_unit.parsing.keys import _item_key, _task_key
 from bili_unit.parsing.query import ParsingQuery
 
+EXPECTED_MODEL_ORDER = (
+    "user_profile",
+    "video_work",
+    "article_post",
+    "opus_post",
+    "dynamic_event",
+    "content_post",
+)
+
 # ======================================================================
 # Fixtures
 # ======================================================================
@@ -57,9 +66,14 @@ async def test_parse_uid_creates_task(parsing_command, parsing_store):
 
     async def fake_parse_model(uid, model_name, mode):
         # Return a positive count for every model
-        return {"user_profile": 1, "video_detail": 5, "article": 3, "opus": 2, "dynamic": 4}[
-            model_name
-        ]
+        return {
+            "user_profile": 1,
+            "video_work": 5,
+            "article_post": 3,
+            "opus_post": 2,
+            "dynamic_event": 4,
+            "content_post": 6,
+        }[model_name]
 
     with patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model):
         result = await parsing_command.parse_uid(uid=1001, mode="full")
@@ -74,9 +88,9 @@ async def test_parse_uid_creates_task(parsing_command, parsing_store):
     assert task_d["status"] == ParsingTaskStatus.SUCCESS.value
 
     models = task_d["models"]
-    assert set(models.keys()) == {"user_profile", "video_detail", "article", "opus", "dynamic"}
+    assert tuple(models.keys()) == EXPECTED_MODEL_ORDER
 
-    for model_name in ("user_profile", "video_detail", "article", "opus", "dynamic"):
+    for model_name in EXPECTED_MODEL_ORDER:
         assert models[model_name]["status"] == ParsingModelStatus.SUCCESS.value
         assert models[model_name]["count"] > 0
 
@@ -86,10 +100,15 @@ async def test_parse_uid_partial_status(parsing_command, parsing_store):
     """Some models return 0 -> overall PARTIAL, zero-count models still SUCCESS."""
 
     async def fake_parse_model(uid, model_name, mode):
-        # video_detail and opus return 0 (nothing to parse)
-        return {"user_profile": 1, "video_detail": 0, "article": 2, "opus": 0, "dynamic": 3}[
-            model_name
-        ]
+        # video_work and opus_post return 0 (nothing to parse)
+        return {
+            "user_profile": 1,
+            "video_work": 0,
+            "article_post": 2,
+            "opus_post": 0,
+            "dynamic_event": 3,
+            "content_post": 2,
+        }[model_name]
 
     with patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model):
         result = await parsing_command.parse_uid(uid=2002)
@@ -101,14 +120,14 @@ async def test_parse_uid_partial_status(parsing_command, parsing_store):
     assert task_d["status"] == ParsingTaskStatus.PARTIAL.value
 
     # Zero-count models are still marked SUCCESS (they ran fine, just found nothing new)
-    assert task_d["models"]["video_detail"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["video_detail"]["count"] == 0
-    assert task_d["models"]["opus"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["opus"]["count"] == 0
+    assert task_d["models"]["video_work"]["status"] == ParsingModelStatus.SUCCESS.value
+    assert task_d["models"]["video_work"]["count"] == 0
+    assert task_d["models"]["opus_post"]["status"] == ParsingModelStatus.SUCCESS.value
+    assert task_d["models"]["opus_post"]["count"] == 0
 
     # Positive-count models
     assert task_d["models"]["user_profile"]["count"] == 1
-    assert task_d["models"]["article"]["count"] == 2
+    assert task_d["models"]["article_post"]["count"] == 2
 
 
 @pytest.mark.asyncio
@@ -116,9 +135,15 @@ async def test_parse_uid_model_failure(parsing_command, parsing_store):
     """One model raises -> that model is FAILED, overall PARTIAL, others unaffected."""
 
     async def fake_parse_model(uid, model_name, mode):
-        if model_name == "article":
+        if model_name == "article_post":
             raise RuntimeError("simulated parse failure")
-        return {"user_profile": 1, "video_detail": 2, "opus": 1, "dynamic": 1}[model_name]
+        return {
+            "user_profile": 1,
+            "video_work": 2,
+            "opus_post": 1,
+            "dynamic_event": 1,
+            "content_post": 2,
+        }[model_name]
 
     with patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model):
         result = await parsing_command.parse_uid(uid=3003)
@@ -129,13 +154,14 @@ async def test_parse_uid_model_failure(parsing_command, parsing_store):
     assert task_d is not None
 
     # The failed model
-    assert task_d["models"]["article"]["status"] == ParsingModelStatus.FAILED.value
+    assert task_d["models"]["article_post"]["status"] == ParsingModelStatus.FAILED.value
 
     # The other models should still be SUCCESS
     assert task_d["models"]["user_profile"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["video_detail"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["opus"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["dynamic"]["status"] == ParsingModelStatus.SUCCESS.value
+    assert task_d["models"]["video_work"]["status"] == ParsingModelStatus.SUCCESS.value
+    assert task_d["models"]["opus_post"]["status"] == ParsingModelStatus.SUCCESS.value
+    assert task_d["models"]["dynamic_event"]["status"] == ParsingModelStatus.SUCCESS.value
+    assert task_d["models"]["content_post"]["status"] == ParsingModelStatus.SUCCESS.value
 
 
 @pytest.mark.asyncio
@@ -216,8 +242,8 @@ async def test_query_get_task_success(parsing_store, parsing_query):
         status=ParsingTaskStatus.SUCCESS,
         models={
             "user_profile": {"status": "SUCCESS", "count": 1},
-            "video_detail": {"status": "SUCCESS", "count": 10},
-            "article": {"status": "FAILED", "count": 0},
+            "video_work": {"status": "SUCCESS", "count": 10},
+            "article_post": {"status": "FAILED", "count": 0},
         },
         created_at=1700000000000,
         updated_at=1700000001000,
@@ -236,10 +262,10 @@ async def test_query_get_task_success(parsing_store, parsing_query):
     assert dto.models["user_profile"].status == ParsingModelStatus.SUCCESS
     assert dto.models["user_profile"].count == 1
 
-    assert dto.models["video_detail"].count == 10
+    assert dto.models["video_work"].count == 10
 
-    assert dto.models["article"].status == ParsingModelStatus.FAILED
-    assert dto.models["article"].count == 0
+    assert dto.models["article_post"].status == ParsingModelStatus.FAILED
+    assert dto.models["article_post"].count == 0
 
 
 @pytest.mark.asyncio
@@ -294,11 +320,11 @@ async def test_query_get_user_profile_none(parsing_query):
 
 @pytest.mark.asyncio
 async def test_query_list_video_details(parsing_store, parsing_query):
-    """Put multiple video_detail dicts, verify list returns them all."""
+    """Legacy list_video_details reads from the canonical video_work model dir."""
     uid = 9009
     for bvid in ("BV1xx", "BV2yy", "BV3zz"):
-        detail = {"bvid": bvid, "title": f"Video {bvid}", "uid": uid}
-        await parsing_store.put(_item_key(uid, "video_detail", bvid), detail)
+        detail = {"_model_name": "video_work", "bvid": bvid, "title": f"Video {bvid}", "uid": uid}
+        await parsing_store.put(_item_key(uid, "video_work", bvid), detail)
 
     results = await parsing_query.list_video_details(uid)
     assert len(results) == 3
@@ -315,11 +341,11 @@ async def test_query_list_video_details_empty(parsing_query):
 
 @pytest.mark.asyncio
 async def test_query_get_video_detail(parsing_store, parsing_query):
-    """Put a single video_detail dict, verify get returns it."""
+    """Legacy get_video_detail reads from the canonical video_work model dir."""
     uid = 1010
     bvid = "BV1abc"
-    detail = {"bvid": bvid, "title": "Test Video", "duration": 120}
-    await parsing_store.put(_item_key(uid, "video_detail", bvid), detail)
+    detail = {"_model_name": "video_work", "bvid": bvid, "title": "Test Video", "duration": 120}
+    await parsing_store.put(_item_key(uid, "video_work", bvid), detail)
 
     result = await parsing_query.get_video_detail(uid, bvid)
     assert result is not None
@@ -338,8 +364,8 @@ async def test_query_get_video_detail_none(parsing_query):
 async def test_query_list_articles(parsing_store, parsing_query):
     uid = 1111
     for cvid in ("cv100", "cv200"):
-        article = {"cvid": cvid, "title": f"Article {cvid}"}
-        await parsing_store.put(_item_key(uid, "article", cvid), article)
+        article = {"_model_name": "article_post", "cvid": cvid, "title": f"Article {cvid}"}
+        await parsing_store.put(_item_key(uid, "article_post", cvid), article)
 
     results = await parsing_query.list_articles(uid)
     assert len(results) == 2
@@ -350,8 +376,8 @@ async def test_query_list_articles(parsing_store, parsing_query):
 async def test_query_get_article(parsing_store, parsing_query):
     uid = 1212
     cvid = "cv999"
-    article = {"cvid": cvid, "title": "Deep Dive"}
-    await parsing_store.put(_item_key(uid, "article", cvid), article)
+    article = {"_model_name": "article_post", "cvid": cvid, "title": "Deep Dive"}
+    await parsing_store.put(_item_key(uid, "article_post", cvid), article)
 
     result = await parsing_query.get_article(uid, cvid)
     assert result is not None
@@ -363,8 +389,8 @@ async def test_query_get_article(parsing_store, parsing_query):
 async def test_query_list_opus(parsing_store, parsing_query):
     uid = 1313
     for opus_id in ("op1", "op2", "op3"):
-        opus = {"opus_id": opus_id, "content": f"Opus {opus_id}"}
-        await parsing_store.put(_item_key(uid, "opus", opus_id), opus)
+        opus = {"_model_name": "opus_post", "opus_id": opus_id, "content": f"Opus {opus_id}"}
+        await parsing_store.put(_item_key(uid, "opus_post", opus_id), opus)
 
     results = await parsing_query.list_opus(uid)
     assert len(results) == 3
@@ -375,8 +401,8 @@ async def test_query_list_opus(parsing_store, parsing_query):
 async def test_query_get_opus(parsing_store, parsing_query):
     uid = 1414
     opus_id = "op42"
-    opus = {"opus_id": opus_id, "content": "Hello opus"}
-    await parsing_store.put(_item_key(uid, "opus", opus_id), opus)
+    opus = {"_model_name": "opus_post", "opus_id": opus_id, "content": "Hello opus"}
+    await parsing_store.put(_item_key(uid, "opus_post", opus_id), opus)
 
     result = await parsing_query.get_opus(uid, opus_id)
     assert result is not None
@@ -388,8 +414,8 @@ async def test_query_get_opus(parsing_store, parsing_query):
 async def test_query_list_dynamics(parsing_store, parsing_query):
     uid = 1515
     for dyn_id in ("dyn10", "dyn20"):
-        dynamic = {"dynamic_id": dyn_id, "text": f"Dynamic {dyn_id}"}
-        await parsing_store.put(_item_key(uid, "dynamic", dyn_id), dynamic)
+        dynamic = {"_model_name": "dynamic_event", "dynamic_id": dyn_id, "text": f"Dynamic {dyn_id}"}
+        await parsing_store.put(_item_key(uid, "dynamic_event", dyn_id), dynamic)
 
     results = await parsing_query.list_dynamics(uid)
     assert len(results) == 2
@@ -400,8 +426,8 @@ async def test_query_list_dynamics(parsing_store, parsing_query):
 async def test_query_get_dynamic(parsing_store, parsing_query):
     uid = 1616
     dynamic_id = "dyn99"
-    dynamic = {"dynamic_id": dynamic_id, "text": "Some dynamic"}
-    await parsing_store.put(_item_key(uid, "dynamic", dynamic_id), dynamic)
+    dynamic = {"_model_name": "dynamic_event", "dynamic_id": dynamic_id, "text": "Some dynamic"}
+    await parsing_store.put(_item_key(uid, "dynamic_event", dynamic_id), dynamic)
 
     result = await parsing_query.get_dynamic(uid, dynamic_id)
     assert result is not None

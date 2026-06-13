@@ -1,9 +1,18 @@
 # 需求交接 — bili processing 补 `user_profile` transform handler
 
+> ⚠️ **本文档已废弃（2026-06-14）**
+>
+> processing 层不再持有 user_profile transform handler。该 handler 连同整个 transform 子系统已删除（理由：parsing 重构后退化为字段透传，且 ingestion 仍未实装，没有契约要保护）。
+>
+> ingestion 待实装时直接消费 `parsing.query.get_user_profile(uid)` 即可，不需要在 processing 加层。
+>
+> 历史背景保留供参考；下方"落点 / 测试 / 输出 schema / CLI 验证"等具体要求**不再适用**。
+
 > 提出时间：2026-06-11
 > 提出方：index.ingestion 设计（向 bili unit 提需求）
 > 接收方：bili unit（source_data/bili/processing/）
-> 状态：待实施
+> 状态：已废弃（详见上方）
+> 2026-06-14 后更新：handler 注册表只剩 `video_metadata / content_post / user_profile`（旧的 articles / opus / dynamics handler 已合并为 content_post）；user_profile handler 实施细节见 `docs/feature/processing.md`。
 > 关联文档：
 >   - 上游约束 `docs/structure/bili.md` §4/§5/§6/§8
 >   - 上游设计 `docs/design/bili/processing.md`（实施时回写 §6.6 + §16 + §19）

@@ -281,21 +281,12 @@ async def _handle_video_full(args: argparse.Namespace) -> None:
 async def _handle_process(args: argparse.Namespace) -> None:
     """Run processing via the unit-level BiliCommand / BiliQuery."""
     from bili_unit import assemble
-    from bili_unit.processing.transform import HANDLERS
-
-    all_item_types = HANDLERS.names()
-    item_types = _resolve_subset(
-        flag_label="item_type",
-        all_names=all_item_types,
-        include=args.item_types,
-        exclude=args.exclude_item_types,
-    )
 
     cmd, qry, data, error = await assemble(
         asr_backend_override=getattr(args, "asr_backend", None),
     )
     try:
-        result = await cmd.process(args.uid, mode=args.mode, item_types=item_types)
+        result = await cmd.process(args.uid, mode=args.mode)
         print(f"uid={args.uid}  status={result.status.value}")
         task = await qry.processing.get_task(args.uid)
         if task is not None:
@@ -395,7 +386,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- process ---
     p_proc = sub.add_parser(
         "process",
-        help="Run processing for a uid (default: all registered transform handlers)",
+        help="Run processing for a uid (audio pipeline)",
     )
     p_proc.add_argument("uid", type=int, help="Target Bilibili user uid")
     p_proc.add_argument(
@@ -403,18 +394,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["incremental", "full"],
         default="incremental",
         help="Processing mode (default: incremental)",
-    )
-    proc_group = p_proc.add_mutually_exclusive_group()
-    proc_group.add_argument(
-        "--exclude-item-types", "-x", nargs="+", default=None, metavar="TYPE",
-        help=(
-            "Transform item_types to skip; everything else runs. "
-            "Recommended way to drop heavy handlers (e.g. -x video_metadata)."
-        ),
-    )
-    proc_group.add_argument(
-        "--item-types", "-t", nargs="+", default=None, metavar="TYPE",
-        help="Subset of transform item_types to run (debug; mutually exclusive with -x).",
     )
     p_proc.add_argument(
         "--asr-backend", "-b",

@@ -10,6 +10,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from .content_post import CrossRefs, SourceRef
+
 logger = logging.getLogger("bili.parsing.models.video_detail")
 
 
@@ -115,7 +117,8 @@ class OwnerInfo:
 class VideoDetail:
     """Typed representation of a single Bilibili video's detail data."""
 
-    _model_name: str = "video_detail"
+    _model_name: str = "video_work"
+    _schema_version: int = 1
 
     bvid: str = ""
     aid: int | None = None
@@ -135,6 +138,8 @@ class VideoDetail:
 
     # -- local assets (filled after image download) --------------------------
     pic_local: str = ""
+    source_refs: list[SourceRef] = field(default_factory=list)
+    cross_refs: CrossRefs = field(default_factory=CrossRefs)
 
     # -----------------------------------------------------------------------
     # Common interface
@@ -214,12 +219,15 @@ class VideoDetail:
             rights=info.get("rights", {}) if isinstance(info.get("rights"), dict) else {},
             subtitle=info.get("subtitle", {}) if isinstance(info.get("subtitle"), dict) else {},
             label=info.get("label", {}) if isinstance(info.get("label"), dict) else {},
+            source_refs=[SourceRef("video_detail", info.get("bvid", ""))] if info.get("bvid") else [],
+            cross_refs=CrossRefs(bvid=info.get("bvid", "") or None),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-serializable dict."""
         return {
             "_model_name": self._model_name,
+            "_schema_version": self._schema_version,
             "bvid": self.bvid,
             "aid": self.aid,
             "title": self.title,
@@ -236,13 +244,25 @@ class VideoDetail:
             "subtitle": dict(self.subtitle),
             "label": dict(self.label),
             "pic_local": self.pic_local,
+            "_source_refs": [ref.to_dict() for ref in self.source_refs],
+            "_cross_refs": self.cross_refs.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VideoDetail:
         """Deserialize from JSON dict."""
+        source_refs_raw = d.get("source_refs") or d.get("_source_refs") or []
+        source_refs = [
+            SourceRef.from_dict(ref)
+            for ref in source_refs_raw
+            if isinstance(ref, SourceRef | dict)
+        ]
+        bvid = d.get("bvid", "")
+        cross_refs = CrossRefs.from_dict(d.get("cross_refs") or d.get("_cross_refs"))
+        if not cross_refs.bvid and bvid:
+            cross_refs.bvid = bvid
         return cls(
-            bvid=d.get("bvid", ""),
+            bvid=bvid,
             aid=d.get("aid"),
             title=d.get("title", ""),
             desc=d.get("desc", ""),
@@ -258,6 +278,8 @@ class VideoDetail:
             subtitle=d.get("subtitle", {}),
             label=d.get("label", {}),
             pic_local=d.get("pic_local", ""),
+            source_refs=source_refs,
+            cross_refs=cross_refs,
         )
 
     def collect_image_jobs(self, uid: int) -> list[tuple[str, str]]:
@@ -275,3 +297,4 @@ class VideoDetail:
 
 # Module-level alias expected by models/__init__.py get_parser()
 PARSER = VideoDetail
+VideoWork = VideoDetail

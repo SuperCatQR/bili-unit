@@ -15,10 +15,15 @@ from __future__ import annotations
 
 _PARSER_NAMES: dict[str, str] = {
     "user_profile": ".models.up_profile",
+    "video_work": ".models.video_detail",
     "video_detail": ".models.video_detail",
+    "article_post": ".models.article",
     "article": ".models.article",
+    "opus_post": ".models.opus",
     "opus": ".models.opus",
+    "dynamic_event": ".models.dynamic",
     "dynamic": ".models.dynamic",
+    "content_post": ".models.content_post",
 }
 
 

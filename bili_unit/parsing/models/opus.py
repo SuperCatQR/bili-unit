@@ -10,6 +10,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from .content_post import CrossRefs, SourceRef
+
 logger = logging.getLogger("bili.parsing.models.opus")
 
 
@@ -150,7 +152,8 @@ class OpusStats:
 
 @dataclass
 class OpusPost:
-    _model_name: str = "opus"
+    _model_name: str = "opus_post"
+    _schema_version: int = 1
 
     id: str = ""
     title: str = ""
@@ -164,6 +167,8 @@ class OpusPost:
     detail_images: list[dict] = field(default_factory=list)
     cover_local: str = ""
     image_locals: list[str] = field(default_factory=list)
+    source_refs: list[SourceRef] = field(default_factory=list)
+    cross_refs: CrossRefs = field(default_factory=CrossRefs)
 
     # -- identity ------------------------------------------------------------
 
@@ -232,6 +237,10 @@ class OpusPost:
                     img for img in di if isinstance(img, dict)
                 ]
 
+        source_refs = [SourceRef("opus", opus_id)]
+        if detail and isinstance(detail, dict):
+            source_refs.append(SourceRef("opus_detail", opus_id))
+
         return cls(
             id=opus_id,
             title=title,
@@ -243,6 +252,8 @@ class OpusPost:
             list_images=list_images,
             markdown=markdown,
             detail_images=detail_images,
+            source_refs=source_refs,
+            cross_refs=CrossRefs(opus_id=opus_id),
         )
 
     # -- serialisation -------------------------------------------------------
@@ -250,18 +261,23 @@ class OpusPost:
     def to_dict(self) -> dict[str, Any]:
         return {
             "_model_name": self._model_name,
+            "_schema_version": self._schema_version,
             "id": self.id,
+            "opus_id": self.id,
             "title": self.title,
             "summary": self.summary,
             "cover": self.cover,
             "jump_url": self.jump_url,
             "stats": self.stats.to_dict(),
             "ctime": self.ctime,
+            "pub_time": self.ctime,
             "list_images": list(self.list_images),
             "markdown": self.markdown,
             "detail_images": [dict(d) for d in self.detail_images],
             "cover_local": self.cover_local,
             "image_locals": list(self.image_locals),
+            "_source_refs": [ref.to_dict() for ref in self.source_refs],
+            "_cross_refs": self.cross_refs.to_dict(),
         }
 
     @classmethod
@@ -273,20 +289,32 @@ class OpusPost:
         detail_images = [
             img for img in detail_images_raw if isinstance(img, dict)
         ]
+        source_refs_raw = d.get("source_refs") or d.get("_source_refs") or []
+        source_refs = [
+            SourceRef.from_dict(ref)
+            for ref in source_refs_raw
+            if isinstance(ref, SourceRef | dict)
+        ]
+        item_id = _str_or_empty(d.get("id") or d.get("opus_id"))
+        cross_refs = CrossRefs.from_dict(d.get("cross_refs") or d.get("_cross_refs"))
+        if not cross_refs.opus_id and item_id:
+            cross_refs.opus_id = item_id
 
         return cls(
-            id=_str_or_empty(d.get("id")),
+            id=item_id,
             title=_str_or_empty(d.get("title")),
             summary=_str_or_empty(d.get("summary")),
             cover=_str_or_empty(d.get("cover")),
             jump_url=_str_or_empty(d.get("jump_url")),
             stats=stats,
-            ctime=d.get("ctime"),
+            ctime=d.get("ctime") if d.get("ctime") is not None else d.get("pub_time"),
             list_images=list(d.get("list_images", []) or []),
             markdown=_str_or_empty(d.get("markdown")),
             detail_images=detail_images,
             cover_local=_str_or_empty(d.get("cover_local")),
             image_locals=list(d.get("image_locals", []) or []),
+            source_refs=source_refs,
+            cross_refs=cross_refs,
         )
 
     # -- image pipeline ------------------------------------------------------

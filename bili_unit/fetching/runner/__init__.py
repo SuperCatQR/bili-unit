@@ -61,10 +61,12 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         data: DataStore,
         error: ErrorStore,
         rate_limit: RateLimitController,
+        stale_running_threshold_ms: int = 15 * 60 * 1000,
     ) -> None:
         self._data = data
         self._error = error
         self._rl = rate_limit
+        self._stale_threshold_ms = stale_running_threshold_ms
 
     # -- public ------------------------------------------------------------
 
@@ -108,8 +110,27 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
             return await self.run_task(uid, endpoints, mode=mode)
 
         if tv.status == TaskStatus.RUNNING:
-            logger.info("task_already_running", extra={"uid": uid})
-            return TaskResult(uid=uid, status=TaskStatus.RUNNING)
+            now_ms = int(time.time() * 1000)
+            age_ms = now_ms - (tv.updated_at or 0)
+            if age_ms < self._stale_threshold_ms:
+                logger.info(
+                    "task_already_running",
+                    extra={"uid": uid, "age_ms": age_ms},
+                )
+                return TaskResult(uid=uid, status=TaskStatus.RUNNING)
+            # Stale: previous run died (SIGKILL / timeout / OOM) without writing
+            # final status. Treat as PARTIAL so the resume path takes over.
+            logger.warning(
+                "task_stale_running_takeover",
+                extra={
+                    "uid": uid,
+                    "age_ms": age_ms,
+                    "threshold_ms": self._stale_threshold_ms,
+                },
+            )
+            tv.status = TaskStatus.PARTIAL
+            tv.updated_at = now_ms
+            await self._save_task(tv)
 
         if tv.status == TaskStatus.FAILED_PERMANENT:
             logger.info("task_failed_permanent_skip", extra={"uid": uid})

@@ -8,7 +8,7 @@
 
 parsing 层位于 fetching（raw dict）和 processing（结构化 result）之间，负责：
 
-- **对象化**：把 28 个端点的 raw dict 归纳为 5 个 typed dataclass（`UpProfile` / `VideoDetail` / `Article` / `OpusPost` / `DynamicPost`），JSON 落盘。
+- **对象化**：把 fetching raw dict 筛选、归一并落盘为 parsed objects。当前保留 5 个 legacy typed dataclass（`UpProfile` / `VideoDetail` / `Article` / `OpusPost` / `DynamicPost`），并维护 `ContentPost` 作为 Article / Opus / Dynamic 的统一内容视图。processing 层已完全切换为只消费 `ContentPost`（不再消费 legacy 的 `Article` / `OpusPost` / `DynamicPost`），这三个 legacy 类继续落盘是因为它们是 `ContentPost` 的 candidate 来源（`_content_candidates_from_parsed`），不可删除。
 - **图片下载**（可选）：并发下载头像、封面、动态/文章/图文图片到本地，回填 `*_local` 字段。
 
 两条流水线在 `ParsingCommand.parse_uid()` 中顺序执行：先对象化（必经），后图片下载（CLI `--download-images` 标志触发）。
@@ -23,6 +23,8 @@ bili_unit/parsing/
 ├── data.py                # ParsingKeyMapper + ParsingDataStore（JsonKVStore wrapper）
 ├── env.py                 # ParsingEnv (pydantic-settings)
 ├── keys.py                # 存储 key 生成
+├── specs.py               # ParsingSpec registry；parse_uid 按 registry 分发
+├── selectors/             # ContentPost 纯函数 selector / merge
 ├── _images.py             # ImageDownloader + ImageDownloadResult
 └── models/
     ├── __init__.py        # get_parser() 注册表 + all_parser_names()
@@ -30,7 +32,8 @@ bili_unit/parsing/
     ├── video_detail.py    # VideoDetail + PageInfo / VideoStat / OwnerInfo
     ├── article.py         # Article + ArticleStats / ReadListMeta
     ├── opus.py            # OpusPost + OpusStats
-    └── dynamic.py         # DynamicPost + ForwardedDynamic
+    ├── dynamic.py         # DynamicPost + ForwardedDynamic
+    └── content_post.py    # ContentPost + SourceRef / CrossRefs
 ```
 
 import 边界：
@@ -45,7 +48,17 @@ env → 不 import data/command/query
 
 parsing 通过 `bili_unit.fetching.query.Query` 只读访问 fetching 数据；不直接访问 fetching 的 DataStore/ErrorStore，也不写回 fetching。
 
-## 5 个 Typed Model
+## Parsed Models
+
+`ParsingCommand.parse_uid()` 通过 `bili_unit.parsing.specs.PARSING_SPECS` 分发 model。当前顺序为（`MODEL_ORDER`）：
+
+```text
+user_profile → video_work → article_post → opus_post → dynamic_event → content_post
+```
+
+历史命名（`video_detail / article / opus / dynamic`）作为 `MODEL_ALIASES` 映射到新名，落盘目录已统一改为新名。
+
+前 5 个 model 是 legacy typed dataclass。`content_post` 是统一内容视图，与 legacy model 并行落盘，也是 processing 层消费 article / opus / dynamic 类内容的唯一入口。
 
 ### UpProfile（per-uid 单文件）
 
@@ -183,6 +196,58 @@ class DynamicPost:
 | `MAJOR_TYPE_OPUS` | `opus.pics[*].url` |
 | `FORWARD` | 原动态 `orig` 中递归提取（去重合并） |
 
+### ContentPost（per-content-key）
+
+来源端点：`articles` + `article_detail` + `article_list_detail` + `opus` + `opus_detail` + `dynamics`
+
+`ContentPost` 是 Article / Opus / Dynamic 的统一内容视图，目标是让 parsing 层显式处理 B 站三种内容身份的交叉关系。它不替代 legacy `Article` / `OpusPost` / `DynamicPost`，当前与它们并行落盘。
+
+```python
+@dataclass
+class SourceRef:
+    endpoint: str
+    item_id: str
+
+@dataclass
+class CrossRefs:
+    cvid: str | None = None
+    opus_id: str | None = None
+    dynamic_id: str | None = None
+    bvid: str | None = None
+
+@dataclass
+class ContentPost:
+    content_key: str              # article:{cvid} / opus:{opus_id} / dynamic:{dynamic_id}
+    kind: str                     # article / opus / dynamic_draw / forward / video
+    title: str
+    summary: str
+    text: str
+    markdown: str
+    images: list[str]
+    pub_time: int | None
+    stats: dict
+    source_refs: list[SourceRef]  # serialized as _source_refs
+    cross_refs: CrossRefs         # serialized as _cross_refs
+```
+
+canonical key 规则：
+
+1. 有 `cvid` 时用 `article:{cvid}`。
+2. 否则有 `opus_id` 时用 `opus:{opus_id}`。
+3. 否则用 `dynamic:{dynamic_id}`。
+
+落盘 item id 会把第一个冒号替换成 `~`，例如 `article:100` 存为 `content_post/article~100.json`，对象内部仍保留原始 `content_key`。
+
+cross-ref 规则：
+
+- `articles[*].id` / `article_detail.info.id` / `article_list_detail.articles[*].id` 强关联到 `cvid`。
+- `opus.items[*].opus_id` / `opus_detail` item id 强关联到 `opus_id`。
+- `dynamics.items[*].id_str` 强关联到 `dynamic_id`。
+- `MAJOR_TYPE_ARTICLE.article.id` 指向 `article:{cvid}`。
+- `MAJOR_TYPE_ARCHIVE.archive.bvid` 指向 `video:{bvid}`，但 video 动态不合并成视频作品对象。
+- `MAJOR_TYPE_OPUS` 只有在 `opus_id` 或 `/opus/{id}` jump_url 可解析时才建立 `opus_id`。
+- 转发动态保留 `forwarded_ref`，并递归抽取原动态 major 的引用。
+
 ## 图片协议
 
 每个 model 实现两个方法，构成统一的图片下载协议（duck typing，无显式 Protocol 基类）：
@@ -236,14 +301,16 @@ data/bili/parsing/{uid}/
 ├── task.json                        # 解析状态（含 images 下载进度）
 ├── user_profile/
 │   └── {uid}.json                   # per-uid 单文件
-├── video_detail/
-│   └── {bvid}.json                  # per-bvid
-├── article/
-│   └── {cvid}.json                  # per-cvid
-├── opus/
-│   └── {opus_id}.json               # per-opus_id
-├── dynamic/
-│   └── {dynamic_id}.json            # per-dynamic_id
+├── video_work/
+│   └── {bvid}.json                  # per-bvid（旧名 video_detail，已重命名）
+├── article_post/
+│   └── {cvid}.json                  # per-cvid（旧名 article，已重命名）
+├── opus_post/
+│   └── {opus_id}.json               # per-opus_id（旧名 opus，已重命名）
+├── dynamic_event/
+│   └── {dynamic_id}.json            # per-dynamic_id（旧名 dynamic，已重命名）
+├── content_post/
+│   └── {content_key_with_tilde}.json  # content_key 冒号替换成 ~，如 article~100.json
 └── images/                          # 图片本地存储（--download-images 触发）
     ├── avatar.jpg
     ├── video/{bvid}_cover.jpg
@@ -269,10 +336,11 @@ uid:{uid}:parse:{model}:{item_id}       → {uid}/{model}/{item_id}.json
   "status": "SUCCESS",
   "models": {
     "user_profile": {"status": "SUCCESS", "count": 1},
-    "video_detail": {"status": "SUCCESS", "count": 76},
-    "article": {"status": "SUCCESS", "count": 1},
-    "opus": {"status": "SUCCESS", "count": 54},
-    "dynamic": {"status": "SUCCESS", "count": 868}
+    "video_work": {"status": "SUCCESS", "count": 76},
+    "article_post": {"status": "SUCCESS", "count": 1},
+    "opus_post": {"status": "SUCCESS", "count": 54},
+    "dynamic_event": {"status": "SUCCESS", "count": 868},
+    "content_post": {"status": "SUCCESS", "count": 900}
   },
   "images": {
     "total": 47, "ok": 43, "skipped": 2, "failed": 2,
@@ -290,8 +358,9 @@ uid:{uid}:parse:{model}:{item_id}       → {uid}/{model}/{item_id}.json
 `ParsingModelStatus`（StrEnum）：PENDING / RUNNING / SUCCESS / FAILED / SKIPPED
 
 任务级状态由 model 状态聚合（ParsingCommand.parse_uid）：
-- 全部 model count > 0 且 SUCCESS → SUCCESS
-- 任一 model count == 0 或 FAILED → PARTIAL
+- full 模式下全部 model count > 0 且 SUCCESS → SUCCESS
+- full 模式下任一 model count == 0 或 FAILED → PARTIAL
+- incremental 模式下 count == 0 但该 model 已有 parsed object → 视为跳过已有数据，不强制 PARTIAL
 - 所有 model 失败 → PARTIAL（非 FAILED，保留容错语义）
 
 ## 解析模式
@@ -306,7 +375,7 @@ uid:{uid}:parse:{model}:{item_id}       → {uid}/{model}/{item_id}.json
 ## CLI
 
 ```bash
-uv run python -m bili_unit parse <uid>                         # 全部 5 个 model，full 模式
+uv run python -m bili_unit parse <uid>                         # legacy 5 类 + content_post，full 模式
 uv run python -m bili_unit parse <uid> -i                      # 解析 + 下载图片
 uv run python -m bili_unit parse <uid> -m incremental          # 增量模式
 ```
@@ -339,17 +408,26 @@ async def parse_uid(
 
 ### Query 接口
 
+泛型方法（推荐）：
+
+```python
+async def get_item(uid: int, model: str, item_id: str) -> dict | None
+async def list_items(uid: int, model: str) -> list[dict]
+```
+
+legacy 兼容方法（内部代理到泛型方法 + alias 映射）：
+
 ```python
 async def get_task(uid: int) -> ParsingTaskDTO | None
 async def list_tasks() -> list[dict]
 async def get_user_profile(uid: int) -> dict | None
-async def list_video_details(uid: int) -> list[dict]
+async def list_video_details(uid: int) -> list[dict]   # 读 video_work 目录
 async def get_video_detail(uid: int, bvid: str) -> dict | None
-async def list_articles(uid: int) -> list[dict]
+async def list_articles(uid: int) -> list[dict]         # 读 article_post 目录
 async def get_article(uid: int, cvid: str) -> dict | None
-async def list_opus(uid: int) -> list[dict]
+async def list_opus(uid: int) -> list[dict]             # 读 opus_post 目录
 async def get_opus(uid: int, opus_id: str) -> dict | None
-async def list_dynamics(uid: int) -> list[dict]
+async def list_dynamics(uid: int) -> list[dict]         # 读 dynamic_event 目录
 async def get_dynamic(uid: int, dynamic_id: str) -> dict | None
 ```
 
@@ -374,20 +452,22 @@ ParsingError
 
 ## 测试状态
 
-- 93 个 parsing 测试全部通过（含在 419 总数内）
+- 142 个指定 parsing + processing + CLI 测试全部通过（含 legacy model、registry、ContentPost selector / merge、processing transform / runner、CLI subset）
 - ruff lint 全部通过
 - 无外部网络 / API 依赖；测试可在离线环境运行
 
 ### 测试矩阵
 
 ```
-test_parsing_models.py       5 个 model 单元测试（60 tests：from_raw / to_dict / from_dict / image protocol / edge cases）
+test_parsing_models.py       legacy 5 个 model 单元测试（from_raw / to_dict / from_dict / image protocol / edge cases）
 test_parsing_data.py         ParsingKeyMapper + ParsingDataStore 单元测试（13 tests）
 test_parsing_command.py      ParsingCommand + ParsingQuery 集成测试（20 tests）
+test_parsing_infra.py        ParsingSpec registry / generic query / incremental / content_post materializer
+test_parsing_content_posts.py ContentPost / Article-Opus-Dynamic selector / merge 单元测试
 ```
 
 集成测试覆盖：
-- parse_uid 正常流程（5 个 model 全部 SUCCESS）
+- parse_uid 正常流程（6 个 model 全部 SUCCESS，含 content_post）
 - parse_uid 部分 model 返回 0（PARTIAL 状态）
 - parse_uid 单个 model 抛异常（FAILED + PARTIAL）
 - parse_uid 带 download_images=True（_download_images 被调用）

@@ -11,6 +11,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from .content_post import CrossRefs, SourceRef
+
 logger = logging.getLogger("bili.parsing.models.article")
 
 
@@ -135,7 +137,8 @@ def _build_cvid_to_lists(
 
 @dataclass
 class Article:
-    _model_name: str = "article"
+    _model_name: str = "article_post"
+    _schema_version: int = 1
 
     id: str = ""
     title: str = ""
@@ -147,6 +150,8 @@ class Article:
     markdown: str = ""
     content_json: list = field(default_factory=list)
     image_locals: list[str] = field(default_factory=list)
+    source_refs: list[SourceRef] = field(default_factory=list)
+    cross_refs: CrossRefs = field(default_factory=CrossRefs)
 
     # -- identity ------------------------------------------------------------
 
@@ -205,6 +210,13 @@ class Article:
             if isinstance(cj, list):
                 content_json = cj
 
+        source_refs = [SourceRef("articles", cvid)]
+        if detail and isinstance(detail, dict):
+            source_refs.append(SourceRef("article_detail", cvid))
+        for membership in lists:
+            if membership.rlid:
+                source_refs.append(SourceRef("article_list_detail", membership.rlid))
+
         return cls(
             id=cvid,
             title=str(list_item.get("title", "") or ""),
@@ -215,6 +227,8 @@ class Article:
             lists=lists,
             markdown=markdown,
             content_json=content_json,
+            source_refs=source_refs,
+            cross_refs=CrossRefs(cvid=cvid),
         )
 
     # -- serialisation -------------------------------------------------------
@@ -222,7 +236,9 @@ class Article:
     def to_dict(self) -> dict[str, Any]:
         return {
             "_model_name": self._model_name,
+            "_schema_version": self._schema_version,
             "id": self.id,
+            "cvid": self.id,
             "title": self.title,
             "summary": self.summary,
             "image_urls": list(self.image_urls),
@@ -232,6 +248,8 @@ class Article:
             "markdown": self.markdown,
             "content_json": self.content_json,
             "image_locals": list(self.image_locals),
+            "_source_refs": [ref.to_dict() for ref in self.source_refs],
+            "_cross_refs": self.cross_refs.to_dict(),
         }
 
     @classmethod
@@ -243,9 +261,19 @@ class Article:
         lists = [
             ReadListMeta.from_dict(rl) for rl in lists_raw if isinstance(rl, dict)
         ]
+        source_refs_raw = d.get("source_refs") or d.get("_source_refs") or []
+        source_refs = [
+            SourceRef.from_dict(ref)
+            for ref in source_refs_raw
+            if isinstance(ref, SourceRef | dict)
+        ]
+        item_id = str(d.get("id") or d.get("cvid") or "")
+        cross_refs = CrossRefs.from_dict(d.get("cross_refs") or d.get("_cross_refs"))
+        if not cross_refs.cvid and item_id:
+            cross_refs.cvid = item_id
 
         return cls(
-            id=str(d.get("id", "")),
+            id=item_id,
             title=str(d.get("title", "")),
             summary=str(d.get("summary", "")),
             image_urls=list(d.get("image_urls", [])),
@@ -255,6 +283,8 @@ class Article:
             markdown=str(d.get("markdown", "") or ""),
             content_json=list(d.get("content_json", []) or []),
             image_locals=list(d.get("image_locals", []) or []),
+            source_refs=source_refs,
+            cross_refs=cross_refs,
         )
 
     # -- image pipeline ------------------------------------------------------

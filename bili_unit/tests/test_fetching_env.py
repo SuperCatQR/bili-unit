@@ -53,3 +53,9 @@ def test_env_fetching_defaults():
     assert s.bili_fetching_http_backend == "aiohttp"
     assert s.bili_fetching_global_qps == 1.0
     assert s.bili_fetching_max_retries == 3
+
+
+def test_env_stale_running_threshold_default():
+    """Default stale-running threshold is 15 minutes (issue #3)."""
+    s = get_settings()
+    assert s.bili_fetching_stale_running_threshold_seconds == 900

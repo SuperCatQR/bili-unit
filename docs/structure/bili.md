@@ -68,23 +68,22 @@ runner       根据任务状态与错误状态编排抓取执行 / 重试
 ### 解析
 
 ```text
-models       5 个 typed dataclass（UpProfile / VideoDetail / Article / OpusPost / DynamicPost）；from_raw() / to_dict() / from_dict() + 图片协议
+models       5 个 legacy typed dataclass（UpProfile / VideoDetail / Article / OpusPost / DynamicPost）+ 1 个 ContentPost（Article / Opus / Dynamic 的统一内容视图）；from_raw() / to_dict() / from_dict() + 图片协议。processing 层通过 ContentPost 统一消费 article / opus / dynamic 类内容，legacy 三类 dataclass 保留作为 ContentPost candidate 来源。
 _images      ImageDownloader；aiohttp 并发下载 + skip-existing + 失败隔离
 env          保存解析配置；存储目录、图片并发数、超时
 keys         解析层 key 生成（uid:{uid}:task / uid:{uid}:parse:{model}:{item_id}）
 data         ParsingDataStore；JsonKVStore wrapper + 原子更新 helper
 query        ParsingQuery；读取 typed objects 的只读视图
-command      ParsingCommand；parse_uid() 编排 5 个 model + 可选图片下载
+command      ParsingCommand；parse_uid() 编排 6 个 model（5 legacy + content_post）+ 可选图片下载
 ```
 
 ### 处理
 
 ```text
-transform    数据转换逻辑；从 parsing typed-object dict 产出结构化数据；纯计算，无外部调用
 audio        音频下载 + ASR 转录逻辑；调用外部 CDN 与 ASR 引擎（处理阶段唯一外部调用模块，依据 unit §3 显式登记）
 env          保存处理配置；ASR 引擎配置、下载配置
 task         定义任务状态形状与枚举；任务状态持久化在 data，由 runner 读写
-runner       根据任务状态与错误状态编排处理执行 / 重试；驱动 transform 与 audio，统一写 raw / temp / data
+runner       根据任务状态与错误状态编排处理执行 / 重试；驱动 audio pipeline
 ```
 
 ```text
@@ -125,13 +124,13 @@ query        只读视图入口；读取 data / error
 
 ```text
 User(uid)
-用户基础信息           → transform
-用户发布内容（视频）   → transform + audio
-用户发布内容（文章）   → transform
-用户空间内容           → transform
-用户关系内容           → transform
-用户列表内容           → transform
-用户状态 / 统计内容    → transform
+用户基础信息           → parsing
+用户发布内容（视频）   → parsing + audio
+用户发布内容（文章）   → parsing
+用户空间内容           → parsing
+用户关系内容           → parsing
+用户列表内容           → parsing
+用户状态 / 统计内容    → parsing
 ```
 
 ## 6. 数据流
@@ -142,7 +141,6 @@ command → runner → auth → env
                     ↘ rate_limit → data / error
                     ↘ error
          runner → fetching.query → raw
-                    ↘ transform ← parsing.data（typed objects）
                     ↘ audio ← raw → env
                     ↘ temp
                     ↘ error
@@ -151,11 +149,11 @@ command → runner → auth → env
                     ↘ ImageDownloader（可选）→ images/
                     ↘ parsing.data → typed object 入库
          runner → data（write results / task / status / progress）
-         runner → parsing.query（read typed objects for transform）
+         runner → parsing.query（read VideoDetail for audio cid lookup）
          runner → temp（处理完成后删除）
 query → data（read）
 query → error（read）
-query → parsing.data（read typed objects）
+query → parsing.data（read typed objects for video-full / list-all-videos metadata）
 ```
 
 ```text
@@ -207,13 +205,12 @@ data 存储
 不推送
 不服务 index.ingestion 之外的调用方
 不直接服务 index / reasoning / interaction
-transform 不调用外部 API
 audio 不直接读取抓取存储内部
 env 不写入 data
-task 不直接调用 client / transform / audio
-runner 编排 client / transform / audio
+task 不直接调用 client / audio
+runner 编排 client / audio
 runner 根据任务状态与错误状态编排重试
-command 不直接调用 client / transform / audio
+command 不直接调用 client / audio
 command 不写 raw / temp / data
 command 不提供 data / error 读取
 query 不暴露 data / error 内部存储结构
@@ -252,7 +249,7 @@ bili_unit/                # Python 包根（pyproject 里 packages = ["bili_unit
 ├── query/                # 只读视图入口；读取 data / error
 ├── fetching/             # 抓取阶段（auth / client / rate_limit / runner/ / task / data / error / env）
 ├── parsing/              # 解析阶段（models / _images / command / query / data / env / keys）
-├── processing/           # 处理阶段（transform / audio / runner/ / task / data / error / env）
+├── processing/           # 处理阶段（audio / runner/ / task / data / error / env）
 └── tests/                # pytest 测试目录
 ```
 

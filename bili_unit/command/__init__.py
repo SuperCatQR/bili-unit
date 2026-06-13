@@ -68,16 +68,12 @@ class BiliCommand:
     async def process(
         self,
         uid: int,
-        pipelines: list[str] | None = None,
-        item_types: list[str] | None = None,
         mode: str = "incremental",
     ) -> ProcessingCommandResult:
         """触发 processing 处理流水线。"""
         if self._processing is None:
             raise RuntimeError("processing command was not assembled")
-        return await self._processing.process_uid(
-            uid, pipelines=pipelines, item_types=item_types, mode=mode,
-        )
+        return await self._processing.process_uid(uid, mode=mode)
 
     # -- lifecycle ---------------------------------------------------------
 

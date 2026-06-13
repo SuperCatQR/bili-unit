@@ -6,10 +6,15 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .content_post import CrossRefs, SourceRef, content_key_for_refs
+
 logger = logging.getLogger("bili.parsing.models.dynamic")
+
+_OPUS_URL_RE = re.compile(r"/opus/(\d+)")
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +144,11 @@ def _normalise_major(major_raw: Any) -> dict:
     elif mtype == "MAJOR_TYPE_OPUS":
         opus = major_raw.get("opus", {})
         if isinstance(opus, dict):
+            jump_url = _str_or_empty(opus.get("jump_url"))
+            match = _OPUS_URL_RE.search(jump_url)
+            result["opus_id"] = _str_or_empty(opus.get("opus_id") or opus.get("id") or (match.group(1) if match else ""))
+            result["jump_url"] = jump_url
+            result["title"] = _str_or_empty(opus.get("title"))
             summary = opus.get("summary", {})
             result["summary_text"] = _str_or_empty(
                 summary.get("text") if isinstance(summary, dict) else ""
@@ -150,6 +160,9 @@ def _normalise_major(major_raw: Any) -> dict:
                 if isinstance(pic, dict) and isinstance(pic.get("url"), str) and pic.get("url")
             ] if isinstance(pics, list) else []
         else:
+            result["opus_id"] = ""
+            result["jump_url"] = ""
+            result["title"] = ""
             result["summary_text"] = ""
             result["pics"] = []
 
@@ -207,6 +220,38 @@ def _flatten_dynamic(d: dict) -> dict:
     }
 
 
+def _cross_refs_from_major(dynamic_id: str, major: dict[str, Any]) -> CrossRefs:
+    major_type = _str_or_empty(major.get("type"))
+    if major_type == "MAJOR_TYPE_ARTICLE":
+        return CrossRefs(
+            cvid=_str_or_empty(major.get("article_id")) or None,
+            dynamic_id=dynamic_id or None,
+        )
+    if major_type == "MAJOR_TYPE_OPUS":
+        return CrossRefs(
+            opus_id=_str_or_empty(major.get("opus_id")) or None,
+            dynamic_id=dynamic_id or None,
+        )
+    if major_type == "MAJOR_TYPE_ARCHIVE":
+        return CrossRefs(
+            dynamic_id=dynamic_id or None,
+            bvid=_str_or_empty(major.get("bvid")) or None,
+        )
+    return CrossRefs(dynamic_id=dynamic_id or None)
+
+
+def _target_ref_from_cross_refs(cross_refs: CrossRefs, major_type: str) -> str:
+    if cross_refs.cvid:
+        return f"article:{cross_refs.cvid}"
+    if cross_refs.opus_id:
+        return f"opus:{cross_refs.opus_id}"
+    if cross_refs.bvid:
+        return f"video:{cross_refs.bvid}"
+    if major_type == "MAJOR_TYPE_DRAW" and cross_refs.dynamic_id:
+        return content_key_for_refs(cross_refs)
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Sub-dataclasses
 # ---------------------------------------------------------------------------
@@ -247,22 +292,30 @@ class ForwardedDynamic:
 
 @dataclass
 class DynamicPost:
-    _model_name: str = "dynamic"
+    _model_name: str = "dynamic_event"
+    _schema_version: int = 1
 
     id_str: str = ""
+    dynamic_id: str = ""
     type: str = ""
     text: str = ""
     timestamp: int | None = None
+    pub_time: int | None = None
     major: dict = field(default_factory=dict)
+    major_type: str = ""
+    target_ref: str = ""
+    forwarded_ref: str | None = None
     forwarded: ForwardedDynamic | None = None
     image_urls: list[str] = field(default_factory=list)
     image_locals: list[str] = field(default_factory=list)
+    source_refs: list[SourceRef] = field(default_factory=list)
+    cross_refs: CrossRefs = field(default_factory=CrossRefs)
 
     # -- identity ------------------------------------------------------------
 
     @property
     def item_id(self) -> str:
-        return self.id_str
+        return self.dynamic_id or self.id_str
 
     # -- raw construction ----------------------------------------------------
 
@@ -299,14 +352,33 @@ class DynamicPost:
                     seen.add(u)
                     image_urls.append(u)
 
+        major = flat["major"]
+        major_type = _str_or_empty(major.get("type"))
+        dynamic_id = flat["id_str"]
+        cross_refs = _cross_refs_from_major(dynamic_id, major)
+        target_ref = _target_ref_from_cross_refs(cross_refs, major_type)
+        forwarded_ref = f"dynamic:{forwarded.id_str}" if forwarded is not None and forwarded.id_str else None
+        if forwarded is not None:
+            fwd_refs = _cross_refs_from_major(forwarded.id_str, forwarded.major)
+            if fwd_refs.cvid or fwd_refs.opus_id or fwd_refs.bvid:
+                target_ref = _target_ref_from_cross_refs(fwd_refs, _str_or_empty(forwarded.major.get("type")))
+            cross_refs = cross_refs.merge_missing(fwd_refs)
+
         return cls(
             id_str=flat["id_str"],
+            dynamic_id=dynamic_id,
             type=flat["type"],
             text=flat["text"],
             timestamp=flat["timestamp"],
-            major=flat["major"],
+            pub_time=flat["timestamp"],
+            major=major,
+            major_type=major_type,
+            target_ref=target_ref,
+            forwarded_ref=forwarded_ref,
             forwarded=forwarded,
             image_urls=image_urls,
+            source_refs=[SourceRef("dynamics", dynamic_id)] if dynamic_id else [],
+            cross_refs=cross_refs,
         )
 
     # -- serialisation -------------------------------------------------------
@@ -314,14 +386,22 @@ class DynamicPost:
     def to_dict(self) -> dict[str, Any]:
         return {
             "_model_name": self._model_name,
+            "_schema_version": self._schema_version,
             "id_str": self.id_str,
+            "dynamic_id": self.dynamic_id or self.id_str,
             "type": self.type,
             "text": self.text,
             "timestamp": self.timestamp,
+            "pub_time": self.pub_time if self.pub_time is not None else self.timestamp,
             "major": dict(self.major),
+            "major_type": self.major_type,
+            "target_ref": self.target_ref,
+            "forwarded_ref": self.forwarded_ref,
             "forwarded": self.forwarded.to_dict() if self.forwarded else None,
             "image_urls": list(self.image_urls),
             "image_locals": list(self.image_locals),
+            "_source_refs": [ref.to_dict() for ref in self.source_refs],
+            "_cross_refs": self.cross_refs.to_dict(),
         }
 
     @classmethod
@@ -330,16 +410,33 @@ class DynamicPost:
         forwarded: ForwardedDynamic | None = None
         if isinstance(fwd_raw, dict):
             forwarded = ForwardedDynamic.from_dict(fwd_raw)
+        dynamic_id = _str_or_empty(d.get("dynamic_id") or d.get("id_str"))
+        source_refs_raw = d.get("source_refs") or d.get("_source_refs") or []
+        source_refs = [
+            SourceRef.from_dict(ref)
+            for ref in source_refs_raw
+            if isinstance(ref, SourceRef | dict)
+        ]
+        cross_refs = CrossRefs.from_dict(d.get("cross_refs") or d.get("_cross_refs"))
+        if not cross_refs.dynamic_id and dynamic_id:
+            cross_refs.dynamic_id = dynamic_id
 
         return cls(
-            id_str=_str_or_empty(d.get("id_str")),
+            id_str=dynamic_id,
+            dynamic_id=dynamic_id,
             type=_str_or_empty(d.get("type")),
             text=_str_or_empty(d.get("text")),
             timestamp=d.get("timestamp"),
+            pub_time=d.get("pub_time") if d.get("pub_time") is not None else d.get("timestamp"),
             major=dict(d.get("major", {}) or {}),
+            major_type=_str_or_empty(d.get("major_type") or dict(d.get("major", {}) or {}).get("type")),
+            target_ref=_str_or_empty(d.get("target_ref")),
+            forwarded_ref=_str_or_empty(d.get("forwarded_ref")) or None,
             forwarded=forwarded,
             image_urls=list(d.get("image_urls", []) or []),
             image_locals=list(d.get("image_locals", []) or []),
+            source_refs=source_refs,
+            cross_refs=cross_refs,
         )
 
     # -- image pipeline ------------------------------------------------------

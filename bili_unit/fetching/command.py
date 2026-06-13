@@ -23,11 +23,12 @@ class Command:
         data: DataStore,
         error: ErrorStore,
         rate_limit: RateLimitController,
+        stale_running_threshold_ms: int = 15 * 60 * 1000,
     ) -> None:
         self._data = data
         self._error = error
         self._rl = rate_limit
-        self._runner = Runner(data, error, rate_limit)
+        self._runner = Runner(data, error, rate_limit, stale_running_threshold_ms=stale_running_threshold_ms)
 
     async def fetch_uid(
         self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental"

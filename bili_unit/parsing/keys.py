@@ -16,3 +16,8 @@ def _item_key(uid: int, model: str, item_id: str) -> str:
     item_id is a stable string (uid / bvid / cvid / opus_id / dynamic_id).
     """
     return f"uid:{uid}:parse:{model}:{item_id}"
+
+
+def _item_prefix(uid: int, model: str) -> str:
+    """Prefix for listing typed objects for one parsing model."""
+    return f"uid:{uid}:parse:{model}:"
