@@ -14,18 +14,18 @@ from . import (
     ParsingTaskValue,
 )
 from .data import ParsingDataStore
-from .keys import _item_key, _task_key
+from .keys import _item_key, _item_prefix, _task_key
+from .specs import MODEL_ORDER, get_spec
 
 logger = logging.getLogger("bili.parsing.query")
+MODEL_NAMES: tuple[str, ...] = MODEL_ORDER
 
-# All 5 model names
-MODEL_NAMES: tuple[str, ...] = (
-    "user_profile",
-    "video_detail",
-    "article",
-    "opus",
-    "dynamic",
-)
+MODEL_ALIASES: dict[str, str] = {
+    "video_detail": "video_work",
+    "article": "article_post",
+    "opus": "opus_post",
+    "dynamic": "dynamic_event",
+}
 
 
 class ParsingQuery:
@@ -101,39 +101,60 @@ class ParsingQuery:
 
     # -- typed object accessors --------------------------------------------
 
+    async def get_item(
+        self,
+        uid: int,
+        model: str,
+        item_id: str,
+    ) -> dict[str, Any] | None:
+        """Return one typed parsing object by model and item id."""
+        canonical = self._canonical_model(model)
+        item = await self._data.get(_item_key(uid, canonical, item_id))
+        if item is None and canonical != model:
+            item = await self._data.get(_item_key(uid, model, item_id))
+        return item
+
+    async def list_items(self, uid: int, model: str) -> list[dict[str, Any]]:
+        """Return all typed parsing objects for one model."""
+        canonical = self._canonical_model(model)
+        rows = await self._data.list_prefix(_item_prefix(uid, canonical))
+        if rows or canonical == model:
+            return [v for _, v in rows]
+        legacy_rows = await self._data.list_prefix(_item_prefix(uid, model))
+        return [v for _, v in legacy_rows]
+
+    @staticmethod
+    def _canonical_model(model: str) -> str:
+        canonical = MODEL_ALIASES.get(model, model)
+        get_spec(canonical)
+        return canonical
+
     async def get_user_profile(self, uid: int) -> dict[str, Any] | None:
         """Return the UpProfile typed object as a dict, or None."""
-        return await self._data.get(_item_key(uid, "user_profile", str(uid)))
+        spec = get_spec("user_profile")
+        return await self.get_item(uid, spec.name, spec.default_item_id(uid))
 
     async def list_video_details(self, uid: int) -> list[dict[str, Any]]:
         """Return all VideoDetail typed objects for a uid."""
-        prefix = f"uid:{uid}:parse:video_detail:"
-        rows = await self._data.list_prefix(prefix)
-        return [v for _, v in rows]
+        return await self.list_items(uid, "video_detail")
 
     async def get_video_detail(self, uid: int, bvid: str) -> dict[str, Any] | None:
-        return await self._data.get(_item_key(uid, "video_detail", bvid))
+        return await self.get_item(uid, "video_detail", bvid)
 
     async def list_articles(self, uid: int) -> list[dict[str, Any]]:
-        prefix = f"uid:{uid}:parse:article:"
-        rows = await self._data.list_prefix(prefix)
-        return [v for _, v in rows]
+        return await self.list_items(uid, "article")
 
     async def get_article(self, uid: int, cvid: str) -> dict[str, Any] | None:
-        return await self._data.get(_item_key(uid, "article", cvid))
+        return await self.get_item(uid, "article", cvid)
 
     async def list_opus(self, uid: int) -> list[dict[str, Any]]:
-        prefix = f"uid:{uid}:parse:opus:"
-        rows = await self._data.list_prefix(prefix)
-        return [v for _, v in rows]
+        return await self.list_items(uid, "opus")
 
     async def get_opus(self, uid: int, opus_id: str) -> dict[str, Any] | None:
-        return await self._data.get(_item_key(uid, "opus", opus_id))
+        return await self.get_item(uid, "opus", opus_id)
 
     async def list_dynamics(self, uid: int) -> list[dict[str, Any]]:
-        prefix = f"uid:{uid}:parse:dynamic:"
-        rows = await self._data.list_prefix(prefix)
-        return [v for _, v in rows]
+        return await self.list_items(uid, "dynamic")
 
     async def get_dynamic(self, uid: int, dynamic_id: str) -> dict[str, Any] | None:
-        return await self._data.get(_item_key(uid, "dynamic", dynamic_id))
+        return await self.get_item(uid, "dynamic", dynamic_id)

@@ -9,6 +9,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from .content_post import CrossRefs, SourceRef
+
 logger = logging.getLogger("bili.parsing.models.up_profile")
 
 
@@ -97,6 +99,7 @@ class UpProfile:
     """Typed representation of a Bilibili user's profile data."""
 
     _model_name: str = "user_profile"
+    _schema_version: int = 1
 
     # -- identity (from user_info) -------------------------------------------
     mid: int | None = None
@@ -124,6 +127,8 @@ class UpProfile:
 
     # -- local assets (filled after image download) --------------------------
     avatar_local: str = ""
+    source_refs: list[SourceRef] = field(default_factory=list)
+    cross_refs: CrossRefs = field(default_factory=CrossRefs)
 
     # -----------------------------------------------------------------------
     # Common interface
@@ -143,6 +148,15 @@ class UpProfile:
         overview_stat: dict | None = None,
     ) -> UpProfile:
         """Create from raw fetching dict(s)."""
+        mid = user_info.get("mid")
+        source_refs = [
+            SourceRef("user_info", str(mid or "")),
+            SourceRef("relation_info", str(mid or "")),
+            SourceRef("up_stat", str(mid or "")),
+        ]
+        if overview_stat:
+            source_refs.append(SourceRef("overview_stat", str(mid or "")))
+
         return cls(
             mid=user_info.get("mid"),
             name=user_info.get("name", ""),
@@ -156,12 +170,15 @@ class UpProfile:
             social=_extract_social(relation_info),
             stats=_extract_stats(up_stat),
             overview=_extract_overview(overview_stat),
+            source_refs=source_refs,
+            cross_refs=CrossRefs(),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-serializable dict."""
         return {
             "_model_name": self._model_name,
+            "_schema_version": self._schema_version,
             "mid": self.mid,
             "name": self.name,
             "sex": self.sex,
@@ -175,11 +192,19 @@ class UpProfile:
             "stats": dict(self.stats),
             "overview": dict(self.overview) if self.overview is not None else None,
             "avatar_local": self.avatar_local,
+            "_source_refs": [ref.to_dict() for ref in self.source_refs],
+            "_cross_refs": self.cross_refs.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> UpProfile:
         """Deserialize from JSON dict."""
+        source_refs_raw = d.get("source_refs") or d.get("_source_refs") or []
+        source_refs = [
+            SourceRef.from_dict(ref)
+            for ref in source_refs_raw
+            if isinstance(ref, SourceRef | dict)
+        ]
         return cls(
             mid=d.get("mid"),
             name=d.get("name", ""),
@@ -198,6 +223,8 @@ class UpProfile:
             }),
             overview=d.get("overview"),
             avatar_local=d.get("avatar_local", ""),
+            source_refs=source_refs,
+            cross_refs=CrossRefs.from_dict(d.get("cross_refs") or d.get("_cross_refs")),
         )
 
     def collect_image_jobs(self, uid: int) -> list[tuple[str, str]]:
@@ -215,3 +242,4 @@ class UpProfile:
 
 # Module-level alias expected by models/__init__.py get_parser()
 PARSER = UpProfile
+UserProfile = UpProfile

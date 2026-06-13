@@ -17,7 +17,8 @@ from . import (
 )
 from .data import ParsingDataStore
 from .keys import _task_key
-from .materializer import MODEL_ORDER, ParsingMaterializer
+from .materializer import ParsingMaterializer
+from .specs import MODEL_ORDER
 
 if TYPE_CHECKING:
     from ..fetching.query import Query as FetchingQuery
@@ -71,7 +72,10 @@ class ParsingCommand:
                     ParsingModelStatus.SUCCESS.value,
                     count,
                 )
-                if count == 0:
+                if count == 0 and not (
+                    mode == "incremental"
+                    and await self._model_has_existing_items(uid, model_name)
+                ):
                     overall_status = ParsingTaskStatus.PARTIAL
             except Exception as exc:
                 logger.error(
@@ -113,6 +117,10 @@ class ParsingCommand:
     async def _download_images(self, uid: int) -> dict[str, Any]:
         """Download images for all parsed models. Returns summary dict."""
         return await self._materializer.download_images(uid)
+
+    async def _model_has_existing_items(self, uid: int, model_name: str) -> bool:
+        """Return whether a model has any parsed objects already stored."""
+        return bool(await self._load_typed_objects(uid, model_name))
 
     async def _load_typed_objects(
         self, uid: int, model_name: str,
