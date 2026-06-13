@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from ..._retry import (
+    RetryClassification,
+    RetryDriver,
+    RetryOutcome,
+    RetryPolicy,
+)
 from .. import (
     AuthError,
     EndpointStatus,
@@ -23,6 +28,22 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger("bili.fetching.runner")
+
+
+def _classify_endpoint_exc(exc: Exception) -> RetryClassification:
+    """Map fetching-layer exceptions to RetryDriver classifications.
+
+    AuthError and ResourceUnavailableError are immediately permanent — no
+    retries.  Other FetchingError subclasses (Http412Error, RequestError,
+    Http5xxError) are retryable.  Anything else (logic bugs, serialisation
+    errors) is treated as permanent so it surfaces fast rather than burning
+    the retry budget on something retries cannot fix.
+    """
+    if isinstance(exc, (AuthError, ResourceUnavailableError)):
+        return RetryClassification.PERMANENT
+    if isinstance(exc, FetchingError):
+        return RetryClassification.RETRYABLE
+    return RetryClassification.PERMANENT
 
 
 class _EndpointMixin:
@@ -52,7 +73,7 @@ class _EndpointMixin:
     ) -> None:
         # Import via package to preserve mock-patch target compatibility.
         # Tests patch ``bili_unit.fetching.runner.fetch_endpoint``.
-        from . import _get_retry_delays, fetch_endpoint
+        from . import fetch_endpoint
 
         # init
         await self._update_endpoint_status(uid, ep_name, EndpointStatus.RUNNING, retry_count=0)
@@ -92,28 +113,59 @@ class _EndpointMixin:
             if nr:
                 request_params = nr
 
-        retry_count = 0
-        max_retries = get_settings().bili_fetching_max_retries
-        RETRY_DELAYS = _get_retry_delays()
+        settings = get_settings()
+        max_retries = settings.bili_fetching_max_retries
+        retry_delays = settings.get_retry_delays()
+
+        # ``retry_count`` here is observable to the test harness (via the task
+        # entry's retry_count field) and represents the number of failed
+        # attempts so far.  Driven in the on_attempt_failed callback.
+        retry_state = {"count": 0, "last_error_id": None}
 
         # track pages fetched in THIS run (for incremental overwrite)
         pages_this_run: list[dict[str, Any]] = []
         boundary_hit = False  # set when all IDs on a page are known
 
-        while True:
-            try:
-                await self._rl.acquire(spec.rate_limit_key)
-                page = await fetch_endpoint(
-                    uid, spec, credential, request_params,
-                    timeout=get_settings().bili_fetching_request_timeout,
+        async def _fetch_one_page(params: dict[str, Any]):
+            await self._rl.acquire(spec.rate_limit_key)
+            return await fetch_endpoint(
+                uid, spec, credential, params,
+                timeout=settings.bili_fetching_request_timeout,
+            )
+
+        async def _on_attempt_failed(
+            exc: Exception, outcome: RetryOutcome,
+        ) -> int | None:
+            # Driver guarantees: PERMANENT → will_retry=False; RETRYABLE →
+            # will_retry depends on attempt budget.  Caller decides what to
+            # write to the store and (for 412) overrides the sleep duration.
+            if isinstance(exc, AuthError):
+                # Permanent — no retry.  Write FAILED_PERMANENT and let the
+                # caller swallow the raise via try/except.
+                await self._error.record(
+                    exc, uid=uid, endpoint=ep_name, retryable="false",
                 )
-            except AuthError as exc:
-                await self._error.record(exc, uid=uid, endpoint=ep_name, retryable="false")
                 await self._update_endpoint_status(
-                    uid, ep_name, EndpointStatus.FAILED_PERMANENT, retry_count=retry_count,
+                    uid, ep_name, EndpointStatus.FAILED_PERMANENT,
+                    retry_count=retry_state["count"],
                 )
-                return
-            except Http412Error as exc:
+                return None
+
+            if isinstance(exc, ResourceUnavailableError):
+                err_id = await self._error.record(
+                    exc, uid=uid, endpoint=ep_name, retryable="false",
+                )
+                await self._update_endpoint_status(
+                    uid, ep_name, EndpointStatus.FAILED_PERMANENT,
+                    retry_count=retry_state["count"], last_error_id=err_id,
+                )
+                logger.info(
+                    "endpoint_unavailable",
+                    extra={"uid": uid, "endpoint": ep_name, "reason": str(exc)},
+                )
+                return None
+
+            if isinstance(exc, Http412Error):
                 advice = await self._rl.record_412(spec.rate_limit_key)
                 # persist rate-limit state
                 await self._data.put("rate_limit:global", self._rl.to_state())
@@ -121,81 +173,91 @@ class _EndpointMixin:
                     f"rate_limit:{spec.rate_limit_key}",
                     self._rl.to_state(endpoint=spec.rate_limit_key),
                 )
-                retry_count += 1
-                detail = {"retry_count": retry_count, "params": request_params}
-                err_id = await self._error.record(
-                    exc, uid=uid, endpoint=ep_name, retryable="true", detail=detail,
-                )
-                await self._update_endpoint_status(
-                    uid, ep_name, EndpointStatus.FAILED_RETRYABLE,
-                    retry_count=retry_count, last_error_id=err_id,
-                )
-                if retry_count >= max_retries:
-                    await self._update_endpoint_status(
-                        uid, ep_name, EndpointStatus.FAILED_EXHAUSTED,
-                        retry_count=retry_count, last_error_id=err_id,
-                    )
-                    return
-                # use max of rate_limit advice and retry delay
-                retry_delay = RETRY_DELAYS[min(retry_count - 1, len(RETRY_DELAYS) - 1)]
-                wait = max(advice.get("wait_seconds", 0), retry_delay)
-                logger.info(
-                    "retry_scheduled",
-                    extra={"uid": uid, "endpoint": ep_name, "wait_s": wait, "retry": retry_count},
-                )
-                await asyncio.sleep(wait)
-                continue
-            except ResourceUnavailableError as exc:
-                # Permanent business-level failure (privacy / disabled / taken
-                # down).  Skip retries — the API will keep returning the same
-                # response.
-                err_id = await self._error.record(
-                    exc, uid=uid, endpoint=ep_name, retryable="false",
-                )
-                await self._update_endpoint_status(
-                    uid, ep_name, EndpointStatus.FAILED_PERMANENT,
-                    retry_count=retry_count, last_error_id=err_id,
-                )
-                logger.info(
-                    "endpoint_unavailable",
-                    extra={"uid": uid, "endpoint": ep_name, "reason": str(exc)},
-                )
-                return
-            except FetchingError as exc:
-                retry_count += 1
+                retry_state["count"] += 1
+                detail = {
+                    "retry_count": retry_state["count"],
+                    "params": request_params,
+                }
                 err_id = await self._error.record(
                     exc, uid=uid, endpoint=ep_name,
-                    retryable="true" if retry_count < max_retries else "false",
+                    retryable="true" if outcome.will_retry else "false",
+                    detail=detail,
                 )
+                retry_state["last_error_id"] = err_id
                 await self._update_endpoint_status(
                     uid, ep_name, EndpointStatus.FAILED_RETRYABLE,
-                    retry_count=retry_count, last_error_id=err_id,
+                    retry_count=retry_state["count"], last_error_id=err_id,
                 )
-                if retry_count >= max_retries:
+                if not outcome.will_retry:
+                    # Exhausted — final state is FAILED_EXHAUSTED.
                     await self._update_endpoint_status(
                         uid, ep_name, EndpointStatus.FAILED_EXHAUSTED,
-                        retry_count=retry_count, last_error_id=err_id,
+                        retry_count=retry_state["count"], last_error_id=err_id,
                     )
-                    return
-                wait = RETRY_DELAYS[min(retry_count - 1, len(RETRY_DELAYS) - 1)]
+                    return None
+                wait = max(advice.get("wait_seconds", 0), outcome.delay_seconds)
                 logger.info(
                     "retry_scheduled",
-                    extra={"uid": uid, "endpoint": ep_name, "wait_s": wait, "retry": retry_count},
+                    extra={
+                        "uid": uid, "endpoint": ep_name,
+                        "wait_s": wait, "retry": retry_state["count"],
+                    },
                 )
-                await asyncio.sleep(wait)
-                continue
-            except Exception as exc:
-                # Unexpected non-fetching error (e.g. serialisation, logic bug).
-                # Record and permanently fail — do not let silently swallowed by gather.
-                from .. import FetchingError as _FE
-                wrapped = _FE(f"unexpected: {type(exc).__name__}: {exc}")
+                return wait
+
+            if isinstance(exc, FetchingError):
+                retry_state["count"] += 1
                 err_id = await self._error.record(
-                    wrapped, uid=uid, endpoint=ep_name, retryable="false",
+                    exc, uid=uid, endpoint=ep_name,
+                    retryable="true" if outcome.will_retry else "false",
                 )
+                retry_state["last_error_id"] = err_id
                 await self._update_endpoint_status(
-                    uid, ep_name, EndpointStatus.FAILED_PERMANENT,
-                    retry_count=retry_count, last_error_id=err_id,
+                    uid, ep_name, EndpointStatus.FAILED_RETRYABLE,
+                    retry_count=retry_state["count"], last_error_id=err_id,
                 )
+                if not outcome.will_retry:
+                    await self._update_endpoint_status(
+                        uid, ep_name, EndpointStatus.FAILED_EXHAUSTED,
+                        retry_count=retry_state["count"], last_error_id=err_id,
+                    )
+                    return None
+                logger.info(
+                    "retry_scheduled",
+                    extra={
+                        "uid": uid, "endpoint": ep_name,
+                        "wait_s": outcome.delay_seconds,
+                        "retry": retry_state["count"],
+                    },
+                )
+                return None
+
+            # Unexpected non-fetching error — wrap and treat as permanent.
+            wrapped = FetchingError(f"unexpected: {type(exc).__name__}: {exc}")
+            err_id = await self._error.record(
+                wrapped, uid=uid, endpoint=ep_name, retryable="false",
+            )
+            await self._update_endpoint_status(
+                uid, ep_name, EndpointStatus.FAILED_PERMANENT,
+                retry_count=retry_state["count"], last_error_id=err_id,
+            )
+            return None
+
+        policy = RetryPolicy(
+            max_attempts=max_retries + 1,
+            delays=retry_delays,
+            classify=_classify_endpoint_exc,
+        )
+        driver = RetryDriver(policy)
+
+        while True:
+            try:
+                page = await driver.run(
+                    lambda params=request_params: _fetch_one_page(params),
+                    on_attempt_failed=_on_attempt_failed,
+                )
+            except Exception:
+                # Final state already written by _on_attempt_failed.
                 return
 
             # success — track page
@@ -237,11 +299,7 @@ class _EndpointMixin:
                     if not page.is_last_page:
                         safety_params = page.next_request or request_params
                         try:
-                            await self._rl.acquire(spec.rate_limit_key)
-                            safety_page = await fetch_endpoint(
-                                uid, spec, credential, safety_params,
-                                timeout=get_settings().bili_fetching_request_timeout,
-                            )
+                            safety_page = await _fetch_one_page(safety_params)
                             pages_this_run.append(safety_page.raw_payload)
                             logger.info(
                                 "incremental_safety_page",
@@ -338,5 +396,6 @@ class _EndpointMixin:
         )
 
         await self._update_endpoint_status(
-            uid, ep_name, EndpointStatus.SUCCESS, retry_count=retry_count,
+            uid, ep_name, EndpointStatus.SUCCESS,
+            retry_count=retry_state["count"],
         )

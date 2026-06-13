@@ -1,6 +1,7 @@
 # client — fetching scripts; strictly calls bilibili-api-python per bili-api-info.
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -47,6 +48,58 @@ _PERMANENT_BUSINESS_CODES: frozenset[int] = frozenset({53013, 88214})
 
 
 # ---------------------------------------------------------------------------
+# Common bilibili-api error → fetching error mapping
+#
+# Every per-call site in this module funnels through the same six-arm except
+# chain: TimeoutError, ResponseCodeException(412 / permanent / other),
+# NetworkException, ApiException, and a bare-Exception sweep.  The chain is
+# centralised here so each call site reads as a single line.
+#
+# ``passthrough`` lets a call site declare exception types that should NOT be
+# mapped — they bubble up so an outer try/except can apply site-specific
+# logic (e.g. article_detail's InitialStateException / KeyError → permanent;
+# opus_detail's ApiException sub-branch on "opus_id 不正确" / "fallback").
+# Listed types are checked BEFORE the bare-Exception sweep so they are not
+# silently swallowed into RequestError.
+# ---------------------------------------------------------------------------
+
+
+@contextlib.asynccontextmanager
+async def _map_bilibili_errors(
+    label: str,
+    *,
+    passthrough: tuple[type[BaseException], ...] = (),
+):
+    try:
+        yield
+    except TimeoutError as exc:
+        raise Http5xxError(f"{label}: timeout") from exc
+    except ResponseCodeException as exc:
+        if exc.code == 412:
+            raise Http412Error(f"{label}: 412") from exc
+        if exc.code in _PERMANENT_BUSINESS_CODES:
+            raise ResourceUnavailableError(
+                f"{label}: code={exc.code}: {exc.msg}",
+            ) from exc
+        raise RequestError(f"{label}: code={exc.code}: {exc.msg}") from exc
+    except NetworkException as exc:
+        raise Http5xxError(f"{label}: network error {exc}") from exc
+    except passthrough:
+        # Site-specific exception types that the caller wants to handle in an
+        # outer try/except (e.g. article_detail's InitialStateException /
+        # KeyError → permanent; opus_detail's ApiException sub-branch on
+        # "opus_id 不正确" / "fallback").  Placed AFTER ResponseCodeException
+        # and NetworkException so those arms still take precedence — otherwise
+        # passthrough=(ApiException,) would swallow 412 / permanent-code
+        # handling, since ResponseCodeException is an ApiException subclass.
+        raise
+    except ApiException as exc:
+        raise RequestError(f"{label}: {exc}") from exc
+    except Exception as exc:
+        raise RequestError(f"{label}: unexpected: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
 # Endpoint registry (cf. fetching_engineering.md §10)
 # ---------------------------------------------------------------------------
 
@@ -67,6 +120,7 @@ class EndpointSpec:
     kind: str = "uid"                 # "uid" | "item"
     source_endpoint: str | None = None  # required when kind="item"
     extract_items: Callable[[dict], list[str]] | None = None  # required when kind="item"
+    needs_parent_uid: bool = False  # True when callable needs parent uid via kw["_uid"]
 
 
 # Endpoint registry (MVP + initial extensions)
@@ -128,43 +182,11 @@ async def fetch_video_detail_item(
 ) -> dict[str, Any]:
     """Fetch get_info + get_tags for a single bvid. Returns {"info": ..., "tags": ...}."""
     v = Video(bvid, credential=credential)
-    try:
+    async with _map_bilibili_errors(f"video_detail[{bvid}]: get_info"):
         info = await asyncio.wait_for(v.get_info(), timeout=timeout)
-    except TimeoutError as exc:
-        raise Http5xxError(f"video_detail[{bvid}]: get_info timeout after {timeout}s") from exc
-    except ResponseCodeException as exc:
-        if exc.code == 412:
-            raise Http412Error(f"video_detail[{bvid}]: get_info 412") from exc
-        if exc.code in _PERMANENT_BUSINESS_CODES:
-            raise ResourceUnavailableError(
-                f"video_detail[{bvid}]: get_info code={exc.code}: {exc.msg}",
-            ) from exc
-        raise RequestError(f"video_detail[{bvid}]: get_info code={exc.code}: {exc.msg}") from exc
-    except NetworkException as exc:
-        raise Http5xxError(f"video_detail[{bvid}]: get_info network error {exc}") from exc
-    except ApiException as exc:
-        raise RequestError(f"video_detail[{bvid}]: get_info {exc}") from exc
-    except Exception as exc:
-        raise RequestError(f"video_detail[{bvid}]: get_info unexpected: {exc}") from exc
 
-    try:
+    async with _map_bilibili_errors(f"video_detail[{bvid}]: get_tags"):
         tags = await asyncio.wait_for(v.get_tags(), timeout=timeout)
-    except TimeoutError as exc:
-        raise Http5xxError(f"video_detail[{bvid}]: get_tags timeout after {timeout}s") from exc
-    except ResponseCodeException as exc:
-        if exc.code == 412:
-            raise Http412Error(f"video_detail[{bvid}]: get_tags 412") from exc
-        if exc.code in _PERMANENT_BUSINESS_CODES:
-            raise ResourceUnavailableError(
-                f"video_detail[{bvid}]: get_tags code={exc.code}: {exc.msg}",
-            ) from exc
-        raise RequestError(f"video_detail[{bvid}]: get_tags code={exc.code}: {exc.msg}") from exc
-    except NetworkException as exc:
-        raise Http5xxError(f"video_detail[{bvid}]: get_tags network error {exc}") from exc
-    except ApiException as exc:
-        raise RequestError(f"video_detail[{bvid}]: get_tags {exc}") from exc
-    except Exception as exc:
-        raise RequestError(f"video_detail[{bvid}]: get_tags unexpected: {exc}") from exc
 
     return {"info": info, "tags": tags}
 
@@ -219,87 +241,35 @@ async def fetch_article_detail_item(
 
     a = Article(cvid_int, credential=credential)
 
-    try:
+    async with _map_bilibili_errors(f"article_detail[{cvid}]: get_info"):
         info = await asyncio.wait_for(a.get_info(), timeout=timeout)
-    except TimeoutError as exc:
-        raise Http5xxError(
-            f"article_detail[{cvid}]: get_info timeout after {timeout}s",
-        ) from exc
-    except ResponseCodeException as exc:
-        if exc.code == 412:
-            raise Http412Error(f"article_detail[{cvid}]: get_info 412") from exc
-        if exc.code in _PERMANENT_BUSINESS_CODES:
-            raise ResourceUnavailableError(
-                f"article_detail[{cvid}]: get_info code={exc.code}: {exc.msg}",
-            ) from exc
-        raise RequestError(
-            f"article_detail[{cvid}]: get_info code={exc.code}: {exc.msg}",
-        ) from exc
-    except NetworkException as exc:
-        raise Http5xxError(
-            f"article_detail[{cvid}]: get_info network error {exc}",
-        ) from exc
-    except ApiException as exc:
-        raise RequestError(f"article_detail[{cvid}]: get_info {exc}") from exc
-    except Exception as exc:
-        raise RequestError(
-            f"article_detail[{cvid}]: get_info unexpected: {exc}",
-        ) from exc
 
+    # ``fetch_content`` scrapes the article web page for
+    # ``window.__INITIAL_STATE__`` (cf. bilibili_api.utils.initial_state).
+    # When the article is taken down, gated behind risk-control, or the
+    # response is a placeholder shell, the marker is absent — bilibili-api
+    # raises ``InitialStateException("未找到相关信息")``, or a bare
+    # ``KeyError`` for ``readInfo``.  Both are terminal — surface as
+    # permanent so the runner skips instead of burning the retry budget.
+    # ``passthrough`` lets these escape ``_map_bilibili_errors`` unmapped
+    # so the outer try/except below can rewrap them.
     try:
-        await asyncio.wait_for(a.fetch_content(), timeout=timeout)
-        markdown_text: str = a.markdown()
-        content_json: list[Any] = a.json()
-    except TimeoutError as exc:
-        raise Http5xxError(
-            f"article_detail[{cvid}]: fetch_content timeout after {timeout}s",
-        ) from exc
-    except ResponseCodeException as exc:
-        if exc.code == 412:
-            raise Http412Error(
-                f"article_detail[{cvid}]: fetch_content 412",
-            ) from exc
-        if exc.code in _PERMANENT_BUSINESS_CODES:
-            raise ResourceUnavailableError(
-                f"article_detail[{cvid}]: fetch_content code={exc.code}: {exc.msg}",
-            ) from exc
-        raise RequestError(
-            f"article_detail[{cvid}]: fetch_content code={exc.code}: {exc.msg}",
-        ) from exc
-    except NetworkException as exc:
-        raise Http5xxError(
-            f"article_detail[{cvid}]: fetch_content network error {exc}",
-        ) from exc
+        async with _map_bilibili_errors(
+            f"article_detail[{cvid}]: fetch_content",
+            passthrough=(InitialStateException, KeyError),
+        ):
+            await asyncio.wait_for(a.fetch_content(), timeout=timeout)
+            markdown_text: str = a.markdown()
+            content_json: list[Any] = a.json()
     except InitialStateException as exc:
-        # ``fetch_content`` scrapes the article web page for
-        # ``window.__INITIAL_STATE__`` (cf. bilibili_api.utils.initial_state).
-        # When the article is taken down, gated behind risk-control, or the
-        # response is a placeholder shell, the marker is absent and bilibili-api
-        # raises ``InitialStateException("未找到相关信息")``.  Same shape as the
-        # ``readInfo`` ``KeyError`` below — retrying yields the same wall, so
-        # mark it permanent and let the runner skip it.
         raise ResourceUnavailableError(
             f"article_detail[{cvid}]: fetch_content {exc} "
             f"(article unavailable / page returns no initial state)",
         ) from exc
-    except ApiException as exc:
-        raise RequestError(
-            f"article_detail[{cvid}]: fetch_content {exc}",
-        ) from exc
     except KeyError as exc:
-        # ``fetch_content`` scrapes the article web page and reads
-        # ``__INITIAL_STATE__.readInfo`` (see bilibili_api.article.fetch_content).
-        # When the article is taken down, gated behind risk-control, or the page
-        # shape changes, ``readInfo`` is absent and a bare ``KeyError`` escapes.
-        # Retrying yields the same KeyError — surface as a permanent failure so
-        # the runner skips it instead of burning the retry budget.
         raise ResourceUnavailableError(
             f"article_detail[{cvid}]: fetch_content missing key {exc} "
             f"(article unavailable / page structure changed)",
-        ) from exc
-    except Exception as exc:
-        raise RequestError(
-            f"article_detail[{cvid}]: fetch_content unexpected: {exc}",
         ) from exc
 
     return {
@@ -360,81 +330,42 @@ async def fetch_opus_detail_item(
 
     o = Opus(opus_id_int, credential=credential)
 
+    # ``Opus.get_info`` raises ArgsException("传入的 opus_id 不正确") when the
+    # API returns a fallback marker — that is a terminal state, not a
+    # retryable network failure.  ``passthrough=(ApiException,)`` lets the
+    # bare ApiException escape the mapper so we can branch on the message
+    # here; ResponseCodeException / NetworkException still map to
+    # 412 / permanent / 5xx through their dedicated arms.
     try:
-        info = await asyncio.wait_for(o.get_info(), timeout=timeout)
-    except TimeoutError as exc:
-        raise Http5xxError(
-            f"opus_detail[{opus_id}]: get_info timeout after {timeout}s",
-        ) from exc
-    except ResponseCodeException as exc:
-        if exc.code == 412:
-            raise Http412Error(f"opus_detail[{opus_id}]: get_info 412") from exc
-        if exc.code in _PERMANENT_BUSINESS_CODES:
-            raise ResourceUnavailableError(
-                f"opus_detail[{opus_id}]: get_info code={exc.code}: {exc.msg}",
-            ) from exc
-        raise RequestError(
-            f"opus_detail[{opus_id}]: get_info code={exc.code}: {exc.msg}",
-        ) from exc
-    except NetworkException as exc:
-        raise Http5xxError(
-            f"opus_detail[{opus_id}]: get_info network error {exc}",
-        ) from exc
+        async with _map_bilibili_errors(
+            f"opus_detail[{opus_id}]: get_info",
+            passthrough=(ApiException,),
+        ):
+            info = await asyncio.wait_for(o.get_info(), timeout=timeout)
     except ApiException as exc:
-        # ``Opus.get_info`` raises ArgsException("传入的 opus_id 不正确") when
-        # the API returns a fallback marker — that is a terminal state, not a
-        # retryable network failure.
         if "opus_id 不正确" in str(exc) or "fallback" in str(exc).lower():
             raise ResourceUnavailableError(
                 f"opus_detail[{opus_id}]: opus unavailable ({exc})",
             ) from exc
         raise RequestError(f"opus_detail[{opus_id}]: get_info {exc}") from exc
-    except Exception as exc:
-        raise RequestError(
-            f"opus_detail[{opus_id}]: get_info unexpected: {exc}",
-        ) from exc
 
+    # ``markdown()`` walks ``info.item.modules`` and indexes nested keys; an
+    # unexpected page shape (taken-down opus, schema drift) leaks a bare
+    # ``KeyError`` — surface as permanent, the same way article_detail
+    # treats a missing ``readInfo``.
     try:
-        markdown_text: str = await asyncio.wait_for(o.markdown(), timeout=timeout)
-        images: list[dict[str, Any]] = await asyncio.wait_for(
-            o.get_images_raw_info(), timeout=timeout,
-        )
-    except TimeoutError as exc:
-        raise Http5xxError(
-            f"opus_detail[{opus_id}]: markdown/images timeout after {timeout}s",
-        ) from exc
-    except ResponseCodeException as exc:
-        if exc.code == 412:
-            raise Http412Error(
-                f"opus_detail[{opus_id}]: markdown 412",
-            ) from exc
-        if exc.code in _PERMANENT_BUSINESS_CODES:
-            raise ResourceUnavailableError(
-                f"opus_detail[{opus_id}]: markdown code={exc.code}: {exc.msg}",
-            ) from exc
-        raise RequestError(
-            f"opus_detail[{opus_id}]: markdown code={exc.code}: {exc.msg}",
-        ) from exc
-    except NetworkException as exc:
-        raise Http5xxError(
-            f"opus_detail[{opus_id}]: markdown network error {exc}",
-        ) from exc
-    except ApiException as exc:
-        raise RequestError(
-            f"opus_detail[{opus_id}]: markdown {exc}",
-        ) from exc
+        async with _map_bilibili_errors(
+            f"opus_detail[{opus_id}]: markdown",
+            passthrough=(KeyError,),
+        ):
+            markdown_text: str = await asyncio.wait_for(o.markdown(), timeout=timeout)
+            images: list[dict[str, Any]] = await asyncio.wait_for(
+                o.get_images_raw_info(), timeout=timeout,
+            )
     except KeyError as exc:
-        # ``markdown()`` walks ``info.item.modules`` and indexes nested keys;
-        # an unexpected page shape (taken-down opus, schema drift) leaks a
-        # bare ``KeyError`` — surface as permanent, the same way article_detail
-        # treats a missing ``readInfo``.
         raise ResourceUnavailableError(
             f"opus_detail[{opus_id}]: markdown missing key {exc} "
             f"(opus unavailable / shape changed)",
-        ) from exc
-    except Exception as exc:
-        raise RequestError(
-            f"opus_detail[{opus_id}]: markdown unexpected: {exc}",
         ) from exc
 
     return {
@@ -493,36 +424,10 @@ async def fetch_article_list_detail_item(
 
     al = ArticleList(rlid_int, credential=credential)
 
-    try:
+    async with _map_bilibili_errors(
+        f"article_list_detail[{rlid}]: get_content",
+    ):
         result = await asyncio.wait_for(al.get_content(), timeout=timeout)
-    except TimeoutError as exc:
-        raise Http5xxError(
-            f"article_list_detail[{rlid}]: get_content timeout after {timeout}s",
-        ) from exc
-    except ResponseCodeException as exc:
-        if exc.code == 412:
-            raise Http412Error(
-                f"article_list_detail[{rlid}]: get_content 412",
-            ) from exc
-        if exc.code in _PERMANENT_BUSINESS_CODES:
-            raise ResourceUnavailableError(
-                f"article_list_detail[{rlid}]: get_content code={exc.code}: {exc.msg}",
-            ) from exc
-        raise RequestError(
-            f"article_list_detail[{rlid}]: get_content code={exc.code}: {exc.msg}",
-        ) from exc
-    except NetworkException as exc:
-        raise Http5xxError(
-            f"article_list_detail[{rlid}]: get_content network error {exc}",
-        ) from exc
-    except ApiException as exc:
-        raise RequestError(
-            f"article_list_detail[{rlid}]: get_content {exc}",
-        ) from exc
-    except Exception as exc:
-        raise RequestError(
-            f"article_list_detail[{rlid}]: get_content unexpected: {exc}",
-        ) from exc
 
     return result
 
@@ -575,7 +480,7 @@ async def _paginate_channel_videos(
     all_archives: list[Any] = []
     pn = 1
     while True:
-        try:
+        async with _map_bilibili_errors(f"channel_videos_{kind}[{sid}]"):
             if kind == "season":
                 data = await asyncio.wait_for(
                     u.get_channel_videos_season(
@@ -590,34 +495,6 @@ async def _paginate_channel_videos(
                     ),
                     timeout=timeout,
                 )
-        except TimeoutError as exc:
-            raise Http5xxError(
-                f"channel_videos_{kind}[{sid}]: timeout after {timeout}s"
-            ) from exc
-        except ResponseCodeException as exc:
-            if exc.code == 412:
-                raise Http412Error(
-                    f"channel_videos_{kind}[{sid}]: 412"
-                ) from exc
-            if exc.code in _PERMANENT_BUSINESS_CODES:
-                raise ResourceUnavailableError(
-                    f"channel_videos_{kind}[{sid}]: code={exc.code}: {exc.msg}"
-                ) from exc
-            raise RequestError(
-                f"channel_videos_{kind}[{sid}]: code={exc.code}: {exc.msg}"
-            ) from exc
-        except NetworkException as exc:
-            raise Http5xxError(
-                f"channel_videos_{kind}[{sid}]: network error {exc}"
-            ) from exc
-        except ApiException as exc:
-            raise RequestError(
-                f"channel_videos_{kind}[{sid}]: {exc}"
-            ) from exc
-        except Exception as exc:
-            raise RequestError(
-                f"channel_videos_{kind}[{sid}]: unexpected: {exc}"
-            ) from exc
 
         archives = data.get("archives", [])
         all_archives.extend(archives)
@@ -631,29 +508,32 @@ async def _paginate_channel_videos(
     return {"archives": all_archives, "page": {"count": len(all_archives)}}
 
 
+def _user_method(name: str, **defaults: Any):
+    """Build a uid-level callable that dispatches to ``User.{name}``.
+
+    Most uid-level endpoints follow the same shape:
+    ``user.User(uid, credential=cred).{method}(**kw_merged_with_defaults)``.
+    This helper removes ~3 lines of boilerplate per endpoint.
+    """
+    def _fn(uid, cred=None, **kw):
+        merged = {**defaults, **kw}
+        return getattr(user.User(uid, credential=cred), name)(**merged)
+    return _fn
+
+
 def _build_endpoints() -> list[EndpointSpec]:
     return [
         # --- MVP ---
         EndpointSpec(
             name="user_info",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_user_info()
-            ),
+            callable=_user_method("get_user_info"),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="user_info",
         ),
         EndpointSpec(
             name="videos",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_videos(
-                    pn=kw.get("pn", 1),
-                    ps=kw.get("ps", 30),
-                    tid=kw.get("tid", 0),
-                    keyword=kw.get("keyword", ""),
-                    order=kw.get("order", user.VideoOrder.PUBDATE),
-                )
-            ),
+            callable=_user_method("get_videos", pn=1, ps=30, tid=0, keyword="", order=user.VideoOrder.PUBDATE),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 30},
             pagination_strategy="page",
@@ -664,18 +544,14 @@ def _build_endpoints() -> list[EndpointSpec]:
         # --- extension: relation + stat ---
         EndpointSpec(
             name="relation_info",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_relation_info()
-            ),
+            callable=_user_method("get_relation_info"),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="relation_info",
         ),
         EndpointSpec(
             name="up_stat",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_up_stat()
-            ),
+            callable=_user_method("get_up_stat"),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="up_stat",
@@ -683,9 +559,7 @@ def _build_endpoints() -> list[EndpointSpec]:
         # --- T1: overview_stat ---
         EndpointSpec(
             name="overview_stat",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_overview_stat()
-            ),
+            callable=_user_method("get_overview_stat"),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="overview_stat",
@@ -693,13 +567,7 @@ def _build_endpoints() -> list[EndpointSpec]:
         # --- T1: articles ---
         EndpointSpec(
             name="articles",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_articles(
-                    pn=kw.get("pn", 1),
-                    ps=kw.get("ps", 30),
-                    order=kw.get("order", user.ArticleOrder.PUBDATE),
-                )
-            ),
+            callable=_user_method("get_articles", pn=1, ps=30, order=user.ArticleOrder.PUBDATE),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 30},
             pagination_strategy="page",
@@ -710,14 +578,7 @@ def _build_endpoints() -> list[EndpointSpec]:
         # --- T1: subscribed_bangumi ---
         EndpointSpec(
             name="subscribed_bangumi",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_subscribed_bangumi(
-                    pn=kw.get("pn", 1),
-                    ps=kw.get("ps", 15),
-                    type_=kw.get("type_", user.BangumiType.BANGUMI),
-                    follow_status=kw.get("follow_status", user.BangumiFollowStatus.ALL),
-                )
-            ),
+            callable=_user_method("get_subscribed_bangumi", pn=1, ps=15, type_=user.BangumiType.BANGUMI, follow_status=user.BangumiFollowStatus.ALL),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 15},
             pagination_strategy="page",
@@ -728,12 +589,7 @@ def _build_endpoints() -> list[EndpointSpec]:
         # --- T1: opus ---
         EndpointSpec(
             name="opus",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_opus(
-                    type_=kw.get("type_", user.OpusType.ALL),
-                    offset=kw.get("offset", ""),
-                )
-            ),
+            callable=_user_method("get_opus", type_=user.OpusType.ALL, offset=""),
             credential_required=False,
             params_strategy={"offset": ""},
             pagination_strategy="cursor",
@@ -744,11 +600,7 @@ def _build_endpoints() -> list[EndpointSpec]:
         # --- extension: dynamics ---
         EndpointSpec(
             name="dynamics",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_dynamics_new(
-                    offset=kw.get("offset", ""),
-                )
-            ),
+            callable=_user_method("get_dynamics_new", offset=""),
             credential_required=False,
             params_strategy={"offset": ""},
             pagination_strategy="cursor",
@@ -759,13 +611,7 @@ def _build_endpoints() -> list[EndpointSpec]:
         # --- extension: audios ---
         EndpointSpec(
             name="audios",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_audios(
-                    pn=kw.get("pn", 1),
-                    ps=kw.get("ps", 30),
-                    order=kw.get("order", user.AudioOrder.PUBDATE),
-                )
-            ),
+            callable=_user_method("get_audios", pn=1, ps=30, order=user.AudioOrder.PUBDATE),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 30},
             pagination_strategy="page",
@@ -776,12 +622,7 @@ def _build_endpoints() -> list[EndpointSpec]:
         # --- extension: channel_list ---
         EndpointSpec(
             name="channel_list",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_channel_list(
-                    pn=kw.get("pn", 1),
-                    ps=kw.get("ps", 20),
-                )
-            ),
+            callable=_user_method("get_channel_list", pn=1, ps=20),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 20},
             pagination_strategy="page",
@@ -841,36 +682,28 @@ def _build_endpoints() -> list[EndpointSpec]:
         # ================================================================
         EndpointSpec(
             name="user_medal",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_user_medal()
-            ),
+            callable=_user_method("get_user_medal"),
             credential_required=True,
             pagination_strategy="none",
             rate_limit_key="user_medal",
         ),
         EndpointSpec(
             name="space_notice",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_space_notice()
-            ),
+            callable=_user_method("get_space_notice"),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="space_notice",
         ),
         EndpointSpec(
             name="all_followings",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_all_followings()
-            ),
+            callable=_user_method("get_all_followings"),
             credential_required=True,
             pagination_strategy="none",
             rate_limit_key="all_followings",
         ),
         EndpointSpec(
             name="top_videos",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_top_videos()
-            ),
+            callable=_user_method("get_top_videos"),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="top_videos",
@@ -888,29 +721,21 @@ def _build_endpoints() -> list[EndpointSpec]:
         ),
         EndpointSpec(
             name="article_list",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_article_list(
-                    order=kw.get("order", user.ArticleListOrder.LATEST),
-                )
-            ),
+            callable=_user_method("get_article_list", order=user.ArticleListOrder.LATEST),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="article_list",
         ),
         EndpointSpec(
             name="cheese",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_cheese()
-            ),
+            callable=_user_method("get_cheese"),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="cheese",
         ),
         EndpointSpec(
             name="elec_monthly",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_elec_user_monthly()
-            ),
+            callable=_user_method("get_elec_user_monthly"),
             credential_required=True,
             pagination_strategy="none",
             rate_limit_key="elec_monthly",
@@ -923,12 +748,7 @@ def _build_endpoints() -> list[EndpointSpec]:
         # We still register it as "page" for shape-detection completeness.
         EndpointSpec(
             name="user_fav_tag",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_user_fav_tag(
-                    pn=kw.get("pn", 1),
-                    ps=kw.get("ps", 20),
-                )
-            ),
+            callable=_user_method("get_user_fav_tag", pn=1, ps=20),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 20},
             pagination_strategy="page",
@@ -964,6 +784,7 @@ def _build_endpoints() -> list[EndpointSpec]:
             kind="item",
             source_endpoint="channel_list",
             extract_items=_extract_season_ids,
+            needs_parent_uid=True,
         ),
         EndpointSpec(
             name="channel_videos_series",
@@ -976,17 +797,14 @@ def _build_endpoints() -> list[EndpointSpec]:
             kind="item",
             source_endpoint="channel_list",
             extract_items=_extract_series_ids,
+            needs_parent_uid=True,
         ),
         # ================================================================
         # T2 — anchor pagination
         # ================================================================
         EndpointSpec(
             name="upower_qa",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_upower_qa_list(
-                    anchor=kw.get("anchor", 0),
-                )
-            ),
+            callable=_user_method("get_upower_qa_list", anchor=0),
             credential_required=True,
             params_strategy={"anchor": 0},
             pagination_strategy="anchor",
@@ -1053,27 +871,11 @@ async def fetch_endpoint(
     timeout: float = 30.0,
 ) -> FetchPageResult:
     """Call one page of an endpoint and return the raw payload."""
-    try:
+    async with _map_bilibili_errors(spec.name):
         data = await asyncio.wait_for(
             spec.callable(uid, cred=credential, **request_params),
             timeout=timeout,
         )
-    except TimeoutError as exc:
-        raise Http5xxError(f"{spec.name}: timeout after {timeout}s") from exc
-    except ResponseCodeException as exc:
-        if exc.code == 412:
-            raise Http412Error(f"{spec.name} page={request_params}: 412") from exc
-        if exc.code in _PERMANENT_BUSINESS_CODES:
-            raise ResourceUnavailableError(
-                f"{spec.name} code={exc.code}: {exc.msg}",
-            ) from exc
-        raise RequestError(f"{spec.name} code={exc.code}: {exc.msg}") from exc
-    except NetworkException as exc:
-        raise Http5xxError(f"{spec.name}: network error {exc}") from exc
-    except ApiException as exc:
-        raise RequestError(f"{spec.name}: {exc}") from exc
-    except Exception as exc:
-        raise RequestError(f"{spec.name} unexpected: {exc}") from exc
 
     # determine pagination
     is_last = False

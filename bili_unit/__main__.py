@@ -7,6 +7,8 @@
 #   python -m bili_unit login                        — QR code login
 #   python -m bili_unit init-mimo                    — interactive MiMo ASR setup
 #   python -m bili_unit list-uids                    — list fetched uids
+#   python -m bili_unit delete-uid  <uid> [-y]       — delete all data for a uid
+#   python -m bili_unit video-full  <uid> <bvid>     — show full video result
 #
 # Internally goes through ``bili_unit.assemble()`` →
 # ``BiliCommand`` / ``BiliQuery`` (the unit-level entries). The legacy
@@ -174,6 +176,69 @@ async def _handle_list_uids(_args: argparse.Namespace) -> None:
         await error.close()
 
 
+async def _handle_delete_uid(args: argparse.Namespace) -> None:
+    """Delete all fetching + processing data for a uid."""
+    from bili_unit import assemble
+
+    cmd, qry, fetch_data, fetch_error = await assemble()
+    try:
+        # Check fetching side
+        task = await qry.fetching.get_task(args.uid)
+        if task is None:
+            print(f"uid={args.uid}: 未找到该用户的抓取数据")
+            return
+
+        if not args.yes:
+            print(f"即将删除 uid={args.uid} 的所有抓取数据（任务、端点结果、进度、错误记录等）")
+            answer = input("确认删除? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
+                print("已取消")
+                return
+
+        # Delete fetching data
+        all_rows = await fetch_data.list_prefix(f"uid:{args.uid}:")
+        count = 0
+        for key, _ in all_rows:
+            await fetch_data.delete(key)
+            count += 1
+
+        # Delete fetching error records
+        err_count = await fetch_error.delete_by_uid(args.uid)
+
+        print(f"uid={args.uid}: 已删除 {count} 条数据记录, {err_count} 条错误记录")
+    finally:
+        await cmd.close()
+
+
+async def _handle_video_full(args: argparse.Namespace) -> None:
+    """Show full video result (metadata + transcription)."""
+    from bili_unit import assemble
+
+    cmd, qry, data, error = await assemble()
+    try:
+        full = await qry.processing.get_video_full(args.uid, args.bvid)
+        if full is None:
+            print(f"uid={args.uid} bvid={args.bvid}: 未找到视频")
+            return
+        meta = full.metadata
+        if meta is None:
+            print(f"uid={args.uid} bvid={args.bvid}: 元数据未处理")
+        else:
+            r = meta.result or {}
+            print(f"uid={args.uid} bvid={args.bvid}  status={meta.status.value}")
+            print(f"  title: {r.get('title')}")
+            print(f"  duration: {r.get('duration')}s")
+            print(f"  tags: {', '.join(r.get('tags', []))}")
+        if full.transcription is None:
+            print("  transcription: (none)")
+        else:
+            tr = full.transcription
+            chars = len((tr.result or {}).get("text", "")) if tr.result else 0
+            print(f"  transcription: {tr.status.value}  chars={chars}")
+    finally:
+        await cmd.close()
+
+
 async def _handle_process(args: argparse.Namespace) -> None:
     """Run processing via the unit-level BiliCommand / BiliQuery."""
     from bili_unit import assemble
@@ -236,7 +301,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- fetch ---
     p_fetch = sub.add_parser(
         "fetch",
-        help="Run fetching for a uid (default: all 25 endpoints)",
+        help="Run fetching for a uid (default: all registered endpoints)",
     )
     p_fetch.add_argument("uid", type=int, help="Target Bilibili user uid")
     fetch_group = p_fetch.add_mutually_exclusive_group()
@@ -308,6 +373,19 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- list-uids ---
     sub.add_parser("list-uids", help="List all fetched uids")
 
+    # --- delete-uid ---
+    p_del = sub.add_parser("delete-uid", help="Delete all data for a uid")
+    p_del.add_argument("uid", type=int, help="Target Bilibili user uid")
+    p_del.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt",
+    )
+
+    # --- video-full ---
+    p_vf = sub.add_parser("video-full", help="Show full result for a video")
+    p_vf.add_argument("uid", type=int, help="Target Bilibili user uid")
+    p_vf.add_argument("bvid", help="Video bvid")
+
     return parser
 
 
@@ -328,6 +406,8 @@ def main() -> None:
         "login": _handle_login,
         "init-mimo": _handle_init_mimo,
         "list-uids": _handle_list_uids,
+        "delete-uid": _handle_delete_uid,
+        "video-full": _handle_video_full,
     }
 
     handler = handlers[args.command]

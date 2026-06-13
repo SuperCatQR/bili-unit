@@ -9,8 +9,6 @@ from typing import Any
 
 from aiolimiter import AsyncLimiter
 
-from . import RateLimitError  # noqa: F401 — reserved for future rate-limit pause/resume
-
 logger = logging.getLogger("bili.fetching.rate_limit")
 
 

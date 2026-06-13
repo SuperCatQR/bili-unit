@@ -5,9 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from ..._logging import Progress
+from ..._retry import (
+    RetryClassification,
+    RetryDriver,
+    RetryOutcome,
+    RetryPolicy,
+)
 from .. import (
     AuthError,
     EndpointStatus,
@@ -23,6 +30,32 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger("bili.fetching.runner")
+
+
+class _ItemFanoutResult(StrEnum):
+    """Outcome of _process_single_item for a single item."""
+    SUCCESS = "success"
+    FAILED = "failed"
+    PERMANENT = "permanent"  # AuthError — aborts whole fan-out
+
+
+def _classify_item_exc(exc: Exception) -> RetryClassification:
+    """Classify an item-level fetch exception.
+
+    AuthError and ResourceUnavailableError both terminate the retry loop
+    immediately — they signal "no point retrying".  The caller examines the
+    re-raised exception type to decide what to return:
+      AuthError                    → 'permanent' (caller aborts whole fan-out)
+      ResourceUnavailableError     → 'failed'    (only this item, siblings continue)
+      other FetchingError exhausted → 'failed'
+    Unknown exception types are also permanent: a logic bug shouldn't burn
+    the retry budget.
+    """
+    if isinstance(exc, (AuthError, ResourceUnavailableError)):
+        return RetryClassification.PERMANENT
+    if isinstance(exc, FetchingError):
+        return RetryClassification.RETRYABLE
+    return RetryClassification.PERMANENT
 
 
 class _ItemFanoutMixin:
@@ -115,9 +148,9 @@ class _ItemFanoutMixin:
                 result = await self._process_single_item(
                     uid, spec, credential, item_id, mode,
                 )
-            if result == "success":
+            if result == _ItemFanoutResult.SUCCESS:
                 completed_items += 1
-            elif result == "permanent":
+            elif result == _ItemFanoutResult.PERMANENT:
                 # AuthError — abort the whole fan-out immediately.
                 raise FetchingError("auth_permanent_fail")
             else:
@@ -234,13 +267,13 @@ class _ItemFanoutMixin:
         credential: Any,
         item_id: str,
         mode: str,
-    ) -> str:
-        """Fetch and store a single item. Returns 'success' | 'failed' | 'permanent'.
+    ) -> _ItemFanoutResult:
+        """Fetch and store a single item. Returns an _ItemFanoutResult enum value.
 
         'permanent' signals an AuthError that should abort the whole fan-out.
+        'failed' covers everything else that didn't succeed (including
+        ResourceUnavailableError, exhausted retries, and unexpected errors).
         """
-        from . import _get_retry_delays
-
         ep_name = spec.name
 
         # Incremental / refresh: skip if already stored (and fresh for refresh).
@@ -248,7 +281,7 @@ class _ItemFanoutMixin:
             existing = await self._data.get(_item_fetch_key(uid, ep_name, item_id))
             if existing is not None:
                 if mode == "incremental":
-                    return "success"
+                    return _ItemFanoutResult.SUCCESS
                 # refresh mode: check freshness window
                 fetched_at = existing.get("fetched_at")
                 if fetched_at is not None:
@@ -256,28 +289,30 @@ class _ItemFanoutMixin:
                     age_ms = now_ms - fetched_at
                     threshold_ms = get_settings().bili_fetching_refresh_after_days * 86400 * 1000
                     if age_ms < threshold_ms:
-                        return "success"  # still fresh, skip
+                        return _ItemFanoutResult.SUCCESS  # still fresh, skip
 
         settings = get_settings()
         max_retries = settings.bili_fetching_max_retries
-        RETRY_DELAYS = _get_retry_delays()
-        item_retry = 0
+        retry_delays = settings.get_retry_delays()
+        retry_state = {"count": 0}
 
-        while True:
-            try:
-                await self._rl.acquire(spec.rate_limit_key)
-                result = await spec.callable(
-                    item_id, credential, _uid=uid,
-                    timeout=settings.bili_fetching_request_timeout,
-                )
-            except AuthError as exc:
+        async def _do_fetch():
+            await self._rl.acquire(spec.rate_limit_key)
+            extra_kw: dict = {"timeout": settings.bili_fetching_request_timeout}
+            if spec.needs_parent_uid:
+                extra_kw["_uid"] = uid
+            return await spec.callable(item_id, credential, **extra_kw)
+
+        async def _on_attempt_failed(
+            exc: Exception, outcome: RetryOutcome,
+        ) -> int | None:
+            if isinstance(exc, AuthError):
                 await self._error.record(
                     exc, uid=uid, endpoint=ep_name, retryable="false",
                 )
-                return "permanent"
-            except ResourceUnavailableError as exc:
-                # Permanent per-item failure — skip retries.  Unlike AuthError,
-                # this only fails the single item; sibling items continue.
+                return None
+
+            if isinstance(exc, ResourceUnavailableError):
                 await self._error.record(
                     exc, uid=uid, endpoint=ep_name, retryable="false",
                     detail={"item_id": item_id},
@@ -289,97 +324,111 @@ class _ItemFanoutMixin:
                         "item_id": item_id, "reason": str(exc),
                     },
                 )
-                return "failed"
-            except Http412Error as exc:
+                return None
+
+            if isinstance(exc, Http412Error):
                 advice = await self._rl.record_412(spec.rate_limit_key)
                 await self._data.put("rate_limit:global", self._rl.to_state())
                 await self._data.put(
                     f"rate_limit:{spec.rate_limit_key}",
                     self._rl.to_state(endpoint=spec.rate_limit_key),
                 )
-                item_retry += 1
+                retry_state["count"] += 1
                 await self._error.record(
                     exc, uid=uid, endpoint=ep_name,
-                    retryable="true",
-                    detail={"item_id": item_id, "retry_count": item_retry},
+                    retryable="true" if outcome.will_retry else "false",
+                    detail={"item_id": item_id, "retry_count": retry_state["count"]},
                 )
-                if item_retry >= max_retries:
+                if not outcome.will_retry:
                     logger.warning(
                         "item_endpoint_item_exhausted",
                         extra={
                             "uid": uid, "endpoint": ep_name,
-                            "item_id": item_id, "retry": item_retry,
+                            "item_id": item_id, "retry": retry_state["count"],
                         },
                     )
-                    return "failed"
-                wait = max(
-                    advice.get("wait_seconds", 0),
-                    RETRY_DELAYS[min(item_retry - 1, len(RETRY_DELAYS) - 1)],
-                )
+                    return None
+                wait = max(advice.get("wait_seconds", 0), outcome.delay_seconds)
                 logger.info(
                     "item_endpoint_retry",
                     extra={
                         "uid": uid, "endpoint": ep_name,
                         "item_id": item_id, "wait_s": wait,
-                        "retry": item_retry,
+                        "retry": retry_state["count"],
                     },
                 )
-                await asyncio.sleep(wait)
-                continue
-            except FetchingError as exc:
-                item_retry += 1
+                return wait
+
+            if isinstance(exc, FetchingError):
+                retry_state["count"] += 1
                 await self._error.record(
                     exc, uid=uid, endpoint=ep_name,
-                    retryable="true" if item_retry < max_retries else "false",
+                    retryable="true" if outcome.will_retry else "false",
                     detail={"item_id": item_id},
                 )
-                if item_retry >= max_retries:
+                if not outcome.will_retry:
                     logger.warning(
                         "item_endpoint_item_exhausted",
                         extra={
                             "uid": uid, "endpoint": ep_name,
-                            "item_id": item_id, "retry": item_retry,
+                            "item_id": item_id, "retry": retry_state["count"],
                             "reason": str(exc),
                         },
                     )
-                    return "failed"
-                wait = RETRY_DELAYS[min(item_retry - 1, len(RETRY_DELAYS) - 1)]
+                    return None
                 logger.info(
                     "item_endpoint_retry",
                     extra={
                         "uid": uid, "endpoint": ep_name,
-                        "item_id": item_id, "wait_s": wait,
-                        "retry": item_retry, "reason": str(exc),
+                        "item_id": item_id, "wait_s": outcome.delay_seconds,
+                        "retry": retry_state["count"], "reason": str(exc),
                     },
                 )
-                await asyncio.sleep(wait)
-                continue
-            except Exception as exc:
-                from .. import FetchingError as _FE
-                wrapped = _FE(f"unexpected: {type(exc).__name__}: {exc}")
-                await self._error.record(
-                    wrapped, uid=uid, endpoint=ep_name,
-                    retryable="false",
-                    detail={"item_id": item_id},
-                )
-                return "failed"
+                return None
 
-            # Success — store item.
-            now_ms = int(time.time() * 1000)
-            fetch_val = {
-                "uid": uid,
-                "endpoint": ep_name,
-                "item_id": item_id,
-                "status": "SUCCESS",
-                "raw_payload": result,
-                "fetched_at": now_ms,
-                "updated_at": now_ms,
-            }
-            await self._data.put(
-                _item_fetch_key(uid, ep_name, item_id), fetch_val,
+            # Unknown error → wrap and record as failed.
+            wrapped = FetchingError(f"unexpected: {type(exc).__name__}: {exc}")
+            await self._error.record(
+                wrapped, uid=uid, endpoint=ep_name,
+                retryable="false",
+                detail={"item_id": item_id},
             )
-            logger.info(
-                "item_endpoint_item_saved",
-                extra={"uid": uid, "endpoint": ep_name, "item_id": item_id},
+            return None
+
+        policy = RetryPolicy(
+            max_attempts=max_retries + 1,
+            delays=retry_delays,
+            classify=_classify_item_exc,
+        )
+        driver = RetryDriver(policy)
+
+        try:
+            result = await driver.run(
+                _do_fetch, on_attempt_failed=_on_attempt_failed,
             )
-            return "success"
+        except AuthError:
+            return _ItemFanoutResult.PERMANENT
+        except Exception:
+            # ResourceUnavailableError / exhausted FetchingError / unknown:
+            # all map to a single-item failure that lets siblings continue.
+            return _ItemFanoutResult.FAILED
+
+        # Success — store item.
+        now_ms = int(time.time() * 1000)
+        fetch_val = {
+            "uid": uid,
+            "endpoint": ep_name,
+            "item_id": item_id,
+            "status": "SUCCESS",
+            "raw_payload": result,
+            "fetched_at": now_ms,
+            "updated_at": now_ms,
+        }
+        await self._data.put(
+            _item_fetch_key(uid, ep_name, item_id), fetch_val,
+        )
+        logger.info(
+            "item_endpoint_item_saved",
+            extra={"uid": uid, "endpoint": ep_name, "item_id": item_id},
+        )
+        return _ItemFanoutResult.SUCCESS

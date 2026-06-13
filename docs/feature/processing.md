@@ -51,15 +51,19 @@ CLI 执行（`uv run python -m bili_unit process 13991807 -t <handler>`）：每
 
 ```
 bili_unit/processing/
-├── __init__.py            # DTO + 异常（含 AudioError 子类）+ assemble()
-├── __main__.py            # processing CLI 入口
+├── __init__.py            # DTO + 异常（含 AudioError 子类）
+├── __main__.py            # thin backward-compat wrapper（转发到统一 CLI）
 ├── command.py             # ProcessingCommand.process_uid
 ├── query.py               # ProcessingQuery（task / item / list / video_full / errors）
 ├── data.py                # ProcessingDataStore（文件目录 JSON）
 ├── error.py               # ProcessingErrorStore（per-uid JSON 文件）
 ├── env.py                 # ProcessingEnv (pydantic-settings)
 ├── keys.py                # 存储 key 生成
-├── runner.py              # Phase 0/1/2 编排 + transform/audio worker pools
+├── runner/                # Phase 0/1/2 编排 + transform/audio worker pools（mixin 拆分）
+│   ├── __init__.py        # ProcessingRunner 类、编排、公共 helper
+│   ├── _transform.py      # _TransformMixin：transform pipeline
+│   ├── _audio.py          # _AudioMixin：audio pipeline
+│   └── _audio_work.py     # download / convert / transcribe 三段拆分
 ├── task.py                # ProcessingTaskValue / PipelineEntry
 ├── transform/
 │   ├── __init__.py        # 注册表导出
@@ -83,12 +87,12 @@ import 边界：
 ```text
 command → runner, DTO
 query → data, error
-runner → task, transform, audio, data, error, env, fetching.query, fetching.auth
+runner → task, transform, audio, data, error, env, _retry, fetching.query, fetching.auth
 transform → 无外部 import（纯计算）
 audio._mimo_backend → aiohttp（HTTP 调用 MiMo API）
 audio._downloader → aiohttp（CDN 下载）, bilibili_api（URL 解析）
 audio._converter → subprocess（ffmpeg 调用）
-data/error → 不 import command/query/runner/transform/audio
+data/error → _storage (JsonKVStore + KeyMapper)
 env → 不 import data/error/task
 ```
 
@@ -338,41 +342,31 @@ ProcessingError
 
 - 单个工作项失败不影响其他工作项；失败的工作项写 error store + processing data store（status=FAILED）。
 - audio worker 包含 safety net：即使 `_process_audio_one` 内部异常未被捕获，worker 也能优雅降级（标记 FAILED）。
-- 自动重试调度（per-work-item，单次 `process_uid` 内）：可配置 `max_retries`（默认 3）+ 指数退避延迟（默认 30/60/120 秒）。每次重试记录 error（`retryable="true"`）并更新 data store（`retry_count` 递增）。重试耗尽后写最终 error（`retryable="false"`）。`AudioError` 子类（DownloadError / ASRConnectionError / ConvertError / ASRAPIError / AudioSizeError）被视为可重试；其他异常（TransformError / RuntimeError 等）不重试。
+- 自动重试调度（per-work-item，单次 `process_uid` 内）：通过共享 `RetryDriver`（`bili_unit/_retry.py`）编排，可配置 `max_retries`（默认 3）+ 延迟间隔（默认 30/60/120 秒，通过 `BILI_PROCESSING_RETRY_DELAYS` 配置）。每次重试记录 error（`retryable="true"`）并更新 data store（`retry_count` 递增）。重试耗尽后写最终 error（`retryable="false"`）。`AudioError` 子类（DownloadError / ASRConnectionError / ConvertError / ASRAPIError / AudioSizeError）被视为可重试；其他异常（TransformError / RuntimeError 等）不重试。`ASRConfigError` 归类为 PERMANENT，立即终止不重试。
 - Command 不暴露 `retry_failed()` 接口；FAILED 的工作项在 `mode=incremental` 重新调用时也会被重新处理（作为额外重试入口）。
 
 ## CLI
 
-```bash
-# 顶层统一入口
-uv run python -m bili_unit process <uid>                       # incremental 处理（默认跑全部 5 个 handler）
-uv run python -m bili_unit process <uid> -m full              # 全量重处理
-uv run python -m bili_unit process <uid> -x video_metadata    # 排除指定 handler（推荐：跳过 ASR 重的 video_metadata）
-uv run python -m bili_unit process <uid> -t video_metadata    # 仅指定 handler（调试用，与 -x 互斥）
-uv run python -m bili_unit process <uid> -b mock              # 临时把 ASR 后端覆盖为 mock
+统一 CLI（推荐）：
 
-# 独立 processing CLI
-uv run python -m bili_unit.processing process <uid> [-m full] [-t TYPES... | -x TYPES...]
-uv run python -m bili_unit.processing query <uid>             # 显示处理状态
-uv run python -m bili_unit.processing list-uids               # 列出有 processing task 的 uid
-uv run python -m bili_unit.processing video-full <uid> <bvid> # 联合 metadata + transcription
+```bash
+uv run python -m bili_unit process <uid>                       # incremental 处理（默认跑全部 5 个 handler）
+uv run python -m bili_unit process <uid> -m full               # 全量重处理
+uv run python -m bili_unit process <uid> -x video_metadata     # 排除指定 handler（推荐：跳过 ASR 重的 video_metadata）
+uv run python -m bili_unit process <uid> -t video_metadata     # 仅指定 handler（调试用，与 -x 互斥）
+uv run python -m bili_unit process <uid> -b mock               # 临时把 ASR 后端覆盖为 mock
+uv run python -m bili_unit query <uid>                         # 显示抓取 + 处理状态
+uv run python -m bili_unit video-full <uid> <bvid>             # 联合 metadata + transcription
 ```
 
 > 处理范围默认是「全部已注册 transform handler」。`-x/--exclude-item-types` 是推荐的剪裁方式，
 > `-t/--item-types` 仅作调试时只跑指定 handler 用，二者互斥。
 
+向后兼容：`python -m bili_unit.processing` 仍可用（内部转发到统一 CLI），老脚本无需改动。
+
 ## 装配函数
 
-```python
-from bili_unit.processing import assemble
-cmd, qry, data, error = await assemble()
-```
-
-`assemble()` 内部串调 `fetching.assemble()` 获取 `FetchingQuery` 注入 processing；根据
-`BILI_PROCESSING_ASR_BACKEND` 创建对应的 ASR backend（mock / mimo）；返回
-ProcessingCommand / ProcessingQuery / ProcessingDataStore / ProcessingErrorStore。
-
-bili 顶层 `bili_unit.assemble()` 已经把 processing 包进 `BiliCommand` / `BiliQuery`：
+processing 不再有独立的 `assemble()` 函数。统一通过顶层 `bili_unit.assemble()` 初始化：
 
 ```python
 from bili_unit import assemble
@@ -381,6 +375,10 @@ await cmd.fetch(uid)
 await cmd.process(uid)
 task = await qry.processing.get_task(uid)
 ```
+
+`bili_unit.assemble()` 内部串调 fetching 的 `assemble()` 获取 `FetchingQuery` 注入 processing；根据
+`BILI_PROCESSING_ASR_BACKEND` 创建对应的 ASR backend（mock / mimo）；返回
+`BiliCommand` / `BiliQuery`（包装了 fetching + processing 的 command / query）。
 
 ### Command 接口
 
@@ -435,9 +433,8 @@ async def list_errors(uid: int | None = None) -> list[ErrorDTO]
 
 ## 测试状态
 
-- 79 processing 单元测试 + 集成测试全部通过（pytest）
+- 324 pytest 总数全部通过
 - ruff lint 全部通过
-- 212 pytest 总数：133 fetching + 79 processing
 - 无外部网络 / API 依赖；测试可在离线环境运行
 
 ### 测试矩阵

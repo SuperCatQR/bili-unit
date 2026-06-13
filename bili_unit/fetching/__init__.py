@@ -40,17 +40,6 @@ class AuthError(FetchingError):
     """Authentication failure (missing / expired / rejected)."""
 
 
-class RateLimitError(FetchingError):
-    """Reserved for future use.
-
-    Intended to be raised by rate_limit.acquire() when the caller must wait
-    (e.g. QPS exhausted or pause active). Currently unused — 412 handling
-    goes through Http412Error instead.  Do NOT remove; will be activated
-    when explicit back-pressure signalling is needed beyond the current
-    cooldown-based QPS recovery mechanism.
-    """
-
-
 class RequestError(FetchingError):
     """HTTP request-level failure."""
 

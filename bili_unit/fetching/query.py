@@ -16,6 +16,16 @@ from .task import TaskValue
 
 logger = logging.getLogger("bili.fetching.query")
 
+_FANOUT_ACCESSORS: dict[str, tuple[str, str]] = {
+    "video_detail": ("list_video_details", "get_video_detail"),
+    "article_detail": ("list_article_details", "get_article_detail"),
+    "opus_detail": ("list_opus_details", "get_opus_detail"),
+    "article_list_detail": (
+        "list_article_list_details",
+        "get_article_list_detail",
+    ),
+}
+
 
 class Query:
     """Read-only interface to fetching results and errors."""
@@ -144,6 +154,32 @@ class Query:
     async def list_errors(self, uid: int | None = None) -> list[ErrorDTO]:
         """List errors, optionally filtered by uid."""
         return await self._error.list_errors(uid=uid)
+
+    async def list_fanout_payloads(
+        self, uid: int, endpoint: str,
+    ) -> dict[str, dict]:
+        """Return successful item-level payloads for a fan-out endpoint.
+
+        The mapping is ``{item_id: raw_payload}``, and only SUCCESS items with a
+        non-empty raw payload are returned. Unknown endpoints return an empty
+        dict so callers can treat not-yet-supported fan-outs as unavailable.
+        """
+        accessors = _FANOUT_ACCESSORS.get(endpoint)
+        if accessors is None:
+            return {}
+        list_name, get_name = accessors
+        list_items = getattr(self, list_name)
+        get_item = getattr(self, get_name)
+        pairs = await list_items(uid)
+        payloads: dict[str, dict] = {}
+        for item_id, status in pairs:
+            if status != EndpointStatus.SUCCESS:
+                continue
+            item_dto = await get_item(uid, item_id)
+            if item_dto is None or item_dto.raw_payload is None:
+                continue
+            payloads[item_id] = item_dto.raw_payload
+        return payloads
 
     # -- video_detail --------------------------------------------------------
 

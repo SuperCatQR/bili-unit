@@ -1,4 +1,4 @@
-# bili_unit/processing — common DTOs, exceptions, assemble().
+# bili_unit/processing — common DTOs, exceptions.
 #
 # Per docs/structure/bili.md §4/§6/§8 and docs/design/processing.md.
 
@@ -170,57 +170,6 @@ class ProcessingCommandResult:
     status: ProcessingTaskStatus
 
 
-# ---------------------------------------------------------------------------
-# Assembly (cf. processing design §13.3)
-# ---------------------------------------------------------------------------
-
-async def assemble() -> tuple:
-    """Read env, open stores, wire components, return (Command, Query, DataStore, ErrorStore).
-
-    Returns ``(cmd, qry, data, error)``. Caller closes the two stores when done.
-    """
-    from ..fetching import assemble as _fetching_assemble
-    from .command import ProcessingCommand
-    from .data import ProcessingDataStore
-    from .env import get_processing_settings
-    from .error import ProcessingErrorStore
-    from .query import ProcessingQuery
-
-    # processing reads from fetching via fetching.query.Query
-    fetch_cmd, fetch_qry, fetch_data, fetch_error = await _fetching_assemble()
-
-    s = get_processing_settings()
-    data = ProcessingDataStore(s.bili_processing_data_dir)
-    error = ProcessingErrorStore(s.bili_processing_error_dir)
-    await data.open()
-    await error.open()
-
-    from .audio._asr_backend import create_asr_backend
-
-    asr_backend = create_asr_backend(s.bili_processing_asr_backend, settings=s)
-
-    cmd = ProcessingCommand(
-        data=data,
-        error=error,
-        temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fetch_qry,
-        fetching_close=lambda: _close_fetching(fetch_data, fetch_error, fetch_cmd),
-        settings=s,
-        asr_backend=asr_backend,
-    )
-    qry = ProcessingQuery(data=data, error=error, fetching_query=fetch_qry)
-    return cmd, qry, data, error
-
-
-async def _close_fetching(fetch_data, fetch_error, fetch_cmd) -> None:
-    """Close fetching stores when ProcessingCommand.close() is called."""
-    # fetch_cmd.close() already closes data + error inside fetching.command.Command,
-    # but assemble() returns them separately. Close all three to be safe; double
-    # close is a no-op (file stores have empty close()).
-    await fetch_data.close()
-    await fetch_error.close()
-
-
 __all__ = [
     "ASRAPIError",
     "ASRConfigError",
@@ -245,5 +194,4 @@ __all__ = [
     "TransformError",
     "VideoFullDTO",
     "VideoSummaryDTO",
-    "assemble",
 ]

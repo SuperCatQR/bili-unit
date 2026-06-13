@@ -40,8 +40,6 @@ from ._item_ids import _extract_item_ids, _extract_item_ids_multi  # noqa: F401
 
 logger = logging.getLogger("bili.fetching.runner")
 
-RETRY_DELAYS = [30, 60, 120]
-
 
 # ---------------------------------------------------------------------------
 # Delegation wrappers — preserve mock-patch targets for tests.
@@ -51,11 +49,6 @@ RETRY_DELAYS = [30, 60, 120]
 async def fetch_endpoint(*args, **kwargs):  # noqa: D401
     """Delegation wrapper — tests patch ``bili_unit.fetching.runner.fetch_endpoint``."""
     return await _client_fetch_endpoint(*args, **kwargs)
-
-
-def _get_retry_delays() -> list[int]:
-    """Return current RETRY_DELAYS — tests may patch module-level RETRY_DELAYS."""
-    return RETRY_DELAYS
 
 
 # ---------------------------------------------------------------------------

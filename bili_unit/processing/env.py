@@ -2,14 +2,7 @@
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
-def _parse_retry_delays(raw: str) -> list[int]:
-    """Parse comma-separated delay string into sorted list of seconds."""
-    try:
-        delays = [int(s.strip()) for s in raw.split(",") if s.strip()]
-    except ValueError:
-        delays = [30, 60, 120]
-    return sorted(delays) if delays else [30]
+from .._retry import parse_retry_delays as _parse_retry_delays
 
 
 class ProcessingEnv(BaseSettings):

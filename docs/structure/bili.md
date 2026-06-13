@@ -221,11 +221,13 @@ ASR 引擎             语音转文字
 ```text
 bili_unit/                # Python 包根（pyproject 里 packages = ["bili_unit"]）
 ├── __init__.py           # DTO、异常、assemble() 装配
-├── __main__.py           # CLI 入口；python -m bili_unit <subcommand>
+├── __main__.py           # 统一 CLI 入口；python -m bili_unit <subcommand>
+├── _retry.py             # 共享 RetryDriver（fetching / processing 通用）
+├── _storage/             # 共享存储抽象（JsonKVStore + JsonErrorStore）
 ├── command/              # 写侧入口；驱动抓取与处理管线
 ├── query/                # 只读视图入口；读取 data / error
-├── fetching/             # 抓取阶段（auth / client / rate_limit / runner / task / data / error / env）
-├── processing/           # 处理阶段（transform / audio / runner / task / data / error / env）
+├── fetching/             # 抓取阶段（auth / client / rate_limit / runner/ / task / data / error / env）
+├── processing/           # 处理阶段（transform / audio / runner/ / task / data / error / env）
 └── tests/                # pytest 测试目录
 ```
 

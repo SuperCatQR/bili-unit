@@ -51,7 +51,7 @@ async def test_runner_partial(runner: Runner):
     with patch(
         "bili_unit.fetching.runner.fetch_endpoint",
         new=AsyncMock(side_effect=fake_fetch),
-    ), patch("bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0]):
+    ), patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         # override retry delays to be instant for test
         result = await runner.run_task(2, endpoints=["user_info", "videos"])
 
@@ -119,7 +119,7 @@ async def test_runner_412_retry_eventually_succeeds(runner: Runner):
     with patch(
         "bili_unit.fetching.runner.fetch_endpoint",
         new=AsyncMock(side_effect=fake_fetch),
-    ), patch("bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0]):
+    ), patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         result = await runner.run_task(4, endpoints=["user_info"])
 
     assert result.status == TaskStatus.SUCCESS
@@ -151,7 +151,7 @@ async def test_runner_progress_resumption(stores, rl_ctl):
     with patch(
         "bili_unit.fetching.runner.fetch_endpoint",
         new=AsyncMock(side_effect=fake_fetch_1),
-    ), patch("bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0]):
+    ), patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         result = await Runner(ds, es, rl_ctl).run_task(5, endpoints=["videos"])
 
     assert result.status in (TaskStatus.FAILED_EXHAUSTED, TaskStatus.FAILED_RETRYABLE)
@@ -710,7 +710,7 @@ async def test_query_endpoint_status_after_exhaustion(runner: Runner, query):
     with patch(
         "bili_unit.fetching.runner.fetch_endpoint",
         new=AsyncMock(side_effect=always_fail),
-    ), patch("bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0]):
+    ), patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         result = await runner.run_task(
             200, endpoints=["subscribed_bangumi"],
         )
@@ -862,7 +862,7 @@ async def test_runner_resource_unavailable_skips_retry(runner: Runner):
     with patch(
         "bili_unit.fetching.runner.fetch_endpoint",
         new=AsyncMock(side_effect=fake_fetch),
-    ), patch("bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0]):
+    ), patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         result = await runner.run_task(701, endpoints=["subscribed_bangumi"])
 
     # Only one call — runner did NOT consume the retry budget.
@@ -910,7 +910,7 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(stores, rl_c
 
     runner = Runner(ds, es, rl_ctl)
     with patch.object(spec, "callable", fake_item), patch(
-        "bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0],
+        "bili_unit._retry.asyncio.sleep", new=AsyncMock(),
     ):
         await runner._run_item_endpoint(uid, spec, credential=None, mode="full")
 

@@ -48,7 +48,7 @@ async def test_query_available_only_on_success(command: Command, query: Query):
     with patch(
         "bili_unit.fetching.runner.fetch_endpoint",
         new=AsyncMock(side_effect=fake_fetch),
-    ), patch("bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0]):
+    ), patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         await command.fetch_uid(40, endpoints=["user_info"])
 
     ep = await query.get_endpoint(40, "user_info")

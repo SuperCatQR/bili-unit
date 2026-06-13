@@ -2,6 +2,8 @@
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .._retry import parse_retry_delays as _parse_retry_delays
+
 
 class BiliEnv(BaseSettings):
     """Bilibili credential settings, loaded from .env (lazy)."""
@@ -29,10 +31,15 @@ class BiliEnv(BaseSettings):
     bili_fetching_endpoint_qps: float = 0.2
     bili_fetching_request_timeout: float = 30.0
     bili_fetching_max_retries: int = 3
+    bili_fetching_retry_delays: str = "30,60,120"
     bili_fetching_video_detail_qps: float = 0.2
     bili_fetching_recovery_cooldown: float = 300.0  # seconds before QPS starts recovering after 412
     bili_fetching_item_concurrency: int = 3  # max parallel item-level fan-out requests
     bili_fetching_refresh_after_days: float = 7.0  # refresh mode: re-fetch items older than N days
+
+    def get_retry_delays(self) -> list[int]:
+        """Parse ``bili_fetching_retry_delays`` into a sorted list of seconds."""
+        return _parse_retry_delays(self.bili_fetching_retry_delays)
 
 
 # Singleton — lazy-loaded on first call.

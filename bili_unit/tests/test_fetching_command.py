@@ -61,7 +61,7 @@ async def test_command_partial_resumes(stores, rl_ctl):
     with patch(
         "bili_unit.fetching.runner.fetch_endpoint",
         new=AsyncMock(side_effect=fake_fetch_1),
-    ), patch("bili_unit.fetching.runner.RETRY_DELAYS", [0, 0, 0]):
+    ), patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         r1 = await cmd.fetch_uid(20, endpoints=["user_info", "videos"])
     assert r1.status in (TaskStatus.PARTIAL, TaskStatus.FAILED_EXHAUSTED)
 
