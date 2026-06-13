@@ -23,6 +23,7 @@ from bili_unit.fetching.keys import (
     _item_fetch_key,
     _progress_key,
 )
+from bili_unit.fetching.rate_limit import RateLimitController
 from bili_unit.fetching.runner import Runner
 from bili_unit.fetching.task import EndpointEntry, TaskValue
 
@@ -227,6 +228,7 @@ def _seed_task(ds, uid, endpoint_statuses, task_status=TaskStatus.SUCCESS):
 @pytest.mark.asyncio
 async def test_video_detail_basic_fanout(stores, rl_ctl):
     """Run video_detail after videos SUCCESS → all items fetched."""
+    rl_ctl = RateLimitController(global_qps=1000.0, endpoint_qps=1000.0, video_detail_qps=1000.0, pause_seconds=0)
     ds, es = stores
 
     # Seed videos data
@@ -378,6 +380,7 @@ async def test_video_detail_full_mode_refetches_all(stores, rl_ctl):
 @pytest.mark.asyncio
 async def test_video_detail_partial_item_status(stores, rl_ctl):
     """Some items fail → PARTIAL_ITEM status."""
+    rl_ctl = RateLimitController(global_qps=1000.0, endpoint_qps=1000.0, video_detail_qps=1000.0, pause_seconds=0)
     ds, es = stores
 
     await _seed_videos_data(ds, 204, ["BV1", "BV2", "BV3"])
@@ -580,6 +583,7 @@ async def test_video_detail_progress_tracking(stores, rl_ctl):
 async def test_video_detail_items_processed_concurrently(stores, rl_ctl):
     """Verify items are processed concurrently (not purely sequentially)."""
     import asyncio
+    rl_ctl = RateLimitController(global_qps=1000.0, endpoint_qps=1000.0, video_detail_qps=1000.0, pause_seconds=0)
 
     ds, es = stores
 
@@ -617,6 +621,7 @@ async def test_video_detail_items_processed_concurrently(stores, rl_ctl):
 @pytest.mark.asyncio
 async def test_video_detail_concurrent_partial_failure(stores, rl_ctl):
     """Concurrent processing: some items fail, others succeed → PARTIAL_ITEM."""
+    rl_ctl = RateLimitController(global_qps=1000.0, endpoint_qps=1000.0, video_detail_qps=1000.0, pause_seconds=0)
     ds, es = stores
 
     await _seed_videos_data(ds, 221, ["BV1", "BV2", "BV3", "BV4"])
@@ -738,6 +743,7 @@ async def test_refresh_mode_refetches_stale_items(stores, rl_ctl):
 @pytest.mark.asyncio
 async def test_refresh_mode_behaves_like_incremental_for_new_items(stores, rl_ctl):
     """Refresh mode fetches new items just like incremental mode."""
+    rl_ctl = RateLimitController(global_qps=1000.0, endpoint_qps=1000.0, video_detail_qps=1000.0, pause_seconds=0)
     ds, es = stores
 
     await _seed_videos_data(ds, 232, ["BV1", "BV2", "BV3"])
