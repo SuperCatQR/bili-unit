@@ -142,10 +142,10 @@ async def assemble(settings=None) -> tuple:
     Caller is responsible for closing stores via ``await data.close()`` /
     ``await error.close()`` when done.
     """
+    from .._env import get_settings
     from ._bilibili_adapter import init_http_backend
     from .command import Command
     from .data import DataStore
-    from .env import get_settings
     from .error import ErrorStore
     from .query import Query
     from .rate_limit import RateLimitController

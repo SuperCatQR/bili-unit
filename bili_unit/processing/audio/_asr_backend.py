@@ -78,9 +78,9 @@ def create_asr_backend(backend_name: str, **kw: Any) -> ASRBackend:
 
         settings = kw.get("settings")
         if settings is None:
-            from ..env import get_processing_settings
+            from ..._env import get_settings
 
-            settings = get_processing_settings()
+            settings = get_settings()
         return create_mimo_backend(settings)
     if name == "whisper":
         raise NotImplementedError(

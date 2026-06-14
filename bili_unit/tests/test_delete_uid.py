@@ -25,15 +25,14 @@ from bili_unit.parsing.command import ParsingCommand
 from bili_unit.parsing.data import ParsingDataStore
 from bili_unit.processing.command import ProcessingCommand
 from bili_unit.processing.data import ProcessingDataStore
-from bili_unit.processing.env import ProcessingEnv
 from bili_unit.processing.error import ProcessingErrorStore
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
-def _make_processing_settings(tmp_path: Path) -> ProcessingEnv:
-    return ProcessingEnv(
+def _make_processing_settings(tmp_path: Path) -> BiliSettings:
+    return BiliSettings(
         bili_processing_data_dir=str(tmp_path / "proc-data"),
         bili_processing_temp_dir=str(tmp_path / "proc-temp"),
         bili_processing_error_dir=str(tmp_path / "proc-error"),

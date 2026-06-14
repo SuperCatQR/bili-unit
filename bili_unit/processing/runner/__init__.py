@@ -48,10 +48,10 @@ from ._audio_work import (
 DownloaderFactory = Callable[..., Any]  # AudioDownloader constructor, compatible with AudioDownloader.__init__
 
 if TYPE_CHECKING:
+    from ..._env import BiliSettings
     from ...fetching.protocols import FetchingReadView
     from ..audio._asr_backend import ASRBackend
     from ..data import ProcessingDataStore
-    from ..env import ProcessingEnv
     from ..error import ProcessingErrorStore
 
 logger = logging.getLogger("bili.processing.runner")
@@ -69,7 +69,7 @@ class ProcessingRunner(_AudioMixin):
         error: ProcessingErrorStore,
         temp_dir: str,
         fetching_query: FetchingReadView,
-        settings: ProcessingEnv,
+        settings: BiliSettings,
         asr_backend: ASRBackend | None = None,
         credential_provider: CredentialProvider | None = None,
         downloader_factory: DownloaderFactory | None = None,

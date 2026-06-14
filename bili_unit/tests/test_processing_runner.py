@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
+from bili_unit._env import BiliSettings
 from bili_unit.fetching import EndpointStatus, TaskStatus
 from bili_unit.fetching.data import DataStore as FetchingDataStore
 from bili_unit.fetching.error import ErrorStore as FetchingErrorStore
@@ -41,7 +42,6 @@ from bili_unit.processing import (
 )
 from bili_unit.processing.command import ProcessingCommand
 from bili_unit.processing.data import ProcessingDataStore
-from bili_unit.processing.env import ProcessingEnv
 from bili_unit.processing.error import ProcessingErrorStore
 from bili_unit.processing.keys import _proc_key
 from bili_unit.processing.query import ProcessingQuery
@@ -49,9 +49,9 @@ from bili_unit.processing.runner import ProcessingRunner
 from bili_unit.processing.runner._pipeline_executor import WorkItem
 
 
-def _make_settings(tmp_path, max_retries=3, retry_delays="30,60,120") -> ProcessingEnv:
+def _make_settings(tmp_path, max_retries=3, retry_delays="30,60,120") -> BiliSettings:
     """Fast settings: tiny worker pool, deterministic queue size."""
-    return ProcessingEnv(
+    return BiliSettings(
         bili_processing_data_dir=str(tmp_path / "proc-data"),
         bili_processing_temp_dir=str(tmp_path / "proc-temp"),
         bili_processing_error_dir=str(tmp_path / "proc-error"),

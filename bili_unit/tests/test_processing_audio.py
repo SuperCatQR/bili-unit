@@ -218,14 +218,14 @@ async def test_mimo_backend_transcribe_empty_key_raises_config_error():
 
 
 def test_create_mimo_backend_resolves_profile_from_settings():
-    """create_mimo_backend reads profile/base_url from ProcessingEnv."""
+    """create_mimo_backend reads profile/base_url from BiliSettings."""
+    from bili_unit._env import BiliSettings
     from bili_unit.processing.audio._mimo_backend import (
         PROFILE_BASE_URLS,
         create_mimo_backend,
     )
-    from bili_unit.processing.env import ProcessingEnv
 
-    s = ProcessingEnv(
+    s = BiliSettings(
         bili_processing_asr_backend="mimo",
         bili_processing_asr_profile="token_plan_sgp",
         bili_processing_asr_api_key="tp-test",
@@ -236,10 +236,10 @@ def test_create_mimo_backend_resolves_profile_from_settings():
 
 
 def test_create_mimo_backend_custom_profile_uses_base_url_setting():
+    from bili_unit._env import BiliSettings
     from bili_unit.processing.audio._mimo_backend import create_mimo_backend
-    from bili_unit.processing.env import ProcessingEnv
 
-    s = ProcessingEnv(
+    s = BiliSettings(
         bili_processing_asr_backend="mimo",
         bili_processing_asr_profile="custom",
         bili_processing_asr_base_url="https://relay.example.com/v1",
@@ -252,11 +252,11 @@ def test_create_mimo_backend_custom_profile_uses_base_url_setting():
 
 
 def test_create_mimo_backend_custom_without_base_url_raises():
+    from bili_unit._env import BiliSettings
     from bili_unit.processing import ASRConfigError
     from bili_unit.processing.audio._mimo_backend import create_mimo_backend
-    from bili_unit.processing.env import ProcessingEnv
 
-    s = ProcessingEnv(
+    s = BiliSettings(
         bili_processing_asr_backend="mimo",
         bili_processing_asr_profile="custom",
         bili_processing_asr_base_url="",

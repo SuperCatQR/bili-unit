@@ -20,10 +20,10 @@ from . import ProcessingCommandResult, ProcessingTaskStatus
 from .runner import ConvertFn, CredentialProvider, DownloaderFactory, ProcessingRunner
 
 if TYPE_CHECKING:
+    from .._env import BiliSettings
     from ..fetching.protocols import FetchingReadView
     from .audio._asr_backend import ASRBackend
     from .data import ProcessingDataStore
-    from .env import ProcessingEnv
     from .error import ProcessingErrorStore
 
 logger = logging.getLogger("bili.processing.command")
@@ -38,7 +38,7 @@ class ProcessingCommand:
         error: ProcessingErrorStore,
         temp_dir: str,
         fetching_query: FetchingReadView,
-        settings: ProcessingEnv,
+        settings: BiliSettings,
         asr_backend: ASRBackend | None = None,
         credential_provider: CredentialProvider | None = None,
         downloader_factory: DownloaderFactory | None = None,

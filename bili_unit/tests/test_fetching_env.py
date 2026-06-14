@@ -1,9 +1,9 @@
-# tests for bili_unit/fetching/env
-# Run: uv run pytest bili_unit/tests/test_env.py -v
+# tests for bili_unit/_env (single source of truth for settings).
+# Run: uv run pytest bili_unit/tests/test_fetching_env.py -v
 
 import pytest
 
-from bili_unit.fetching.env import BiliEnv, get_settings, reload_settings
+from bili_unit._env import BiliSettings, get_settings, reload_settings
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +25,7 @@ def _clean_env_cache(monkeypatch):
 def test_env_import_does_not_require_dotenv():
     """Importing env module does not crash when .env is missing."""
     settings = get_settings()
-    assert isinstance(settings, BiliEnv)
+    assert isinstance(settings, BiliSettings)
 
 
 def test_env_defaults():

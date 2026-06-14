@@ -21,9 +21,9 @@ from ..audio._converter import Mp3Segment
 from ..audio._stitch import stitch_transcripts
 
 if TYPE_CHECKING:
+    from ..._env import BiliSettings
     from ..audio._asr_backend import ASRBackend
     from ..audio._downloader import AudioDownloader
-    from ..env import ProcessingEnv
 
 ConvertFn = Callable[..., Awaitable[list[Mp3Segment]]]
 
@@ -54,7 +54,7 @@ async def audio_convert_page(
     m4s_path: Path,
     out_dir: Path,
     page_duration_for_split: float | None,
-    settings: ProcessingEnv,
+    settings: BiliSettings,
     *,
     convert_fn: ConvertFn,
 ) -> list[Mp3Segment]:
