@@ -1,7 +1,6 @@
 # processing_feature — B站用户数据处理层代码现状
 
 > 记录 `bili_unit/processing` 的实际代码能力。
-> 对应设计文档：`docs/design/processing.md`
 > 对应结构约束：`docs/structure/bili.md`
 
 ## 概述

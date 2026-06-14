@@ -1,8 +1,8 @@
 # fetching_feature — B站用户数据抓取层代码现状
 
 > 记录 `bili_unit/fetching` 的实际代码能力。
-> 对应设计文档：`docs/design/fetching.md`
 > 对应结构约束：`docs/structure/bili.md`
+> 对应数据契约：`docs/structure/fetching-contract.md`
 
 ## 概述
 

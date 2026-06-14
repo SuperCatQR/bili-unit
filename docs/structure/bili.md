@@ -14,9 +14,9 @@ bili_unit 是 [Dialectica](https://github.com/ChosenEcho/Dialectica) 项目
 - [unit.md](https://github.com/ChosenEcho/Dialectica/blob/main/docs/structure/unit.md) — unit 抽象（`抓取 → 处理`）
 - [index.md](https://github.com/ChosenEcho/Dialectica/blob/main/docs/structure/index.md) — `ingestion → indexing → storage`
 
-本仓库主管 bili 这个 unit 的内部结构（本文件 §1+）、设计（[docs/design/](../design/)）
-与现状（[docs/feature/](../feature/)）。下文出现的 `docs/structure/unit.md`、
-`docs/structure/source-data.md` 等引用，均指 Dialectica 主仓库的对应文件。
+本仓库主管 bili 这个 unit 的内部结构（本文件 §1+）与现状（[docs/feature/](../feature/)）。
+下文出现的 `docs/structure/unit.md`、`docs/structure/source-data.md` 等引用，
+均指 Dialectica 主仓库的对应文件。
 
 ## 1. 位置
 
@@ -103,7 +103,7 @@ error        错误状态位置；保存认证异常、请求失败、ASR 失败
 
 ```text
 后端选型属于实现层；当前 fetching 已采用文件目录 JSON，
-后续 processing 沿用同一方案。各存储的具体后端见 docs/design/*.md。
+后续 processing 沿用同一方案。具体落盘格式见 docs/feature/*.md 与 docs/structure/fetching-contract.md。
 ```
 
 ### 入口
