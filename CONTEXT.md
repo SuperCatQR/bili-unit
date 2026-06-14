@@ -1,0 +1,115 @@
+# bili_unit
+
+Bilibili 数据源 unit，[Dialectica](https://github.com/ChosenEcho/Dialectica) `source_data` 层下的一个 unit。给定目标用户 uid，把 B 站读取端点的原始响应落到本地、对象化为 typed object、再对视频音频做 ASR 转录。跨源归一化 / 清洗 / 检索不在本仓库——那是 `index.ingestion` 的事。
+
+## Language
+
+### 体系定位
+
+**unit**:
+Dialectica `source_data` 层下的数据源单元；本仓库 = `bili` unit。一个 unit 对应一个外部源（B 站）。
+_Avoid_: source, connector, integration。
+
+**source_data**:
+Dialectica 四层结构之一（`main` / `source-data` / `unit` / `index`）；unit 的上层。
+_Avoid_: data layer, ingestion layer。
+
+**index.ingestion**:
+Dialectica `index` 层的子层；消费 unit 产出的原始与结构化数据，做跨源归一化、清洗、检索。本仓库通过 query 出口面只读服务它。
+_Avoid_: downstream, consumer。
+
+### 三 stage
+
+**fetching**:
+第一 stage。异步抓取 64 个 B 站读取端点的原始响应，双层限流（global + endpoint QPS）+ 412 自适应降速，所有请求结果原样落盘到 fetching store。不做字段筛选。
+_Avoid_: crawler, scraper, collector。
+
+**parsing**:
+第二 stage。读 fetching 的 raw_payload，筛选 / 归并 / 对象化为 typed object，可选下载图片到本地。落盘到 parsing store。
+_Avoid_: parser, transform, mapper。
+
+**processing**:
+第三 stage。对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。当前仅 audio pipeline。落盘到 processing store。
+_Avoid_: handler, worker, transformer。
+
+### 数据形态
+
+**uid**:
+目标用户。B 站用户 ID（整数）。unit 的工作单位——所有抓取 / 解析 / 处理按 uid 隔离。
+_Avoid_: user_id, account, mid（mid 是 B 站 API 内部字段名，本仓库对外用 uid）。
+
+**raw_payload**:
+fetching 信封内的未加工字段。非分页端点 = B 站 API 原始响应 dict；分页端点 = `{"pages": [page1, ...]}`，每页是一次 API 响应的原始 dict。fetching 不做字段筛选。
+_Avoid_: response, data, result。
+
+**typed object / parsed object**:
+parsing 产物的统称。落盘为 JSON dict，按 `uid:{uid}:parse:{model}:{item_id}` 寻址。当前 6 个 model：5 legacy typed dataclass + ContentPost。
+_Avoid_: entity, record, document。
+
+**ContentPost**:
+Article / Opus / Dynamic 的统一内容视图；processing 与 index.ingestion 消费 article / opus / dynamic 类内容的唯一入口。canonical key 形如 `article:{cvid}` / `opus:{opus_id}` / `dynamic:{dynamic_id}`。
+_Avoid_: post, content entity, normalized content。
+
+**legacy typed dataclass**:
+`UpProfile` / `VideoDetail` / `Article` / `OpusPost` / `DynamicPost` 五个早期 typed model。与 ContentPost 并行落盘；当前继续保留是因为它们是 ContentPost 的 candidate 来源（`article_posts_from_parsed` 等），不可删除。
+_Avoid_: old model, deprecated model（它们不废弃）。
+
+### 端点与抓取
+
+**endpoint**:
+B 站一个读取接口的注册单元，`EndpointSpec` dataclass 描述其 callable / 分页策略 / 限流 key / item_id_path。共 64 个（34 uid-level + 30 item-level），在 `_endpoint_catalog.py` 声明。
+_Avoid_: api, route, source。
+
+**uid-level endpoint**:
+直接按 uid 抓取的端点（如 `user_info` / `videos` / `dynamics`）。34 个。
+_Avoid_: user endpoint, top-level endpoint。
+
+**item-level endpoint / item-level fan-out**:
+从父端点的 raw_payload 派生 item ID 列表，逐个抓取的端点（如 `video_detail` 自 `videos` 派生 bvid；`article_detail` 自 `articles` 派生 cvid）。30 个。`extract_items` callable 负责 ID 提取。
+_Avoid_: detail endpoint, sub-endpoint, child endpoint。
+
+**profile**:
+CLI `--profile {all,parsing,minimal}` 选端点子集。`all`=64、`parsing`=12（parsing 实际消费的）、`minimal`=5（smoke / CI）。
+_Avoid_: preset, mode（mode 指抓取模式，不同概念）。
+
+### B 站 ID
+
+**bvid**:
+视频 BV 号（如 `BV1xx411x7xx`）。`videos` / `video_*` 端点的 item ID。
+_Avoid_: video_id, aid（aid 是 B 站内部 aid，不对外）。
+
+**cvid**:
+专栏文章 ID（如 `cv123456`）。`articles` / `article_detail` 端点的 item ID。
+_Avoid_: article_id。
+
+**opus_id**:
+图文帖 ID。`opus` / `opus_detail` 端点的 item ID。
+_Avoid_: opus cv（图文不是专栏）。
+
+**dynamic_id**:
+动态 ID（B 站称 `id_str`）。`dynamics` 端点的 item ID。
+_Avoid_: dyn_id, dynamic_str。
+
+**rlid**:
+文集（readlist）ID。`article_list` / `article_list_detail` 端点的 item ID。
+_Avoid_: list_id。
+
+**season_id / series_id**:
+合集 / 列表 ID。`channel_list` 派生 `channel_videos_season` / `channel_videos_series`。
+
+### 状态机
+
+**mode（incremental / refresh / full）**:
+fetching 与 processing 共享的三档执行语义。`incremental` 跳过已成功、重试失败；`refresh` 介于两者间（fetching 的 item-level 检查 7 天 freshness window；processing 不支持 refresh）；`full` 忽略已有数据全量重跑。parsing 只支持 `full` / `incremental` 两档。
+_Avoid_: strategy, run type。
+
+### 出口面
+
+**command / query**:
+bili unit 对外只暴露两个面。`command`（写侧，`BiliCommand`）驱动 fetch / parse / process；`query`（只读，`BiliQuery`）读 data / error。stage 子模块（client / runner / materializer / audio）不对外，藏在 command / query 后。
+_Avoid_: service, facade, api。
+
+## Notes
+
+- 详细结构约束见 `docs/structure/bili.md`；实现现状见 `docs/feature/{fetching,parsing,processing}.md`（后者是真相源）。
+- 决策记录见 `docs/adr/`。

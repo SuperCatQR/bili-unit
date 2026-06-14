@@ -72,6 +72,10 @@ uv run ruff check                                  # lint
 
 | 类别 | 路径 | 性质 |
 |---|---|---|
+| 类别 | 路径 | 性质 |
+|---|---|---|
+| 领域语言 | [CONTEXT.md](CONTEXT.md) | 项目术语表（unit / stage / raw_payload / ContentPost 等） |
+| 决策记录 | [docs/adr/](docs/adr/) | ADR：难逆转 + 需背景的架构决策 |
 | 模块边界 | [docs/structure/bili.md](docs/structure/bili.md) | 各层职责约束（must-be） |
 | 数据契约 | [docs/structure/fetching-contract.md](docs/structure/fetching-contract.md) | 64 个端点的 raw_payload schema |
 | fetching 现状 | [docs/feature/fetching.md](docs/feature/fetching.md) | 端点注册表、限流、模式、CLI |
