@@ -51,62 +51,73 @@ __version__ = _pkg_version("bili-unit")
 
 
 async def assemble(
+    settings: BiliSettings | None = None,
+    *,
     asr_backend_override: str | None = None,
+    credential_provider=None,  # CredentialProvider | None
 ) -> tuple[BiliCommand, BiliQuery]:
     """Unified assembly for the whole bili unit.
 
     Wires every stage's stores + components, then groups them behind the
     bili-unit-level :class:`BiliCommand` / :class:`BiliQuery` facades.
 
+    Args:
+        settings: pre-built :class:`BiliSettings` to use across all stages.
+            ``None`` (default) lazy-loads from .env via :func:`get_settings` — this
+            is the historical CLI path.
+        asr_backend_override: when set, takes precedence over
+            ``BILI_PROCESSING_ASR_BACKEND``. Lets the CLI pick ``mock`` for a run
+            without editing .env, e.g. when only running transform.
+        credential_provider: async callable returning a B站 ``Credential``.
+            ``None`` (default) uses :func:`bili_unit.fetching.auth.get_credential`,
+            which reads credentials from settings/env. Pass an explicit provider
+            when embedding (e.g. credentials managed by the host application).
+
     Returns ``(cmd, qry)``. Call ``await cmd.close()`` on shutdown to release
     all stage resources in the correct order (processing → parsing → fetching).
-
-    Args:
-        asr_backend_override: when set, takes precedence over
-            ``BILI_PROCESSING_ASR_BACKEND``. Lets the CLI pick ``mock`` for a
-            run without editing .env, e.g. when only running transform.
     """
     from .fetching import assemble as _fetching_assemble
     from .fetching.auth import get_credential
     from .parsing.command import ParsingCommand
     from .parsing.data import ParsingDataStore
-    from .parsing.env import get_parsing_settings
     from .parsing.query import ParsingQuery
     from .processing.audio._asr_backend import create_asr_backend
     from .processing.command import ProcessingCommand
     from .processing.data import ProcessingDataStore
-    from .processing.env import get_processing_settings
     from .processing.error import ProcessingErrorStore
     from .processing.query import ProcessingQuery
 
-    fetch_cmd, fetch_qry, fetch_data, fetch_error = await _fetching_assemble()
+    if settings is None:
+        settings = get_settings()
+    if credential_provider is None:
+        credential_provider = get_credential
+
+    fetch_cmd, fetch_qry, fetch_data, fetch_error = await _fetching_assemble(settings)
 
     # --- parsing layer ---
-    ps = get_parsing_settings()
-    parsing_data = ParsingDataStore(ps.bili_parsing_data_dir)
+    parsing_data = ParsingDataStore(settings.bili_parsing_data_dir)
     await parsing_data.open()
 
     parse_cmd = ParsingCommand(data=parsing_data, fetching_query=fetch_qry)
     parse_qry = ParsingQuery(data=parsing_data)
 
     # --- processing layer ---
-    s = get_processing_settings()
-    proc_data = ProcessingDataStore(s.bili_processing_data_dir)
-    proc_error = ProcessingErrorStore(s.bili_processing_error_dir)
+    proc_data = ProcessingDataStore(settings.bili_processing_data_dir)
+    proc_error = ProcessingErrorStore(settings.bili_processing_error_dir)
     await proc_data.open()
     await proc_error.open()
 
-    backend_name = asr_backend_override or s.bili_processing_asr_backend
-    asr_backend = create_asr_backend(backend_name, settings=s)
+    backend_name = asr_backend_override or settings.bili_processing_asr_backend
+    asr_backend = create_asr_backend(backend_name, settings=settings)
 
     proc_cmd = ProcessingCommand(
         data=proc_data,
         error=proc_error,
-        temp_dir=s.bili_processing_temp_dir,
+        temp_dir=settings.bili_processing_temp_dir,
         fetching_query=fetch_qry,
-        settings=s,
+        settings=settings,
         asr_backend=asr_backend,
-        credential_provider=get_credential,
+        credential_provider=credential_provider,
     )
     proc_qry = ProcessingQuery(
         data=proc_data,
