@@ -7,10 +7,14 @@
 #
 # This module retains: orchestration (run_task, _run), helpers, and the Runner
 # class that composes the mixins.
+#
+# fetch_endpoint is injected via Runner constructor (fetch_fn=).
 
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from ..._logging import Progress
 from .. import (
@@ -21,7 +25,7 @@ from .. import (
     TaskStatus,
 )
 from .._bilibili_adapter import (
-    fetch_endpoint as _client_fetch_endpoint,
+    fetch_endpoint as _real_fetch_endpoint,
 )
 from .._endpoint_catalog import ENDPOINTS, get_endpoint
 from .._endpoint_spec import EndpointSpec
@@ -37,15 +41,7 @@ from ._item_ids import _extract_item_ids, _extract_item_ids_multi  # noqa: F401
 
 logger = logging.getLogger("bili.fetching.runner")
 
-
-# ---------------------------------------------------------------------------
-# Delegation wrappers — preserve mock-patch targets for tests.
-# Tests patch ``bili_unit.fetching.runner.fetch_endpoint``.
-# ---------------------------------------------------------------------------
-
-async def fetch_endpoint(*args, **kwargs):  # noqa: D401
-    """Delegation wrapper — tests patch ``bili_unit.fetching.runner.fetch_endpoint``."""
-    return await _client_fetch_endpoint(*args, **kwargs)
+FetchEndpointFn = Callable[..., Awaitable[Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -59,11 +55,13 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         error: ErrorStore,
         rate_limit: RateLimitController,
         stale_running_threshold_ms: int = 15 * 60 * 1000,
+        fetch_fn: FetchEndpointFn | None = None,
     ) -> None:
         self._data = data
         self._error = error
         self._rl = rate_limit
         self._stale_threshold_ms = stale_running_threshold_ms
+        self._fetch_fn = fetch_fn if fetch_fn is not None else _real_fetch_endpoint
 
     # -- public ------------------------------------------------------------
 

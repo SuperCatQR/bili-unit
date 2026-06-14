@@ -243,11 +243,8 @@ async def test_runner_can_fanout_new_video_endpoint(stores, rl_ctl):
     spec = get_endpoint("video_subtitle")
     assert spec is not None
 
-    with patch(
-        "bili_unit.fetching.runner.fetch_endpoint",
-        new=AsyncMock(side_effect=fake_fetch_endpoint),
-    ), patch.object(spec, "callable", new=AsyncMock(side_effect=fake_item)):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+    with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_item)):
+        result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_or_resume(
             uid, endpoints=["video_subtitle"], mode="incremental",
         )
 

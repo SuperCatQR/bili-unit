@@ -1,7 +1,7 @@
 # integration tests — full command → runner → query closed loop
 # Run: uv run pytest bili_unit/tests/test_integration.py -v
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -18,17 +18,15 @@ from .conftest import _fake_page, _fake_videos_pages
 
 @pytest.mark.asyncio
 async def test_integration_single_endpoint_success(
-    command: Command, query: Query,
+    stores, rl_ctl, query: Query,
 ):
     """Mock client → command.fetch_uid() → query.get_task() → verify."""
+    ds, es = stores
     user_info_data = {"code": 0, "data": {"mid": 123, "name": "test"}}
 
-    with patch(
-        "bili_unit.fetching.runner.fetch_endpoint",
-        new=AsyncMock(return_value=_fake_page(123, user_info_data)),
-    ):
-        result = await command.fetch_uid(123, endpoints=["user_info"])
-        assert result.status == TaskStatus.SUCCESS
+    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(return_value=_fake_page(123, user_info_data)))
+    result = await cmd.fetch_uid(123, endpoints=["user_info"])
+    assert result.status == TaskStatus.SUCCESS
 
     task = await query.get_task(123)
     assert task is not None
@@ -45,9 +43,10 @@ async def test_integration_single_endpoint_success(
 
 @pytest.mark.asyncio
 async def test_integration_multi_endpoint(
-    command: Command, query: Query,
+    stores, rl_ctl, query: Query,
 ):
     """user_info succeeds; videos succeeds with 3 pages."""
+    ds, es = stores
     pages = list(_fake_videos_pages(999, total_pages=3))
 
     async def fake_fetch(uid, spec, credential, request_params, **kw):
@@ -60,12 +59,9 @@ async def test_integration_multi_endpoint(
             return FetchPageResult(uid=uid, endpoint="videos", raw_payload={"list": []}, is_last_page=True)
         raise RuntimeError(f"unexpected {spec.name}")
 
-    with patch(
-        "bili_unit.fetching.runner.fetch_endpoint",
-        new=AsyncMock(side_effect=fake_fetch),
-    ):
-        result = await command.fetch_uid(999, endpoints=["user_info", "videos"])
-        assert result.status == TaskStatus.SUCCESS
+    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch))
+    result = await cmd.fetch_uid(999, endpoints=["user_info", "videos"])
+    assert result.status == TaskStatus.SUCCESS
 
     task = await query.get_task(999)
     assert task is not None
@@ -88,19 +84,16 @@ async def test_integration_multi_endpoint(
 
 @pytest.mark.asyncio
 async def test_integration_delete_uid(
-    command: Command, query: Query, stores,
+    stores, rl_ctl, query: Query,
 ):
     """Fetch data for a uid, delete it, verify all data is gone."""
     ds, es = stores
 
     user_info_data = {"code": 0, "data": {"mid": 555, "name": "delme"}}
 
-    with patch(
-        "bili_unit.fetching.runner.fetch_endpoint",
-        new=AsyncMock(return_value=_fake_page(555, user_info_data)),
-    ):
-        result = await command.fetch_uid(555, endpoints=["user_info"])
-        assert result.status == TaskStatus.SUCCESS
+    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(return_value=_fake_page(555, user_info_data)))
+    result = await cmd.fetch_uid(555, endpoints=["user_info"])
+    assert result.status == TaskStatus.SUCCESS
 
     # Verify data exists
     task = await query.get_task(555)

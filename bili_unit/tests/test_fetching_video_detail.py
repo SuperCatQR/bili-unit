@@ -357,14 +357,11 @@ async def test_video_detail_full_mode_refetches_all(stores, rl_ctl):
             )
         return FetchPageResult(uid=uid, endpoint=spec.name, raw_payload={}, is_last_page=True)
 
-    with patch(
-        "bili_unit.fetching.runner.fetch_endpoint",
-        new=AsyncMock(side_effect=fake_fetch_endpoint),
-    ), patch.object(
+    with patch.object(
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_or_resume(
             203, endpoints=["video_detail"], mode="full",
         )
 
@@ -448,14 +445,11 @@ async def test_video_detail_two_phase_with_videos(stores, rl_ctl):
         fetched_items.append(bvid)
         return {"info": {"bvid": bvid}, "tags": []}
 
-    with patch(
-        "bili_unit.fetching.runner.fetch_endpoint",
-        new=AsyncMock(side_effect=fake_fetch_endpoint),
-    ), patch.object(
+    with patch.object(
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_task(
+        result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_task(
             206, endpoints=["videos", "video_detail"], mode="incremental",
         )
 

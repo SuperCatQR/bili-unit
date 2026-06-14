@@ -20,13 +20,6 @@ from .specs import MODEL_ORDER, get_spec
 logger = logging.getLogger("bili.parsing.query")
 MODEL_NAMES: tuple[str, ...] = MODEL_ORDER
 
-MODEL_ALIASES: dict[str, str] = {
-    "video_detail": "video_work",
-    "article": "article_post",
-    "opus": "opus_post",
-    "dynamic": "dynamic_event",
-}
-
 
 class ParsingQuery:
     """Read-only interface to parsing results."""
@@ -108,26 +101,14 @@ class ParsingQuery:
         item_id: str,
     ) -> dict[str, Any] | None:
         """Return one typed parsing object by model and item id."""
-        canonical = self._canonical_model(model)
-        item = await self._data.get(_item_key(uid, canonical, item_id))
-        if item is None and canonical != model:
-            item = await self._data.get(_item_key(uid, model, item_id))
-        return item
+        get_spec(model)
+        return await self._data.get(_item_key(uid, model, item_id))
 
     async def list_items(self, uid: int, model: str) -> list[dict[str, Any]]:
         """Return all typed parsing objects for one model."""
-        canonical = self._canonical_model(model)
-        rows = await self._data.list_prefix(_item_prefix(uid, canonical))
-        if rows or canonical == model:
-            return [v for _, v in rows]
-        legacy_rows = await self._data.list_prefix(_item_prefix(uid, model))
-        return [v for _, v in legacy_rows]
-
-    @staticmethod
-    def _canonical_model(model: str) -> str:
-        canonical = MODEL_ALIASES.get(model, model)
-        get_spec(canonical)
-        return canonical
+        get_spec(model)
+        rows = await self._data.list_prefix(_item_prefix(uid, model))
+        return [v for _, v in rows]
 
     async def get_user_profile(self, uid: int) -> dict[str, Any] | None:
         """Return the UpProfile typed object as a dict, or None."""
@@ -136,25 +117,25 @@ class ParsingQuery:
 
     async def list_video_details(self, uid: int) -> list[dict[str, Any]]:
         """Return all VideoDetail typed objects for a uid."""
-        return await self.list_items(uid, "video_detail")
+        return await self.list_items(uid, "video_work")
 
     async def get_video_detail(self, uid: int, bvid: str) -> dict[str, Any] | None:
-        return await self.get_item(uid, "video_detail", bvid)
+        return await self.get_item(uid, "video_work", bvid)
 
     async def list_articles(self, uid: int) -> list[dict[str, Any]]:
-        return await self.list_items(uid, "article")
+        return await self.list_items(uid, "article_post")
 
     async def get_article(self, uid: int, cvid: str) -> dict[str, Any] | None:
-        return await self.get_item(uid, "article", cvid)
+        return await self.get_item(uid, "article_post", cvid)
 
     async def list_opus(self, uid: int) -> list[dict[str, Any]]:
-        return await self.list_items(uid, "opus")
+        return await self.list_items(uid, "opus_post")
 
     async def get_opus(self, uid: int, opus_id: str) -> dict[str, Any] | None:
-        return await self.get_item(uid, "opus", opus_id)
+        return await self.get_item(uid, "opus_post", opus_id)
 
     async def list_dynamics(self, uid: int) -> list[dict[str, Any]]:
-        return await self.list_items(uid, "dynamic")
+        return await self.list_items(uid, "dynamic_event")
 
     async def get_dynamic(self, uid: int, dynamic_id: str) -> dict[str, Any] | None:
-        return await self.get_item(uid, "dynamic", dynamic_id)
+        return await self.get_item(uid, "dynamic_event", dynamic_id)

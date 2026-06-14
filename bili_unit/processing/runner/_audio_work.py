@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
     from ..audio._asr_backend import ASRBackend
     from ..audio._downloader import AudioDownloader
     from ..env import ProcessingEnv
+
+ConvertFn = Callable[..., Awaitable[list[Mp3Segment]]]
 
 logger = logging.getLogger("bili.processing.runner")
 
@@ -52,22 +55,17 @@ async def audio_convert_page(
     out_dir: Path,
     page_duration_for_split: float | None,
     settings: ProcessingEnv,
+    *,
+    convert_fn: ConvertFn,
 ) -> list[Mp3Segment]:
     """Convert m4s → mp3 segments according to ``settings``.
 
     The split decision (token budget / VAD / size fallback) lives in
-    ``convert_single`` — this is a thin adapter that pulls the relevant
-    knobs off ``settings`` so the orchestrator does not have to.
-
-    ``convert_single`` is resolved via the package namespace so tests that
-    patch ``bili_unit.processing.runner.convert_single`` see their substitute.
+    ``convert_fn`` (defaults to :func:`bili_unit.processing.audio.convert_single`
+    in production; injected by the runner so tests can substitute without
+    module-level patching).
     """
-    # Late import: tests patch ``bili_unit.processing.runner.convert_single``
-    # and we want every call to honour the current binding rather than the
-    # one captured at import time.
-    from . import convert_single
-
-    return await convert_single(
+    return await convert_fn(
         m4s_path,
         out_dir,
         max_file_size_mb=settings.bili_processing_asr_max_file_size_mb,

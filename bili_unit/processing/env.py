@@ -1,158 +1,23 @@
-# env — read-only .env loader for processing settings (pydantic-settings).
+# env — processing stage settings.
+#
+# Settings 全部住在 :mod:`bili_unit._env`；本文件保留做向后兼容的 stage-level
+# 入口（docs/structure/bili.md §4 把 env 列为 stage 内模块）。
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from .._env import BiliSettings as _BiliSettings
+from .._env import get_settings as _get_settings
+from .._env import reload_settings as _reload_settings
 
-from .._retry import parse_retry_delays as _parse_retry_delays
-
-
-class ProcessingEnv(BaseSettings):
-    """Bilibili processing settings, loaded lazily from .env."""
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
-
-    # Storage paths
-    bili_processing_data_dir: str = "data/bili/processing/data"
-    bili_processing_temp_dir: str = "data/bili/processing/temp"
-    bili_processing_error_dir: str = "data/bili/processing/error"
-
-    # Worker pools
-    bili_processing_audio_workers: int = 2
-    bili_processing_queue_maxsize: int = 16
-
-    # Audio (MVP-后批次；MVP 不使用，但留字段以便配置)
-    bili_processing_audio_quality: str = "64K"
-    bili_processing_audio_max_segment_minutes: int = 8
-
-    # ASR backend selection / config.
-    #
-    # Backend selection:
-    #   mimo (default)  — MiMo cloud ASR via OpenAI-compatible chat completions.
-    #   mock            — deterministic stub for tests / no-key environments.
-    #   whisper         — reserved for future local backend.
-    # CLI override: ``-b mock`` on the unified ``process`` command (see __main__).
-    #
-    # MiMo profile selects the base URL and is the recommended way to configure;
-    # users do not have to memorise hosts.
-    #     token_plan_cn   https://token-plan-cn.xiaomimimo.com/v1   (default)
-    #     token_plan_sgp  https://token-plan-sgp.xiaomimimo.com/v1
-    #     token_plan_ams  https://token-plan-ams.xiaomimimo.com/v1
-    #     pay_as_you_go   https://api.xiaomimimo.com/v1             (sk-* keys)
-    #     custom          use BILI_PROCESSING_ASR_BASE_URL verbatim (relays / self-hosted)
-    #
-    # Token Plan keys (tp-*) and pay-as-you-go keys (sk-*) are NOT interchangeable
-    # per MiMo docs. Relays usually expect ``Authorization: Bearer``; set
-    # BILI_PROCESSING_ASR_AUTH_STYLE=bearer for those (default ``api_key`` works
-    # for both official endpoints).
-    #
-    # ASR endpoint reuses the OpenAI-compatible chat completions path:
-    #     POST {BASE_URL}/chat/completions  with model="mimo-v2.5-asr"
-    bili_processing_asr_backend: str = "mimo"
-    bili_processing_asr_profile: str = "token_plan_cn"
-    bili_processing_asr_auth_style: str = "api_key"  # api_key | bearer
-    bili_processing_asr_api_key: str = ""
-    bili_processing_asr_base_url: str = ""  # only consulted when profile="custom"
-    bili_processing_asr_model: str = "mimo-v2.5-asr"
-    bili_processing_asr_language: str = "auto"
-    bili_processing_asr_timeout: int = 300
-    bili_processing_asr_max_file_size_mb: int = 10
-
-    # Token-budget segmentation (root cause for 8192-token MiMo errors).
-    #
-    # MiMo mimo-v2.5-asr has an 8192-token context window.  Audio costs roughly
-    # ~6.5 tokens/sec at 16 kHz mono (measured from real responses:
-    # 134 s audio → 837 audio_tokens; failed 1033 s clip → 6502 tokens).
-    # A single long clip easily exceeds the budget *even though its file size
-    # is well under 10 MB* — so size-based segmentation alone does not protect.
-    #
-    # Strategy: when a clip's estimated input tokens
-    #   ceil(duration_s * tokens_per_second) + reserved overhead
-    # exceeds ``asr_max_input_tokens``, segment to the longest length that
-    # still fits.  Size threshold remains as a fallback for clips with no
-    # known duration.
-    bili_processing_asr_max_input_tokens: int = 5400
-    bili_processing_asr_tokens_per_second: float = 6.5
-    bili_processing_asr_max_completion_tokens: int = 1024
-
-    # VAD-aware segmentation (improves transcript quality on long clips).
-    #
-    # When the token-budget path triggers (clip exceeds the 5400-token cap),
-    # we run Silero VAD (ONNX, via ``pysilero-vad`` — no torch dependency)
-    # to find silence gaps and cut at those gaps instead of fixed seconds.
-    # This avoids splitting words / sentences mid-flow, which the ASR cannot
-    # recover from once it sees an incomplete leading utterance.
-    #
-    # Disable with BILI_PROCESSING_ASR_USE_VAD=false to fall back to
-    # fixed-period segmentation (the old behaviour); useful when the VAD
-    # model can't be loaded (no onnxruntime, etc.) or for A/B testing.
-    #
-    # Threshold rationale:
-    #   - 0.3 (default) is more sensitive than upstream's 0.5 default,
-    #     chosen to better detect softer / mixed-music speech in B站 content.
-    #   - Increase if too many gaps are missed (BGM mistaken for speech →
-    #     no silence to cut at → forced overlap hard-cut).
-    #   - Decrease if cuts are landing in audible speech.
-    bili_processing_asr_use_vad: bool = True
-    bili_processing_asr_vad_threshold: float = 0.3
-    bili_processing_asr_vad_min_silence_sec: float = 0.4
-    bili_processing_asr_vad_min_speech_sec: float = 0.2
-    bili_processing_asr_vad_min_seg_sec: float = 60.0
-    bili_processing_asr_vad_overlap_sec: float = 2.5
-
-    # ASR resume-from-failure cache.
-    #
-    # Each successful per-segment ASR call is cached on disk keyed by the
-    # segment's source-timeline ``(start_s, end_s)``.  When a bvid retries
-    # (network blip, quota exhaustion, process killed), already-transcribed
-    # segments are re-used and only the missing ones hit the API.  The
-    # cache is cleared when the bvid completes successfully — a healthy
-    # cache directory only contains in-flight or recently-failed work.
-    #
-    # Disable for debugging / one-shot runs that should always re-bill.
-    bili_processing_asr_cache_enabled: bool = True
-    bili_processing_asr_cache_dir: str = "data/bili/processing/asr_cache"
-
-    # Retry (per-work-item, within a single process_uid run).
-    #
-    # Follows the same design philosophy as fetching retry:
-    #   max_retries  — how many times a failed item is retried before giving up.
-    #   retry_delays — list of delay seconds between retries (exponential-ish).
-    #                  If retry_count exceeds the list length, the last value is reused.
-    #
-    # Defaults mirror fetching ([30, 60, 120], max_retries=3) but are kept
-    # separate so processing can be tuned independently.
-    bili_processing_max_retries: int = 3
-    bili_processing_retry_delays: str = "30,60,120"
-
-    # External tools.
-    # bili_processing_ffmpeg_path:
-    #   "auto"     prefer system ffmpeg, fall back to imageio-ffmpeg (recommended)
-    #   "system"   require system ffmpeg
-    #   "imageio"  require imageio-ffmpeg bundled binary
-    #   any other  treated as an explicit path.
-    bili_processing_ffmpeg_path: str = "auto"
-
-    def get_retry_delays(self) -> list[int]:
-        """Parse ``bili_processing_retry_delays`` into a sorted list of seconds."""
-        return _parse_retry_delays(self.bili_processing_retry_delays)
+ProcessingEnv = _BiliSettings
 
 
-# Singleton — lazy-loaded on first call.
-_settings: ProcessingEnv | None = None
-
-
-def get_processing_settings() -> ProcessingEnv:
-    """Return the cached processing settings, loading .env on first call."""
-    global _settings
-    if _settings is None:
-        _settings = ProcessingEnv()
-    return _settings
+def get_processing_settings() -> _BiliSettings:
+    """Backward-compat entry: returns the same singleton as ``bili_unit._env.get_settings``."""
+    return _get_settings()
 
 
 def reload_processing_settings() -> None:
-    """Force reload from .env (e.g. after user updates configuration)."""
-    global _settings
-    _settings = ProcessingEnv()
+    """Backward-compat entry: same as ``bili_unit._env.reload_settings``."""
+    _reload_settings()
+
+
+__all__ = ["ProcessingEnv", "get_processing_settings", "reload_processing_settings"]

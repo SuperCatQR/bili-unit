@@ -80,7 +80,7 @@ def _resolve_subset(
 
 async def _handle_fetch(args: argparse.Namespace) -> None:
     """Run fetching via the unit-level BiliCommand / BiliQuery."""
-    from bili_unit import EndpointStatus, assemble
+    from bili_unit import EndpointStatus, session
     from bili_unit.fetching._endpoint_catalog import ENDPOINTS, resolve_profile
 
     all_endpoints = [ep.name for ep in ENDPOINTS]
@@ -96,8 +96,7 @@ async def _handle_fetch(args: argparse.Namespace) -> None:
     else:
         endpoints = resolve_profile(args.profile)  # None for "all"
 
-    cmd, qry, data, error = await assemble()
-    try:
+    async with session() as (cmd, qry):
         result = await cmd.fetch(args.uid, endpoints=endpoints, mode=args.mode)
         print(f"uid={args.uid}  status={result.status.value}")
 
@@ -121,17 +120,13 @@ async def _handle_fetch(args: argparse.Namespace) -> None:
         if details:
             success_count = sum(1 for _, s in details if s == EndpointStatus.SUCCESS)
             print(f"  video_detail items: {success_count}/{len(details)} stored")
-    finally:
-        await data.close()
-        await error.close()
 
 
 async def _handle_parse(args: argparse.Namespace) -> None:
     """Run parsing via the unit-level BiliCommand / BiliQuery."""
-    from bili_unit import assemble
+    from bili_unit import session
 
-    cmd, qry, data, error = await assemble()
-    try:
+    async with session() as (cmd, qry):
         result = await cmd.parse(
             args.uid,
             mode=args.mode,
@@ -154,17 +149,13 @@ async def _handle_parse(args: argparse.Namespace) -> None:
                         print(f"    failed_url: {url}")
                     if len(img.failed_urls) > 5:
                         print(f"    ... and {len(img.failed_urls) - 5} more")
-    finally:
-        await cmd.close()
-        del data, error
 
 
 async def _handle_query(args: argparse.Namespace) -> None:
     """Query both fetching and processing results for a uid."""
-    from bili_unit import assemble
+    from bili_unit import session
 
-    _, qry, data, error = await assemble()
-    try:
+    async with session() as (cmd, qry):
         task = await qry.fetching.get_task(args.uid)
         if task is None:
             print(f"uid={args.uid}  (no task found)")
@@ -173,9 +164,6 @@ async def _handle_query(args: argparse.Namespace) -> None:
         for ep_name, ep_dto in task.endpoints.items():
             status = ep_dto.status.value
             print(f"  {ep_name}: {status}")
-    finally:
-        await data.close()
-        await error.close()
 
 
 async def _handle_login(_args: argparse.Namespace) -> None:
@@ -200,61 +188,50 @@ async def _handle_init_mimo(_args: argparse.Namespace) -> None:
 
 async def _handle_list_uids(_args: argparse.Namespace) -> None:
     """List all uids with fetching data."""
-    from bili_unit import assemble
+    from bili_unit import session
 
-    _, qry, data, error = await assemble()
-    try:
+    async with session() as (cmd, qry):
         tasks = await qry.fetching.list_tasks()
         if not tasks:
             print("(no tasks found)")
             return
         for t in tasks:
             print(f"  uid={t['uid']}  status={t['status'].value}")
-    finally:
-        await data.close()
-        await error.close()
 
 
 async def _handle_delete_uid(args: argparse.Namespace) -> None:
-    """Delete all fetching + processing data for a uid."""
-    from bili_unit import assemble
+    """Delete all state for a uid across fetching, parsing, and processing."""
+    from bili_unit import session
 
-    cmd, qry, fetch_data, fetch_error = await assemble()
-    try:
-        # Check fetching side
+    async with session() as (cmd, qry):
+        # Check fetching side first to confirm uid existence
         task = await qry.fetching.get_task(args.uid)
         if task is None:
             print(f"uid={args.uid}: 未找到该用户的抓取数据")
             return
 
         if not args.yes:
-            print(f"即将删除 uid={args.uid} 的所有抓取数据（任务、端点结果、进度、错误记录等）")
+            print(f"即将删除 uid={args.uid} 在 fetching / parsing / processing 三个阶段的所有数据")
+            print("（任务、端点结果、进度、错误记录、解析对象、图片、转写结果、临时文件、ASR 缓存等）")
             answer = input("确认删除? [y/N] ").strip().lower()
             if answer not in ("y", "yes"):
                 print("已取消")
                 return
 
-        # Delete fetching data
-        all_rows = await fetch_data.list_prefix(f"uid:{args.uid}:")
-        count = 0
-        for key, _ in all_rows:
-            await fetch_data.delete(key)
-            count += 1
+        stats = await cmd.delete_uid(args.uid)
 
-        # Delete fetching error records
-        err_count = await fetch_error.delete_by_uid(args.uid)
-
-        print(f"uid={args.uid}: 已删除 {count} 条数据记录, {err_count} 条错误记录")
-    finally:
-        await cmd.close()
+        # 简洁汇报，每 stage 一行
+        for stage_name in ("fetching", "parsing", "processing"):
+            stage_stats = stats.get(stage_name, {})
+            parts = ", ".join(f"{k}={v}" for k, v in stage_stats.items())
+            print(f"  {stage_name}: {parts}")
 
 
 async def _handle_video_full(args: argparse.Namespace) -> None:
     """Show full video result (metadata + transcription)."""
-    from bili_unit import assemble
+    from bili_unit import session
 
-    cmd, qry, data, error = await assemble()
-    try:
+    async with session() as (cmd, qry):
         full = await qry.processing.get_video_full(args.uid, args.bvid)
         if full is None:
             print(f"uid={args.uid} bvid={args.bvid}: 未找到视频")
@@ -274,18 +251,13 @@ async def _handle_video_full(args: argparse.Namespace) -> None:
             tr = full.transcription
             chars = len((tr.result or {}).get("text", "")) if tr.result else 0
             print(f"  transcription: {tr.status.value}  chars={chars}")
-    finally:
-        await cmd.close()
 
 
 async def _handle_process(args: argparse.Namespace) -> None:
     """Run processing via the unit-level BiliCommand / BiliQuery."""
-    from bili_unit import assemble
+    from bili_unit import session
 
-    cmd, qry, data, error = await assemble(
-        asr_backend_override=getattr(args, "asr_backend", None),
-    )
-    try:
+    async with session(asr_backend_override=getattr(args, "asr_backend", None)) as (cmd, qry):
         result = await cmd.process(args.uid, mode=args.mode)
         print(f"uid={args.uid}  status={result.status.value}")
         task = await qry.processing.get_task(args.uid)
@@ -301,9 +273,6 @@ async def _handle_process(args: argparse.Namespace) -> None:
                         f"    {it}: {completed}/{total} done, "
                         f"{failed} failed, {skipped} skipped",
                     )
-    finally:
-        await cmd.close()
-        del data, error
 
 
 # ---------------------------------------------------------------------------

@@ -125,18 +125,13 @@ async def proc_stack(tmp_path, fetching_stack, parsing_stack):
     cmd = ProcessingCommand(
         data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
         fetching_query=fqry, settings=s,
+        credential_provider=AsyncMock(return_value=None),
     )
-    qry = ProcessingQuery(data=pd, error=pe, fetching_query=fqry, parsing_query=pqry)
+    qry = ProcessingQuery(data=pd, error=pe, parsing_query=pqry)
 
-    with (
-        patch.object(
-            ProcessingRunner, "_process_audio_one",
-            new=_fake_process_audio_one,
-        ),
-        patch(
-            "bili_unit.fetching.auth.get_credential",
-            new=AsyncMock(return_value=None),
-        ),
+    with patch.object(
+        ProcessingRunner, "_process_audio_one",
+        new=_fake_process_audio_one,
     ):
         yield cmd, qry, pd, pe, fd
 
@@ -202,8 +197,8 @@ async def _seed_parsing_video_details(
 ) -> None:
     """Write VideoDetail typed-object dicts to the parsing store."""
     for bvid in bvids:
-        await pd.put(_parsing_item_key(uid, "video_detail", bvid), {
-            "_model_name": "video_detail",
+        await pd.put(_parsing_item_key(uid, "video_work", bvid), {
+            "_model_name": "video_work",
             "bvid": bvid,
             "aid": int(bvid[2:]) if bvid[2:].isdigit() else 0,
             "title": f"title-{bvid}",
@@ -313,20 +308,19 @@ async def test_audio_pipeline_failure_records_error(tmp_path, fetching_stack):
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
-    qry = ProcessingQuery(data=pd, error=pe, fetching_query=fqry)
 
     mock_dl = AsyncMock()
     mock_dl.get_audio_url = AsyncMock(side_effect=RuntimeError("audio boom"))
 
-    with (
-        patch("bili_unit.fetching.auth.get_credential", new=AsyncMock(return_value=None)),
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-    ):
-        result = await cmd.process_uid(uid)
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+    )
+    qry = ProcessingQuery(data=pd, error=pe)
+
+    result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
 
@@ -371,21 +365,18 @@ async def test_audio_retry_exhausts_then_fails(tmp_path, fetching_stack):
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
-    qry = ProcessingQuery(data=pd, error=pe, fetching_query=fqry)
-
     mock_dl = AsyncMock()
     mock_dl.get_audio_url = AsyncMock(side_effect=DownloadError("cdn down"))
 
-    with (
-        patch("bili_unit.fetching.auth.get_credential", new=AsyncMock(return_value=None)),
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-        patch("bili_unit.processing.runner.asyncio.sleep", new=AsyncMock()),
-    ):
-        result = await cmd.process_uid(uid)
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+    )
+    qry = ProcessingQuery(data=pd, error=pe)
+
+    result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
 
@@ -415,30 +406,29 @@ async def test_audio_retry_succeeds_after_first_failure(tmp_path, fetching_stack
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
-    qry = ProcessingQuery(data=pd, error=pe, fetching_query=fqry)
-
     mock_dl = AsyncMock()
     mock_dl.get_audio_url = AsyncMock(
         side_effect=[DownloadError("transient"), {"url": "https://cdn/x", "duration": 60}],
     )
     mock_dl.download_to_file = AsyncMock()
 
+    mock_convert = AsyncMock(return_value=[])
+
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(return_value=type("R", (), {"text": "hi", "duration": 60})())
     mock_asr.model = "mock-asr"
     mock_asr.close = AsyncMock()
 
-    with (
-        patch("bili_unit.fetching.auth.get_credential", new=AsyncMock(return_value=None)),
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-        patch("bili_unit.processing.runner.convert_single", new=AsyncMock(return_value=[])),
-        patch.object(cmd._runner, "_asr_backend", mock_asr),
-        patch("bili_unit.processing.runner.asyncio.sleep", new=AsyncMock()),
-    ):
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+    qry = ProcessingQuery(data=pd, error=pe)
+
+    with patch.object(cmd._runner, "_asr_backend", mock_asr):
         result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.SUCCESS
@@ -466,20 +456,18 @@ async def test_audio_non_retryable_no_retry(tmp_path, fetching_stack):
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
-    qry = ProcessingQuery(data=pd, error=pe, fetching_query=fqry)
-
     mock_dl = AsyncMock()
     mock_dl.get_audio_url = AsyncMock(side_effect=RuntimeError("not retryable"))
 
-    with (
-        patch("bili_unit.fetching.auth.get_credential", new=AsyncMock(return_value=None)),
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-    ):
-        result = await cmd.process_uid(uid)
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+    )
+    qry = ProcessingQuery(data=pd, error=pe)
+
+    result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
     errs = await qry.list_errors(uid=uid)
@@ -501,20 +489,18 @@ async def test_audio_zero_max_retries_immediate_fail(tmp_path, fetching_stack):
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
-    qry = ProcessingQuery(data=pd, error=pe, fetching_query=fqry)
-
     mock_dl = AsyncMock()
     mock_dl.get_audio_url = AsyncMock(side_effect=DownloadError("fail"))
 
-    with (
-        patch("bili_unit.fetching.auth.get_credential", new=AsyncMock(return_value=None)),
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-    ):
-        result = await cmd.process_uid(uid)
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+    )
+    qry = ProcessingQuery(data=pd, error=pe)
+
+    result = await cmd.process_uid(uid)
 
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
     errs = await qry.list_errors(uid=uid)
@@ -541,10 +527,6 @@ async def test_audio_duration_uses_page_metadata_not_last_segment(
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
 
     work_item = WorkItem(
         item_type="audio",
@@ -567,6 +549,8 @@ async def test_audio_duration_uses_page_metadata_not_last_segment(
     for seg in seg_files:
         seg.path.write_bytes(b"x")
 
+    mock_convert = AsyncMock(return_value=seg_files)
+
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(side_effect=[
         ASRResult(text="part-A", duration=830.0, model="m"),
@@ -575,11 +559,14 @@ async def test_audio_duration_uses_page_metadata_not_last_segment(
     mock_asr.model = "m"
     mock_asr.close = AsyncMock()
 
-    with (
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-        patch("bili_unit.processing.runner.convert_single", new=AsyncMock(return_value=seg_files)),
-        patch.object(cmd._runner, "_asr_backend", mock_asr),
-    ):
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+
+    with patch.object(cmd._runner, "_asr_backend", mock_asr):
         result = await cmd._runner._do_audio_work(uid, work_item, credential=None)
 
     assert result["bvid"] == bvid
@@ -609,10 +596,6 @@ async def test_audio_duration_falls_back_to_segment_sum_when_no_metadata(
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
 
     work_item = WorkItem(
         item_type="audio",
@@ -635,6 +618,8 @@ async def test_audio_duration_falls_back_to_segment_sum_when_no_metadata(
     for seg in seg_files:
         seg.path.write_bytes(b"x")
 
+    mock_convert = AsyncMock(return_value=seg_files)
+
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(side_effect=[
         ASRResult(text="x", duration=300.0, model="m"),
@@ -642,11 +627,14 @@ async def test_audio_duration_falls_back_to_segment_sum_when_no_metadata(
     ])
     mock_asr.model = "m"
 
-    with (
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-        patch("bili_unit.processing.runner.convert_single", new=AsyncMock(return_value=seg_files)),
-        patch.object(cmd._runner, "_asr_backend", mock_asr),
-    ):
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+
+    with patch.object(cmd._runner, "_asr_backend", mock_asr):
         result = await cmd._runner._do_audio_work(uid, work_item, credential=None)
 
     assert result["pages"][0]["duration"] == 420.0
@@ -678,10 +666,6 @@ async def test_audio_asr_cache_skips_segments_on_retry(tmp_path, fetching_stack)
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
 
     cache = ASRCacheStore(s.bili_processing_asr_cache_dir)
     page = cache.load_page(uid, bvid, 0)
@@ -705,6 +689,8 @@ async def test_audio_asr_cache_skips_segments_on_retry(tmp_path, fetching_stack)
     for seg in seg_files:
         seg.path.write_bytes(b"x")
 
+    mock_convert = AsyncMock(return_value=seg_files)
+
     transcribe_calls: list[str] = []
 
     async def fake_transcribe(audio_bytes, mime_type="audio/mp3", language="auto"):
@@ -715,11 +701,14 @@ async def test_audio_asr_cache_skips_segments_on_retry(tmp_path, fetching_stack)
     mock_asr.transcribe = fake_transcribe
     mock_asr.model = "m"
 
-    with (
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-        patch("bili_unit.processing.runner.convert_single", new=AsyncMock(return_value=seg_files)),
-        patch.object(cmd._runner, "_asr_backend", mock_asr),
-    ):
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+
+    with patch.object(cmd._runner, "_asr_backend", mock_asr):
         result = await cmd._runner._do_audio_work(uid, work_item, credential=None)
 
     assert len(transcribe_calls) == 1
@@ -749,10 +738,6 @@ async def test_audio_asr_cache_persists_on_failure(tmp_path, fetching_stack):
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
 
     work_item = WorkItem(
         item_type="audio", item_id=bvid,
@@ -770,6 +755,8 @@ async def test_audio_asr_cache_persists_on_failure(tmp_path, fetching_stack):
     for seg in seg_files:
         seg.path.write_bytes(b"x")
 
+    mock_convert = AsyncMock(return_value=seg_files)
+
     transcribe_results: list = [
         ASRResult(text="part-A", duration=830.0, model="m"),
         ASRAPIError("quota exhausted"),
@@ -785,9 +772,14 @@ async def test_audio_asr_cache_persists_on_failure(tmp_path, fetching_stack):
     mock_asr.transcribe = fake_transcribe
     mock_asr.model = "m"
 
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+
     with (
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-        patch("bili_unit.processing.runner.convert_single", new=AsyncMock(return_value=seg_files)),
         patch.object(cmd._runner, "_asr_backend", mock_asr),
         pytest.raises(ASRAPIError),
     ):
@@ -819,10 +811,6 @@ async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path, fetching_stack)
     pe = ProcessingErrorStore(s.bili_processing_error_dir)
     await pd.open()
     await pe.open()
-    cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, settings=s,
-    )
 
     work_item = WorkItem(
         item_type="audio", item_id=bvid,
@@ -836,15 +824,20 @@ async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path, fetching_stack)
     seg_files = [Mp3Segment(tmp_path / "s0.mp3", 0.0, 100.0)]
     seg_files[0].path.write_bytes(b"x")
 
+    mock_convert = AsyncMock(return_value=seg_files)
+
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(return_value=ASRResult(text="x", duration=100.0, model="m"))
     mock_asr.model = "m"
 
-    with (
-        patch("bili_unit.processing.runner.AudioDownloader", return_value=mock_dl),
-        patch("bili_unit.processing.runner.convert_single", new=AsyncMock(return_value=seg_files)),
-        patch.object(cmd._runner, "_asr_backend", mock_asr),
-    ):
+    cmd = ProcessingCommand(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=fqry, settings=s,
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+
+    with patch.object(cmd._runner, "_asr_backend", mock_asr):
         await cmd._runner._do_audio_work(uid, work_item, credential=None)
 
     assert not (tmp_path / "proc-asr-cache").exists()

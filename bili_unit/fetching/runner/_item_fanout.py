@@ -293,7 +293,7 @@ class _ItemFanoutMixin:
 
         settings = get_settings()
         max_retries = settings.bili_fetching_max_retries
-        retry_delays = settings.get_retry_delays()
+        retry_delays = settings.get_fetching_retry_delays()
         retry_state = {"count": 0}
 
         async def _do_fetch():

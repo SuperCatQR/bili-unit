@@ -12,14 +12,15 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+import shutil
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import ProcessingCommandResult, ProcessingTaskStatus
-from .runner import ProcessingRunner
+from .runner import CredentialProvider, ConvertFn, DownloaderFactory, ProcessingRunner
 
 if TYPE_CHECKING:
-    from ..fetching.query import Query as FetchingQuery
+    from ..fetching.protocols import FetchingReadView
     from .audio._asr_backend import ASRBackend
     from .data import ProcessingDataStore
     from .env import ProcessingEnv
@@ -36,16 +37,18 @@ class ProcessingCommand:
         data: ProcessingDataStore,
         error: ProcessingErrorStore,
         temp_dir: str,
-        fetching_query: FetchingQuery,
+        fetching_query: FetchingReadView,
         settings: ProcessingEnv,
         asr_backend: ASRBackend | None = None,
-        fetching_close: Callable[[], Awaitable[None]] | None = None,
-        parsing_query: object = None,  # retained for call-site compat; not used
+        credential_provider: CredentialProvider | None = None,
+        downloader_factory: DownloaderFactory | None = None,
+        convert_fn: ConvertFn | None = None,
     ) -> None:
         self._data = data
         self._error = error
-        self._fetching_close = fetching_close
         self._asr_backend = asr_backend
+        self._temp_dir = temp_dir
+        self._settings = settings
         self._runner = ProcessingRunner(
             data=data,
             error=error,
@@ -53,6 +56,9 @@ class ProcessingCommand:
             fetching_query=fetching_query,
             settings=settings,
             asr_backend=asr_backend,
+            credential_provider=credential_provider,
+            downloader_factory=downloader_factory,
+            convert_fn=convert_fn,
         )
 
     async def process_uid(
@@ -72,10 +78,33 @@ class ProcessingCommand:
         status: ProcessingTaskStatus = await self._runner.run(uid, mode=mode)
         return ProcessingCommandResult(uid=uid, status=status)
 
+    async def delete_uid(self, uid: int) -> dict[str, int]:
+        """Delete all processing state for a uid. Returns counts."""
+        rows = await self._data.list_prefix(f"uid:{uid}:")
+        data_count = 0
+        for key, _ in rows:
+            await self._data.delete(key)
+            data_count += 1
+        error_count = await self._error.delete_by_uid(uid)
+        # Remove temp directory for this uid
+        temp_uid_dir = Path(self._temp_dir) / str(uid)
+        temp_existed = temp_uid_dir.exists()
+        if temp_existed:
+            shutil.rmtree(temp_uid_dir, ignore_errors=True)
+        # Remove ASR cache directory for this uid (layout: {asr_cache_dir}/{uid}/)
+        asr_cache_uid_dir = Path(self._settings.bili_processing_asr_cache_dir) / str(uid)
+        asr_cache_existed = asr_cache_uid_dir.exists()
+        if asr_cache_existed:
+            shutil.rmtree(asr_cache_uid_dir, ignore_errors=True)
+        return {
+            "data": data_count,
+            "errors": error_count,
+            "temp_removed": int(temp_existed),
+            "asr_cache_removed": int(asr_cache_existed),
+        }
+
     async def close(self) -> None:
         await self._data.close()
         await self._error.close()
         if self._asr_backend is not None:
             await self._asr_backend.close()
-        if self._fetching_close is not None:
-            await self._fetching_close()

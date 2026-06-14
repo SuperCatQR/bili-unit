@@ -1,7 +1,6 @@
 # bili_unit
 
-Bilibili 数据抓取与处理工具。给定一个用户 uid，把 64 个 B 站读取端点的原始响应落到本地，
-经过解析层对象化为 typed dataclass，再对视频音频做 ASR 转录。
+Bilibili 数据 SDK，附带 `python -m bili_unit` CLI。给定一个用户 uid，抓取 64 个 B 站读取端点的原始响应、对象化为 typed object、再对视频音频做 ASR 转录。**作为 Python 库被 import 嵌入**或作为 CLI 直接使用都受支持。
 
 ## 项目定位
 
@@ -12,6 +11,8 @@ Bilibili 数据抓取与处理工具。给定一个用户 uid，把 64 个 B 站
 - **状态机**：抓取与处理共享 `incremental` / `refresh` / `full` 三档语义，`incremental` 跳过已成功项目、重试失败项目。
 
 不做的事：跨源归一化、清洗、检索 — 那是上游 [Dialectica](https://github.com/ChosenEcho/Dialectica) 的事，本仓库只产出每个 uid 的原始与结构化数据单元。
+
+- **接入形态**：SDK 优先，CLI 是其薄包装。`async with bili_unit.session() as (cmd, qry):` 是推荐入口，详见 [Embedding](#embedding) 与 [docs/api.md](docs/api.md)。
 
 ## 安装
 
@@ -46,6 +47,55 @@ uv run python -m bili_unit video-full <uid> <bvid> # 单视频联合视图（met
 
 各命令的完整参数（mode 切换、端点过滤、ASR 后端选择等）见对应 feature 文档。
 
+## Embedding
+
+作为库嵌入 Python 应用：
+
+```python
+import asyncio
+import bili_unit
+
+async def main() -> None:
+    async with bili_unit.session() as (cmd, qry):
+        await cmd.fetch(uid=123)
+        task = await qry.fetching.get_task(uid=123)
+        if task is not None:
+            for ep_name, ep_dto in task.endpoints.items():
+                print(ep_name, ep_dto.status.value)
+
+asyncio.run(main())
+```
+
+`session()` 是推荐入口；它包了 `assemble()` 与 `cmd.close()` 的生命周期。要程序化构造配置（不走 `.env`）：
+
+```python
+from bili_unit import BiliSettings, session
+
+settings = BiliSettings(
+    bili_fetching_data_dir="/var/lib/bili/fetching",
+    bili_processing_data_dir="/var/lib/bili/processing",
+    bili_processing_asr_backend="mock",  # 临时跳过 MiMo
+)
+
+async with session(settings=settings) as (cmd, qry):
+    ...
+```
+
+要由宿主应用接管凭据：
+
+```python
+from bili_unit import CredentialProvider, session
+from bilibili_api import Credential
+
+async def my_provider() -> Credential | None:
+    return Credential(sessdata=..., bili_jct=..., buvid3=...)
+
+async with session(credential_provider=my_provider) as (cmd, qry):
+    ...
+```
+
+稳定 API 边界与扩展点见 [docs/api.md](docs/api.md)。
+
 ## 凭据与运行时数据
 
 `.env` 由 `login` 命令写入；`.env.example` 列出所有可覆盖配置项。运行时目录默认在工作目录下，已被 `.gitignore` 排除：
@@ -72,8 +122,7 @@ uv run ruff check                                  # lint
 
 | 类别 | 路径 | 性质 |
 |---|---|---|
-| 类别 | 路径 | 性质 |
-|---|---|---|
+| **稳定 API** | [docs/api.md](docs/api.md) | SDK 公开面、内部边界、SemVer 承诺 |
 | 领域语言 | [CONTEXT.md](CONTEXT.md) | 项目术语表（unit / stage / raw_payload / ContentPost 等） |
 | 决策记录 | [docs/adr/](docs/adr/) | ADR：难逆转 + 需背景的架构决策 |
 | 模块边界 | [docs/structure/bili.md](docs/structure/bili.md) | 各层职责约束（must-be） |
@@ -93,14 +142,4 @@ ASR 后端默认对接 [小米 MiMo ASR](https://api.xiaomimimo.com)（OpenAI-co
 
 ## 与 Dialectica 的关系
 
-bili_unit 是独立仓库，独立可用。同时它也是 [Dialectica](https://github.com/ChosenEcho/Dialectica) 项目 `source_data` 层下的一个 unit — Dialectica 主仓库通过 `[tool.uv.sources]` 把它装为 editable 依赖：
-
-```toml
-[project]
-dependencies = ["bili-unit"]
-
-[tool.uv.sources]
-bili-unit = { path = "../bili_unit", editable = true }
-```
-
-跨源归一化、清洗、检索由 Dialectica 的 `index.ingestion` 子层承担，不在本仓库范围内。
+bili_unit 是独立 SDK，独立可用、独立发版。Dialectica 是它的第一个消费者：[Dialectica](https://github.com/ChosenEcho/Dialectica) 项目通过 `[tool.uv.sources]` 把它装为 editable 依赖，bili_unit 的 query 出口面服务 Dialectica 的 `index.ingestion` 子层。跨源归一化、清洗、检索由 Dialectica 承担，不在本仓库范围内。

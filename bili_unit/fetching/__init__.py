@@ -129,8 +129,13 @@ class TaskResult:
 # Assembly root — wires env → stores → components → entry points
 # ---------------------------------------------------------------------------
 
-async def assemble() -> tuple:
+async def assemble(settings=None) -> tuple:
     """Read env, open stores, wire dependencies, return (Command, Query, DataStore, ErrorStore).
+
+    Args:
+        settings: pre-built ``BiliSettings`` to use. ``None`` (default) lazy-loads
+            from .env via :func:`bili_unit._env.get_settings` — keeps the historical
+            CLI behaviour intact.
 
     Caller is responsible for closing stores via ``await data.close()`` /
     ``await error.close()`` when done.
@@ -143,7 +148,7 @@ async def assemble() -> tuple:
     from .query import Query
     from .rate_limit import RateLimitController
 
-    s = get_settings()
+    s = settings if settings is not None else get_settings()
     init_http_backend(s.bili_fetching_http_backend, s.bili_fetching_impersonate)
 
     data = DataStore(s.bili_fetching_data_dir)
