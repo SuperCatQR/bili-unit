@@ -1,13 +1,11 @@
 # bili_unit/processing — common DTOs, exceptions.
-#
-# Per docs/structure/bili.md §4/§6/§8 and docs/design/processing.md.
 
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Status enums (cf. processing design §10.4)
+# Status enums
 # ---------------------------------------------------------------------------
 
 class ProcessingTaskStatus(StrEnum):
@@ -40,7 +38,7 @@ class ProcessingPipelineStatus(StrEnum):
 
 
 # ---------------------------------------------------------------------------
-# Exceptions (cf. processing design §9.1)
+# Exceptions
 # ---------------------------------------------------------------------------
 
 class ProcessingError(Exception):
@@ -88,7 +86,7 @@ class DataError(ProcessingError):
 
 
 # ---------------------------------------------------------------------------
-# DTOs (cf. processing design §11.3)
+# DTOs
 # ---------------------------------------------------------------------------
 
 @dataclass

@@ -1,14 +1,11 @@
 # processing_feature — B站用户数据处理层代码现状
 
 > 记录 `bili_unit/processing` 的实际代码能力。
-> 对应设计文档：`docs/design/processing.md`
 > 对应结构约束：`docs/structure/bili.md`
 
 ## 概述
 
-processing 层负责对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。当前仅一条 pipeline：audio。
-
-> **历史说明（2026-06-14）**：processing 仅持有 audio pipeline；transform 子系统（原 `video_metadata` / `content_post` / `user_profile` 三个 handler）已删除（理由：parsing 重构后 transform 退化为字段透传，且 ingestion 未实装无契约要保护）。视频元数据 / 内容帖 / UP 主画像直接消费 `parsing.query` 出口面（`get_video_detail` / `list_articles` / `list_opus` / `list_dynamics` / `list_items(uid, "content_post")` / `get_user_profile`），不再经过 processing。
+processing 层负责对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。当前仅一条 pipeline：audio。视频元数据 / 内容帖 / UP 主画像直接消费 `parsing.query` 出口面（`get_video_detail` / `list_articles` / `list_opus` / `list_dynamics` / `list_items(uid, "content_post")` / `get_user_profile`），不经 processing。
 
 audio 流水线通过 asyncio.Queue + worker pool 并发调度，支持 incremental / full 两种处理模式。数据源是 parsing 层产出的 `VideoDetail`（提供 cid 列表）+ fetching 层（提供 CDN URL）。详见 [docs/feature/parsing.md](parsing.md)。
 
@@ -167,8 +164,6 @@ processing 维护独立于 fetching 的目录存储：
 
 processing 与 fetching 的 task key 同名（`uid:{uid}:task`），但因为 store 物理隔离（不同目录路径），不冲突。
 
-> 历史目录 `proc/video_metadata/`、`proc/content_post/`、`proc/user_profile/` 已不再写入；旧数据保留在磁盘上，新代码读不到，下次手工清理。
-
 ### value 形状
 
 **processing task**（`uid:{uid}:task`）：
@@ -265,9 +260,9 @@ uv run python -m bili_unit query <uid>                         # 显示抓取 + 
 uv run python -m bili_unit video-full <uid> <bvid>             # 联合 metadata（来自 parsing）+ transcription（来自 audio）
 ```
 
-> processing 当前只有 audio pipeline，无需 handler 选择标志（旧版 `-t/-x/--item-types/--exclude-item-types` 已随 transform 一起删除）。要看视频元数据 / 内容帖 / UP 主画像，请用 `parse` 子命令产物，通过 `BiliQuery.parsing` 出口面消费。
+> processing 当前只有 audio pipeline，无需 handler 选择标志。要看视频元数据 / 内容帖 / UP 主画像，请用 `parse` 子命令产物，通过 `BiliQuery.parsing` 出口面消费。
 
-向后兼容：`python -m bili_unit.processing` 仍可用（内部转发到统一 CLI），老脚本无需改动。
+向后兼容：`python -m bili_unit.processing` 仍可用（内部转发到统一 CLI）。
 
 ## 装配函数
 
@@ -336,37 +331,11 @@ async def list_errors(uid: int | None = None) -> list[ErrorDTO]
 
 ## 测试状态
 
-- ≈408 pytest 总数全部通过（覆盖 fetching / parsing / processing audio / storage / CLI / retry；transform 删除后下降约 26 个用例）
-- ruff lint 全部通过
-- 无外部网络 / API 依赖；测试可在离线环境运行
-
-### 测试矩阵
-
-```
-test_processing_data_error.py    data store + error store 单元测试
-test_processing_audio.py         ASRBackend / MockASRBackend / MimoASRBackend / create_asr_backend / resolve_ffmpeg / token-budget 分段 / profile + auth_style + ASRConfigError + init-mimo 向导
-test_processing_audio_cache.py   audio 段级缓存 + 断点续传
-test_processing_audio_vad.py     VAD 切分 + 段间文本去重
-test_processing_runner.py        runner / command / query 集成测试（audio pipeline + auto-retry + 多段 duration 回归 + video_full 联合视图）
-fixtures/mimo_asr_response.json  MiMo 真实响应样本（uid:13991807 BV1o3YbzVEEo, 134s）
-```
-
-集成测试覆盖：
-- audio pipeline 发现 + 处理（2 bvids，mock 转录）
-- audio incremental 跳过已 SUCCESS（processed_at 不变）
-- audio full 模式覆盖写（processed_at 推进）
-- audio 下载失败 → item FAILED + 错误入库
-- audio 无 video_detail → 优雅跳过
-- VideoFullDTO 联合视图：metadata 来自 parsing，transcription 来自 audio
-- `_is_retryable` 分类（AudioError → true，其他 → false）
-- audio retryable 错误重试至耗尽 → FAILED + 3 条 error 记录（2 retry + 1 final）
-- audio retryable 错误首次失败后第二次成功 → SUCCESS
-- audio 非 retryable 错误（RuntimeError）→ 不重试，立即 FAILED
-- max_retries=0 → 单次尝试，不重试
+测试位于 `bili_unit/tests/`，覆盖 ASR 后端工厂 / MockASRBackend / MimoASRBackend、token-budget 分段、profile + auth_style + ASRConfigError、init-mimo 向导、audio 段级缓存 + 断点续传、VAD 切分 + 段间文本去重、runner / command / query 集成（含 retry 路径与多段 duration 累加）。MiMo 真实响应 fixture 在 `bili_unit/tests/fixtures/mimo_asr_response.json`。无外部网络，离线可跑：`uv run pytest`。
 
 ## 已知限制 / 开放工作项
 
-- `MockASRBackend` 返回固定文本；用于测试 + 接口稳定保证。`MimoASRBackend` 已实装，
+- `MockASRBackend` 返回固定文本，用于测试 + 接口稳定保证。`MimoASRBackend` 已实装，
   设 `BILI_PROCESSING_ASR_BACKEND=mimo` + 配好 `BILI_PROCESSING_ASR_API_KEY` 即可使用。
 - `bilibili-api-python` 17.x 在某些视频上 `VideoDownloadURLDataDetecter.detect_best_streams` 会抛
   `'NoneType' object has no attribute 'value'`；audio 下载器已采用

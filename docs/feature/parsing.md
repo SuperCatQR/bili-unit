@@ -2,7 +2,6 @@
 
 > 记录 `bili_unit/parsing` 的实际代码能力。
 > 对应结构约束：`docs/structure/bili.md`
-> 实施计划：`parsing-plan.md`
 
 ## 概述
 
@@ -452,27 +451,4 @@ ParsingError
 
 ## 测试状态
 
-- 142 个指定 parsing + processing + CLI 测试全部通过（含 legacy model、registry、ContentPost selector / merge、processing transform / runner、CLI subset）
-- ruff lint 全部通过
-- 无外部网络 / API 依赖；测试可在离线环境运行
-
-### 测试矩阵
-
-```
-test_parsing_models.py       legacy 5 个 model 单元测试（from_raw / to_dict / from_dict / image protocol / edge cases）
-test_parsing_data.py         ParsingKeyMapper + ParsingDataStore 单元测试（13 tests）
-test_parsing_command.py      ParsingCommand + ParsingQuery 集成测试（20 tests）
-test_parsing_infra.py        ParsingSpec registry / generic query / incremental / content_post materializer
-test_parsing_content_posts.py ContentPost / Article-Opus-Dynamic selector / merge 单元测试
-```
-
-集成测试覆盖：
-- parse_uid 正常流程（6 个 model 全部 SUCCESS，含 content_post）
-- parse_uid 部分 model 返回 0（PARTIAL 状态）
-- parse_uid 单个 model 抛异常（FAILED + PARTIAL）
-- parse_uid 带 download_images=True（_download_images 被调用）
-- parse_uid 带 download_images 失败（不影响整体状态）
-- ParsingQuery 所有 typed object accessor（get / list / none）
-- ParsingQuery task DTO 含/不含 images 块
-- ParsingKeyMapper key ↔ path 双向映射
-- ParsingDataStore CRUD + 原子 helper（update_task_model_status / update_task_images）
+测试位于 `bili_unit/tests/`，覆盖 5 个 legacy model 单元测试（from_raw / to_dict / from_dict / image protocol）、`ContentPost` selector / merge、`ParsingSpec` registry、generic query / incremental、ParsingKeyMapper / DataStore CRUD、command + query 集成。无外部网络，离线可跑：`uv run pytest`。

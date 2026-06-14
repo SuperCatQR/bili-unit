@@ -1,18 +1,19 @@
 # bili_unit
 
-Bilibili 数据抓取与处理工具。给定一个用户 uid，把 64 个 B 站读取端点的原始响应落到本地，经过解析层对象化为 typed dataclass，再对视频音频做 ASR 转录。
+Bilibili 数据抓取与处理工具。给定一个用户 uid，把 64 个 B 站读取端点的原始响应落到本地，
+经过解析层对象化为 typed dataclass，再对视频音频做 ASR 转录。
 
 ## 项目定位
 
 - **抓取（fetching）**：异步循环 64 个读取端点，全局 + 端点级双层限流，412 自适应降速 + 冷却恢复，所有请求结果原样落盘。
-- **解析（parsing）**：把 raw dict 筛选、对象化并合并为 parsed objects；保留 5 个 legacy typed dataclass（`UpProfile` / `VideoDetail` / `Article` / `OpusPost` / `DynamicPost`），并新增 `ContentPost` 统一内容视图，可选下载封面、头像、动态图片到本地。
+- **解析（parsing）**：把 raw dict 筛选、对象化并合并为 parsed objects；包含 5 个 legacy typed dataclass（`UpProfile` / `VideoDetail` / `Article` / `OpusPost` / `DynamicPost`）和统一内容视图 `ContentPost`，可选下载封面、头像、动态图片到本地。
 - **处理（processing）**：对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。
 - **存储**：纯文件 JSON KV，无数据库依赖；任何时刻按 `uid` 列出 / 删除 / 重跑。
-- **状态机**：抓取与处理都用同一套 `incremental` / `refresh` / `full` 三档语义，`incremental` 跳过已成功项目、重试失败项目。
+- **状态机**：抓取与处理共享 `incremental` / `refresh` / `full` 三档语义，`incremental` 跳过已成功项目、重试失败项目。
 
 不做的事：跨源归一化、清洗、检索 — 那是上游 [Dialectica](https://github.com/ChosenEcho/Dialectica) 的事，本仓库只产出每个 uid 的原始与结构化数据单元。
 
-## 安装与运行
+## 安装
 
 依赖 Python 3.12，用 [uv](https://docs.astral.sh/uv/) 管理。
 
@@ -20,89 +21,34 @@ Bilibili 数据抓取与处理工具。给定一个用户 uid，把 64 个 B 站
 git clone <repo-url> bili_unit
 cd bili_unit
 uv sync                                            # 创建 .venv 并安装依赖
-cp .env.example .env                               # 准备凭据文件（凭据用 login 命令写入）
+cp .env.example .env                               # 准备凭据文件
 uv run python -m bili_unit login                   # 二维码登录，凭据写到 .env
+uv run python -m bili_unit init-mimo               # （可选）配置 MiMo ASR
 ```
 
-ASR 转录默认走 MiMo 云端，按需配置：
-
-```bash
-uv run python -m bili_unit init-mimo               # MiMo ASR 配置向导（profile / api key / 中转站）
-```
-
-> Token Plan key（`tp-*`）与 pay-as-you-go key（`sk-*`）在 MiMo 不通用；按你买的方案选 profile。
-
-`ffmpeg` 由 `imageio-ffmpeg` 自带兜底；Silero VAD 走 `pysilero-vad`（ONNX，不拉 torch）。
+> Token Plan key（`tp-*`）与 pay-as-you-go key（`sk-*`）在 MiMo 不通用，按你买的方案选 profile。
+> `ffmpeg` 由 `imageio-ffmpeg` 自带兜底；Silero VAD 走 `pysilero-vad`（ONNX，不拉 torch）。
 
 ## 用法
 
 ```bash
-# 抓取：把 uid 的 raw_payload 落到 data/bili/fetching
-uv run python -m bili_unit fetch <uid>                             # 全部端点（默认增量）
-uv run python -m bili_unit fetch <uid> -x video_detail             # 跳过最耗时的 video_detail（推荐用法）
-uv run python -m bili_unit fetch <uid> -x video_detail upower_qa   # 跳多个用空格分隔
-uv run python -m bili_unit fetch <uid> -e user_info relation_info  # 只跑指定端点（调试，与 -x 互斥）
-uv run python -m bili_unit fetch <uid> -m refresh                  # 增量 + 重抓 stale 项（N 见 .env）
-uv run python -m bili_unit fetch <uid> -m full                     # 全量重抓
+# 三个核心命令
+uv run python -m bili_unit fetch <uid>             # 抓 raw payload
+uv run python -m bili_unit parse <uid>             # 解析为 parsed objects（加 -i 下载图片）
+uv run python -m bili_unit process <uid>           # ASR 转录视频音频
 
-# 解析：把 raw_payload 对象化为 parsed objects（可选下载图片）
-uv run python -m bili_unit parse <uid>                             # 解析 legacy 5 类 + content_post
-uv run python -m bili_unit parse <uid> -i                          # 解析 + 下载图片（头像 / 封面 / 动态图）
-uv run python -m bili_unit parse <uid> -m incremental              # 增量解析（跳过已有项）
-
-# 处理：对视频音频做 ASR 转录
-uv run python -m bili_unit process <uid>                           # 跑 audio pipeline，按 .env 选 ASR 后端
-uv run python -m bili_unit process <uid> -m full                   # 重处理所有 bvid（不支持 refresh）
-uv run python -m bili_unit process <uid> -b mock                   # 临时跳过真实 ASR（CI / 不烧 token）
-
-# 查询 / 管理
-uv run python -m bili_unit query <uid>                             # 抓取任务 / 端点状态
-uv run python -m bili_unit list-uids                               # 列出所有抓过的 uid
-uv run python -m bili_unit delete-uid <uid> -y                     # 删除某 uid 全部数据（不可逆）
-uv run python -m bili_unit video-full <uid> <bvid>                 # 单视频联合视图（metadata + transcription）
+# 查询与管理
+uv run python -m bili_unit query <uid>             # 抓取任务 / 端点状态
+uv run python -m bili_unit list-uids               # 列出所有抓过的 uid
+uv run python -m bili_unit delete-uid <uid> -y     # 删除某 uid 全部数据（不可逆）
+uv run python -m bili_unit video-full <uid> <bvid> # 单视频联合视图（metadata + transcription）
 ```
 
-`fetch` 默认全跑：`-x` 排除少数项是日常用法，`-e` 指定子集是调试用法。`process` 当前只有 audio pipeline，不再有 handler 选择标志。
-
-### 向后兼容子模块入口
-
-旧版 `python -m bili_unit.fetching` 和 `python -m bili_unit.processing` 仍然可用，内部自动转发到统一 CLI，老脚本无需改动。新脚本建议直接用 `python -m bili_unit <sub>` 格式。
-
-### 抓取端点清单
-
-| 类型 | 端点 |
-|---|---|
-| 用户基本信息 / 关系 / 状态 | `user_info` `access_id` `relation_info` `up_stat` `overview_stat` `user_medal` `space_notice` `live_info` `user_relation` `reservation` `uplikeimg` `top_followers` `elec_monthly` |
-| 投稿/创作 | `videos` `articles` `opus` `dynamics` `dynamics_legacy` `audios` `top_videos` `masterpiece` |
-| 列表/合集 | `channel_list` `channels` `media_list` `article_list` `subscribed_bangumi` `cheese` `album` `user_fav_tag` `all_followings` `followings` `followers` `same_followers` `upower_qa` |
-| item-level fan-out | `video_detail` `video_pages` `video_detail_full` `video_ai_conclusion` `video_danmaku_snapshot` `video_danmaku_view` `video_danmaku_xml` `video_danmakus` `video_online` `video_pay_coins` `video_pbp` `video_player_info` `video_private_notes` `video_public_notes` `video_related` `video_relation` `video_special_dms` `video_subtitle` `video_up_mid` `video_snapshot` `video_download_url` `video_is_episode` `video_is_forbid_note` `video_chargers`（均自 `videos` 派生）；`article_detail`（自 `articles` 派生，提供专栏 markdown 正文）；`opus_detail`（自 `opus` 派生，提供图文 markdown + 图片清单）；`article_list_detail`（自 `article_list` 派生，提供文集 → 文章 cvid 清单）；`channel_videos_season` `channel_videos_series`（自 `channel_list` 派生）；`upower_qa_detail`（自 `upower_qa` 派生） |
-
-需要凭据的端点：`video_pay_coins` / `video_private_notes` / `video_relation` / `user_medal` / `user_relation` / `top_followers` / `all_followings` / `same_followers` / `elec_monthly` / `upower_qa` / `upower_qa_detail`（其它端点匿名也可抓）。
-
-完整说明（分页策略、限流 key、是否需凭据）见 [docs/feature/fetching.md](docs/feature/fetching.md) §端点注册表。
-
-### 解析 model 清单
-
-| model | 来源端点 | 粒度 | 图片 |
-|---|---|---|---|
-| `UpProfile` | `user_info` + `relation_info` + `up_stat` + `overview_stat`（可选） | per-uid | 头像 |
-| `VideoDetail` | `video_detail` | per-bvid | 封面 |
-| `Article` | `articles` + `article_detail`（可选）+ `article_list_detail`（可选） | per-cvid | 文章图片列表 |
-| `OpusPost` | `opus` + `opus_detail`（可选） | per-opus_id | 封面 + 正文图片 |
-| `DynamicPost` | `dynamics` | per-dynamic_id | 动态图片（DRAW / ARTICLE / ARCHIVE / OPUS） |
-| `ContentPost` | `articles` + `article_detail` + `article_list_detail` + `opus` + `opus_detail` + `dynamics` | per-content-key | 目前只归一 URL，不参与图片下载 |
-
-`ContentPost` 是 parsing 重构第一阶段产物，用 `article:{cvid}` / `opus:{opus_id}` / `dynamic:{dynamic_id}` 做 canonical key，并通过 `_source_refs` / `_cross_refs` 记录 Article / Opus / Dynamic 的来源和引用关系。完整字段映射见 [docs/feature/parsing.md](docs/feature/parsing.md)。
-
-### 处理 pipeline 清单
-
-processing 层当前只有 audio pipeline：根据 fetching 抓到的 video_detail 列表对每个 bvid 跑 ASR 转录。详见 [docs/feature/processing.md](docs/feature/processing.md)。
-
-> **历史说明（2026-06-14）**：早期版本的 transform 子系统（`video_metadata` / `content_post` / `user_profile` 三个 handler）已删除。视频元数据 / 内容帖 / UP 主画像直接通过 `BiliQuery.parsing` 出口面消费 parsing 层产物，不再经 processing 中转。
+各命令的完整参数（mode 切换、端点过滤、ASR 后端选择等）见对应 feature 文档。
 
 ## 凭据与运行时数据
 
-`.env` 由 `login` 命令写入；`.env.example` 列出所有可覆盖配置项。运行时目录默认放在工作目录下，已被 `.gitignore` 排除：
+`.env` 由 `login` 命令写入；`.env.example` 列出所有可覆盖配置项。运行时目录默认在工作目录下，已被 `.gitignore` 排除：
 
 ```
 data/bili/fetching/        # 抓取 raw_payload + task / progress
@@ -111,40 +57,27 @@ data/bili/processing/      # 结构化 result + ASR 缓存 + temp（自动清理
 error/bili/                # 失败请求与可重试状态
 ```
 
-要换路径，在 `.env` 写：
-
-```
-BILI_FETCHING_DATA_DIR=...
-BILI_FETCHING_ERROR_DIR=...
-BILI_PARSING_DATA_DIR=...
-BILI_PARSING_IMAGE_CONCURRENCY=8
-BILI_PARSING_IMAGE_TIMEOUT=30
-BILI_PROCESSING_DATA_DIR=...
-BILI_PROCESSING_ERROR_DIR=...
-BILI_PROCESSING_TEMP_DIR=...
-BILI_PROCESSING_ASR_CACHE_DIR=...
-```
+要换路径，在 `.env` 设置 `BILI_FETCHING_DATA_DIR` / `BILI_PARSING_DATA_DIR` / `BILI_PROCESSING_DATA_DIR` 等（完整列表见 `.env.example`）。
 
 ## 开发
 
 ```bash
-uv run pytest -v                                   # 全量测试（~7.5 分钟）
+uv run pytest -v                                   # 全量测试（~7.5 分钟，无网络）
 uv run ruff check                                  # lint
 ```
 
-测试覆盖抓取 runner、限流、端点 schema 适配、解析 legacy typed model + `ContentPost` + 数据层 + command/query 编排、ASR pipeline（VAD 切分、段级缓存、文本拼接）。无网络调用 — 所有外部 API 都被 mock。
+测试覆盖抓取 runner、限流、端点 schema 适配、解析 typed model + `ContentPost` + 数据层 + command/query 编排、ASR pipeline。所有外部 API 都被 mock。
 
 ## 文档
 
 | 类别 | 路径 | 性质 |
 |---|---|---|
-| 结构（must-be） | [docs/structure/bili.md](docs/structure/bili.md) | 模块边界与职责约束 |
-| 现状（is，**真相源**） | [docs/feature/](docs/feature/) | 实现现状；新增改动直接更新这里 |
-| — fetching | [docs/feature/fetching.md](docs/feature/fetching.md) | 抓取层代码现状 |
-| — parsing | [docs/feature/parsing.md](docs/feature/parsing.md) | 解析层代码现状 |
-| — processing | [docs/feature/processing.md](docs/feature/processing.md) | 处理层代码现状 |
-| 接口研究 | [docs/bili-api-info/](docs/bili-api-info/) | bilibili-api-python 的接口参考速查（外部资料镜像） |
-| 设计（**已废弃**） | [docs/design/](docs/design/) | 早期设计稿，仅作历史参考 |
+| 模块边界 | [docs/structure/bili.md](docs/structure/bili.md) | 各层职责约束（must-be） |
+| 数据契约 | [docs/structure/fetching-contract.md](docs/structure/fetching-contract.md) | 64 个端点的 raw_payload schema |
+| fetching 现状 | [docs/feature/fetching.md](docs/feature/fetching.md) | 端点注册表、限流、模式、CLI |
+| parsing 现状 | [docs/feature/parsing.md](docs/feature/parsing.md) | model 字段映射、图片下载、CLI |
+| processing 现状 | [docs/feature/processing.md](docs/feature/processing.md) | audio pipeline、ASR 后端、CLI |
+| 接口参考 | [docs/bili-api-info/](docs/bili-api-info/) | bilibili-api-python 速查（外部资料镜像） |
 
 ## 许可与依赖
 
@@ -152,7 +85,7 @@ uv run ruff check                                  # lint
 
 抓取层基于 [bilibili-api-python](https://github.com/Nemo2011/bilibili-api)（GPL-3.0），其传染条款下本仓库及其衍生作品须保持同等许可。`docs/bili-api-info/` 是该库官方接口参考的本地镜像，方便离线查阅与 LLM 检索。
 
-ASR 后端默认对接 [小米 MiMo ASR](https://api.xiaomimimo.com)（OpenAI-compatible chat completions 接口），可配置走 Token Plan / pay-as-you-go / 自托管中转。VAD 用 [pysilero-vad](https://github.com/rhasspy/pysilero-vad)（Silero ONNX 封装，无 torch 依赖）。
+ASR 后端默认对接 [小米 MiMo ASR](https://api.xiaomimimo.com)（OpenAI-compatible chat completions 接口），可配置走 Token Plan / pay-as-you-go / 自托管中转。VAD 用 [pysilero-vad](https://github.com/rhasspy/pysilero-vad)。
 
 ## 与 Dialectica 的关系
 

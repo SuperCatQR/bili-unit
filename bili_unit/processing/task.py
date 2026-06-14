@@ -11,7 +11,7 @@ from . import (
 
 @dataclass
 class PipelineEntry:
-    """One pipeline (audio, and future subtitle/OCR) inside a processing task value.
+    """One pipeline (apeline (audio, and future subtitle/OCR) inside a processing task value.udio, and future subtitle/OCR) inside a processing task value.
 
     items: per-item-type rollup, e.g.
         {"transcription": {"total": 77, "completed": 77, "failed": 0, "skipped": 0}}
