@@ -20,10 +20,10 @@ from . import ProcessingCommandResult, ProcessingTaskStatus
 from .runner import ConvertFn, CredentialProvider, DownloaderFactory, ProcessingRunner
 
 if TYPE_CHECKING:
+    from .._env import BiliSettings
     from ..fetching.protocols import FetchingReadView
     from .audio._asr_backend import ASRBackend
     from .data import ProcessingDataStore
-    from .env import ProcessingEnv
     from .error import ProcessingErrorStore
 
 logger = logging.getLogger("bili.processing.command")
@@ -36,9 +36,9 @@ class ProcessingCommand:
         self,
         data: ProcessingDataStore,
         error: ProcessingErrorStore,
-        temp_dir: str,
+        temp_dir: str | Path,
         fetching_query: FetchingReadView,
-        settings: ProcessingEnv,
+        settings: BiliSettings,
         asr_backend: ASRBackend | None = None,
         credential_provider: CredentialProvider | None = None,
         downloader_factory: DownloaderFactory | None = None,
@@ -47,12 +47,12 @@ class ProcessingCommand:
         self._data = data
         self._error = error
         self._asr_backend = asr_backend
-        self._temp_dir = temp_dir
+        self._temp_dir = Path(temp_dir)
         self._settings = settings
         self._runner = ProcessingRunner(
             data=data,
             error=error,
-            temp_dir=temp_dir,
+            temp_dir=self._temp_dir,
             fetching_query=fetching_query,
             settings=settings,
             asr_backend=asr_backend,
@@ -80,14 +80,10 @@ class ProcessingCommand:
 
     async def delete_uid(self, uid: int) -> dict[str, int]:
         """Delete all processing state for a uid. Returns counts."""
-        rows = await self._data.list_prefix(f"uid:{uid}:")
-        data_count = 0
-        for key, _ in rows:
-            await self._data.delete(key)
-            data_count += 1
+        data_count = await self._data.delete_by_uid_prefix(uid)
         error_count = await self._error.delete_by_uid(uid)
         # Remove temp directory for this uid
-        temp_uid_dir = Path(self._temp_dir) / str(uid)
+        temp_uid_dir = self._temp_dir / str(uid)
         temp_existed = temp_uid_dir.exists()
         if temp_existed:
             shutil.rmtree(temp_uid_dir, ignore_errors=True)

@@ -80,9 +80,11 @@ class BiliCommand:
     async def delete_uid(self, uid: int) -> dict[str, dict[str, int]]:
         """Delete all state for a uid across every assembled stage.
 
-        Executes in pipeline order (fetching → parsing → processing) so that
-        if a later stage fails, the earlier (upstream) data is already cleared
-        and any stale downstream state is harmless.
+        Executes in pipeline order (fetching → parsing → processing). If any
+        stage raises, later stages are skipped and the exception propagates;
+        the partial deletion is left as-is. Re-running ``delete_uid`` after
+        fixing the underlying issue is idempotent and will clear whatever
+        remains.
         """
         if self._parsing is None:
             raise RuntimeError("parsing command was not assembled")

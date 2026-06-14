@@ -3,7 +3,8 @@
 # After the processing-shrink refactor:
 #   - Transform pipeline removed entirely.
 #   - Audio pipeline reads from FetchingQuery (video_detail raw items).
-#   - get_video_full / list_all_videos read metadata from ParsingQuery.
+#   - get_video_full / list_all_videos live on BiliQuery (cross-stage),
+#     reading metadata from ParsingQuery + transcription from ProcessingQuery.
 #
 # Test fixtures:
 #   fetching_stack — FetchingDataStore + Query (for audio pipeline)
@@ -16,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
+from bili_unit._env import BiliSettings
 from bili_unit.fetching import EndpointStatus, TaskStatus
 from bili_unit.fetching.data import DataStore as FetchingDataStore
 from bili_unit.fetching.error import ErrorStore as FetchingErrorStore
@@ -40,7 +42,6 @@ from bili_unit.processing import (
 )
 from bili_unit.processing.command import ProcessingCommand
 from bili_unit.processing.data import ProcessingDataStore
-from bili_unit.processing.env import ProcessingEnv
 from bili_unit.processing.error import ProcessingErrorStore
 from bili_unit.processing.keys import _proc_key
 from bili_unit.processing.query import ProcessingQuery
@@ -48,9 +49,9 @@ from bili_unit.processing.runner import ProcessingRunner
 from bili_unit.processing.runner._pipeline_executor import WorkItem
 
 
-def _make_settings(tmp_path, max_retries=3, retry_delays="30,60,120") -> ProcessingEnv:
+def _make_settings(tmp_path, max_retries=3, retry_delays="30,60,120") -> BiliSettings:
     """Fast settings: tiny worker pool, deterministic queue size."""
-    return ProcessingEnv(
+    return BiliSettings(
         bili_processing_data_dir=str(tmp_path / "proc-data"),
         bili_processing_temp_dir=str(tmp_path / "proc-temp"),
         bili_processing_error_dir=str(tmp_path / "proc-error"),
@@ -127,7 +128,7 @@ async def proc_stack(tmp_path, fetching_stack, parsing_stack):
         fetching_query=fqry, settings=s,
         credential_provider=AsyncMock(return_value=None),
     )
-    qry = ProcessingQuery(data=pd, error=pe, parsing_query=pqry)
+    qry = ProcessingQuery(data=pd, error=pe)
 
     with patch.object(
         ProcessingRunner, "_process_audio_one",
@@ -218,8 +219,11 @@ async def _seed_parsing_video_details(
 @pytest.mark.asyncio
 async def test_processing_video_full_view(proc_stack, fetching_stack, parsing_stack):
     """get_video_full returns metadata from parsing + transcription from audio."""
+    from bili_unit.query import BiliQuery
+
     cmd, qry, _pd, _pe, fd = proc_stack
-    pd_parse, _pq = parsing_stack
+    pd_parse, pq = parsing_stack
+    _fd, _fe, fqry = fetching_stack
     uid = 700
     bvids = ["BVfull"]
     # Seed fetching (for audio pipeline) and parsing (for metadata).
@@ -229,16 +233,17 @@ async def test_processing_video_full_view(proc_stack, fetching_stack, parsing_st
     # Run audio pipeline so transcription record exists.
     await cmd.process_uid(uid)
 
-    full = await qry.get_video_full(uid, "BVfull")
+    bili_qry = BiliQuery(fqry, parsing=pq, processing=qry)
+
+    full = await bili_qry.get_video_full(uid, "BVfull")
     assert full is not None
     assert full.metadata is not None
-    # metadata.result is the parsing dict itself
-    assert full.metadata.result["title"] == "title-BVfull"
-    assert full.metadata.pipeline == "parsing"
+    # metadata is the parsing dict directly (not a virtual ProcessingItemDTO).
+    assert full.metadata["title"] == "title-BVfull"
     assert full.transcription is not None
     assert full.transcription.status == ProcessingItemStatus.SUCCESS
 
-    summaries = await qry.list_all_videos(uid)
+    summaries = await bili_qry.list_all_videos(uid)
     assert len(summaries) == 1
     assert summaries[0].bvid == "BVfull"
     assert summaries[0].has_transcription is True

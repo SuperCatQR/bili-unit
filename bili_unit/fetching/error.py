@@ -18,7 +18,7 @@ import logging
 from typing import Any
 
 from .._storage import JsonErrorStore, normalise_retryable
-from . import DataError, ErrorDTO
+from . import DataError, FetchingErrorDTO
 
 logger = logging.getLogger("bili.fetching.error")
 
@@ -31,20 +31,20 @@ class ErrorStore(JsonErrorStore):
     def __init__(self, path) -> None:
         super().__init__(path, decode_error_cls=DataError)
 
-    async def list_errors(self, uid: int | None = None) -> list[ErrorDTO]:
+    async def list_errors(self, uid: int | None = None) -> list[FetchingErrorDTO]:
         """Return errors, optionally filtered by uid."""
         records = await self.list_records(uid=uid)
         return self._to_dtos(records)
 
-    async def list_by_uid(self, uid: int) -> list[ErrorDTO]:
+    async def list_by_uid(self, uid: int) -> list[FetchingErrorDTO]:
         return await self.list_errors(uid=uid)
 
     # -- helpers -----------------------------------------------------------
 
     @staticmethod
-    def _to_dtos(records: list[dict[str, Any]]) -> list[ErrorDTO]:
+    def _to_dtos(records: list[dict[str, Any]]) -> list[FetchingErrorDTO]:
         return [
-            ErrorDTO(
+            FetchingErrorDTO(
                 id=r["id"],
                 uid=r.get("uid"),
                 endpoint=r.get("endpoint"),

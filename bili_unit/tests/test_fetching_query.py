@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from bili_unit._env import BiliSettings
 from bili_unit.fetching import (
     EndpointStatus,
     Http412Error,
@@ -22,7 +23,7 @@ from .conftest import _fake_page
 async def test_query_no_store_key_leak(stores, rl_ctl, query: Query):
     """Query must return DTOs, never expose store keys."""
     ds, es = stores
-    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(return_value=_fake_page(30, {"ok": True})))
+    cmd = Command(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(return_value=_fake_page(30, {"ok": True})))
     await cmd.fetch_uid(30, endpoints=["user_info"])
 
     task = await query.get_task(30)
@@ -45,7 +46,7 @@ async def test_query_available_only_on_success(stores, rl_ctl, query: Query):
     async def fake_fetch(uid, spec, credential, request_params, **kw):
         raise Http412Error("412")
 
-    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch))
+    cmd = Command(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch))
     with patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         await cmd.fetch_uid(40, endpoints=["user_info"])
 

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from .._storage import DecodeError as _DecodeError
+
 # ---------------------------------------------------------------------------
 # Task / Endpoint status enums (cf. fetching_engineering.md §12)
 # ---------------------------------------------------------------------------
@@ -67,7 +69,7 @@ class ResourceUnavailableError(FetchingError):
     """
 
 
-class DataError(FetchingError):
+class DataError(_DecodeError, FetchingError):
     """Storage / serialisation failure."""
 
 
@@ -84,7 +86,7 @@ class EndpointDTO:
     raw_payload: dict[str, Any] | None = None
     fetched_at: int | None = None
     progress: dict[str, Any] | None = None
-    errors: list["ErrorDTO"] = field(default_factory=list)
+    errors: list["FetchingErrorDTO"] = field(default_factory=list)
 
 
 @dataclass
@@ -97,7 +99,7 @@ class TaskDTO:
 
 
 @dataclass
-class ErrorDTO:
+class FetchingErrorDTO:
     id: int
     uid: int | None
     endpoint: str | None
@@ -140,10 +142,10 @@ async def assemble(settings=None) -> tuple:
     Caller is responsible for closing stores via ``await data.close()`` /
     ``await error.close()`` when done.
     """
+    from .._env import get_settings
     from ._bilibili_adapter import init_http_backend
     from .command import Command
     from .data import DataStore
-    from .env import get_settings
     from .error import ErrorStore
     from .query import Query
     from .rate_limit import RateLimitController
@@ -163,6 +165,6 @@ async def assemble(settings=None) -> tuple:
         recovery_cooldown=s.bili_fetching_recovery_cooldown,
     )
     stale_ms = int(s.bili_fetching_stale_running_threshold_seconds * 1000)
-    cmd = Command(data, error, rl, stale_running_threshold_ms=stale_ms)
+    cmd = Command(data, error, rl, s, stale_running_threshold_ms=stale_ms)
     qry = Query(data, error)
     return cmd, qry, data, error

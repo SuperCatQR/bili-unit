@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import logging
 import shutil
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..._types import CredentialProvider
 from ...fetching import EndpointStatus
 from .. import (
     ProcessingItemStatus,
@@ -30,8 +30,6 @@ from ._pipeline_executor import (
 )
 
 if TYPE_CHECKING:
-    from bilibili_api import Credential
-
     from ..._env import BiliSettings
     from ..audio._asr_backend import ASRBackend
     from ..audio._asr_cache import ASRCacheStore
@@ -39,7 +37,9 @@ if TYPE_CHECKING:
 # Boundaries (docs/structure/bili.md §8): processing runner must not import
 # fetching.auth directly.  The caller (assemble / ProcessingCommand) injects
 # a provider callable so this mixin stays decoupled from the fetching stage.
-CredentialProvider = Callable[[], Awaitable["Credential | None"]]
+# CredentialProvider itself lives in bili_unit._types — re-exported through
+# this module's namespace for backwards compatibility (existing SDK users
+# import it from bili_unit.processing.runner._audio).
 
 logger = logging.getLogger("bili.processing.runner")
 
@@ -61,7 +61,7 @@ class _AudioMixin:
     _error: Any
     _fetch_qry: Any
     _settings: BiliSettings
-    _temp_dir: str
+    _temp_dir: Path
     _asr_backend: ASRBackend | None
     _credential_provider: CredentialProvider | None
     _downloader_factory: Any
@@ -307,7 +307,7 @@ class _AudioMixin:
         bvid = item.item_id
         pages = item.item_data.get("pages", [])
 
-        temp_base = Path(self._temp_dir) / str(uid) / "audio" / bvid
+        temp_base = self._temp_dir / str(uid) / "audio" / bvid
         temp_base.mkdir(parents=True, exist_ok=True)
 
         asr_language = self._settings.bili_processing_asr_language

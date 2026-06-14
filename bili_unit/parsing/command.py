@@ -133,11 +133,7 @@ class ParsingCommand:
 
     async def delete_uid(self, uid: int) -> dict[str, int]:
         """Delete all parsing state for a uid. Returns counts."""
-        rows = await self._data.list_prefix(f"uid:{uid}:")
-        data_count = 0
-        for key, _ in rows:
-            await self._data.delete(key)
-            data_count += 1
+        data_count = await self._data.delete_by_uid_prefix(uid)
         # Remove downloaded images directory
         images_dir = self._data.base / str(uid) / "images"
         images_existed = images_dir.exists()

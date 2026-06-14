@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 import pytest_asyncio
 
+from bili_unit._env import BiliSettings
 from bili_unit.command import BiliCommand
 from bili_unit.fetching.command import Command as FetchingCommand
 from bili_unit.fetching.data import DataStore as FetchingDataStore
@@ -24,15 +25,14 @@ from bili_unit.parsing.command import ParsingCommand
 from bili_unit.parsing.data import ParsingDataStore
 from bili_unit.processing.command import ProcessingCommand
 from bili_unit.processing.data import ProcessingDataStore
-from bili_unit.processing.env import ProcessingEnv
 from bili_unit.processing.error import ProcessingErrorStore
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
-def _make_processing_settings(tmp_path: Path) -> ProcessingEnv:
-    return ProcessingEnv(
+def _make_processing_settings(tmp_path: Path) -> BiliSettings:
+    return BiliSettings(
         bili_processing_data_dir=str(tmp_path / "proc-data"),
         bili_processing_temp_dir=str(tmp_path / "proc-temp"),
         bili_processing_error_dir=str(tmp_path / "proc-error"),
@@ -53,7 +53,7 @@ async def fetch_cmd(tmp_path: Path):
     await ds.open()
     await es.open()
     rl = RateLimitController(global_qps=10.0, endpoint_qps=10.0, pause_seconds=0)
-    cmd = FetchingCommand(ds, es, rl)
+    cmd = FetchingCommand(ds, es, rl, BiliSettings())
     yield cmd
     await ds.close()
     await es.close()
@@ -253,7 +253,7 @@ async def bili_cmd(tmp_path: Path):
     await f_ds.open()
     await f_es.open()
     rl = RateLimitController(global_qps=10.0, endpoint_qps=10.0, pause_seconds=0)
-    fetch_cmd = FetchingCommand(f_ds, f_es, rl)
+    fetch_cmd = FetchingCommand(f_ds, f_es, rl, BiliSettings())
 
     # Parsing
     p_ds = ParsingDataStore(tmp_path / "p-data")

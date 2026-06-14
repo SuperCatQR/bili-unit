@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from bili_unit._env import BiliSettings
 from bili_unit.fetching import (
     EndpointStatus,
     Http412Error,
@@ -244,7 +245,7 @@ async def test_video_detail_basic_fanout(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             200, endpoints=["video_detail"], mode="incremental",
         )
 
@@ -274,7 +275,7 @@ async def test_video_detail_source_not_available(stores, rl_ctl):
     # Seed task with videos SUCCESS but NO actual fetch data
     await _seed_task(ds, 201, {"videos": EndpointStatus.SUCCESS, "video_detail": EndpointStatus.PENDING})
 
-    result = await Runner(ds, es, rl_ctl).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
         201, endpoints=["video_detail"], mode="incremental",
     )
 
@@ -312,7 +313,7 @@ async def test_video_detail_incremental_skip_stored(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             202, endpoints=["video_detail"], mode="incremental",
         )
 
@@ -361,7 +362,7 @@ async def test_video_detail_full_mode_refetches_all(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_or_resume(
             203, endpoints=["video_detail"], mode="full",
         )
 
@@ -391,7 +392,7 @@ async def test_video_detail_partial_item_status(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             204, endpoints=["video_detail"], mode="incremental",
         )
 
@@ -410,7 +411,7 @@ async def test_video_detail_empty_items(stores, rl_ctl):
     await _seed_videos_data(ds, 205, [])
     await _seed_task(ds, 205, {"videos": EndpointStatus.SUCCESS, "video_detail": EndpointStatus.PENDING})
 
-    result = await Runner(ds, es, rl_ctl).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
         205, endpoints=["video_detail"], mode="incremental",
     )
 
@@ -449,7 +450,7 @@ async def test_video_detail_two_phase_with_videos(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_task(
+        result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_task(
             206, endpoints=["videos", "video_detail"], mode="incremental",
         )
 
@@ -556,7 +557,7 @@ async def test_video_detail_progress_tracking(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        await Runner(ds, es, rl_ctl).run_or_resume(
+        await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             210, endpoints=["video_detail"], mode="incremental",
         )
 
@@ -602,7 +603,7 @@ async def test_video_detail_items_processed_concurrently(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             220, endpoints=["video_detail"], mode="incremental",
         )
 
@@ -629,7 +630,7 @@ async def test_video_detail_concurrent_partial_failure(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             221, endpoints=["video_detail"], mode="incremental",
         )
 
@@ -673,7 +674,7 @@ async def test_refresh_mode_skips_fresh_items(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             230, endpoints=["video_detail"], mode="refresh",
         )
 
@@ -719,7 +720,7 @@ async def test_refresh_mode_refetches_stale_items(stores, rl_ctl):
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             231, endpoints=["video_detail"], mode="refresh",
         )
 
@@ -752,7 +753,7 @@ async def test_refresh_mode_behaves_like_incremental_for_new_items(stores, rl_ct
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             232, endpoints=["video_detail"], mode="refresh",
         )
 
@@ -781,7 +782,7 @@ async def test_query_endpoint_shows_video_detail_status_after_fanout(stores, rl_
         get_endpoint("video_detail"), "callable",
         new=AsyncMock(side_effect=fake_fetch_item),
     ):
-        result = await Runner(ds, es, rl_ctl).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings()).run_or_resume(
             uid, endpoints=["video_detail"], mode="incremental",
         )
 

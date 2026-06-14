@@ -13,14 +13,16 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import version as _pkg_version
 
+from ._aggregates import VideoFullDTO, VideoSummaryDTO  # noqa: F401
 from ._env import BiliSettings, get_settings, reload_settings  # noqa: F401
+from ._types import CredentialProvider  # noqa: F401
 from .command import BiliCommand
 from .fetching import (  # noqa: F401 – public re-exports
     CommandResult,
     EndpointDTO,
     EndpointStatus,
-    ErrorDTO,
     FetchingError,
+    FetchingErrorDTO,
     TaskDTO,
     TaskResult,
     TaskStatus,
@@ -38,16 +40,14 @@ from .processing import (  # noqa: F401 – public re-exports
     AudioError,
     ProcessingCommandResult,
     ProcessingError,
+    ProcessingErrorDTO,
     ProcessingItemDTO,
     ProcessingItemStatus,
     ProcessingPipelineDTO,
     ProcessingPipelineStatus,
     ProcessingTaskDTO,
     ProcessingTaskStatus,
-    VideoFullDTO,
-    VideoSummaryDTO,
 )
-from .processing.runner._audio import CredentialProvider  # noqa: F401
 from .query import BiliQuery
 
 __version__ = _pkg_version("bili-unit")
@@ -80,52 +80,21 @@ async def assemble(
     all stage resources in the correct order (processing → parsing → fetching).
     """
     from .fetching import assemble as _fetching_assemble
-    from .fetching.auth import get_credential
-    from .parsing.command import ParsingCommand
-    from .parsing.data import ParsingDataStore
-    from .parsing.query import ParsingQuery
-    from .processing.audio._asr_backend import create_asr_backend
-    from .processing.command import ProcessingCommand
-    from .processing.data import ProcessingDataStore
-    from .processing.error import ProcessingErrorStore
-    from .processing.query import ProcessingQuery
+    from .parsing import assemble as _parsing_assemble
+    from .processing import assemble as _processing_assemble
 
     if settings is None:
         settings = get_settings()
-    if credential_provider is None:
-        credential_provider = get_credential
 
-    fetch_cmd, fetch_qry, fetch_data, fetch_error = await _fetching_assemble(settings)
-
-    # --- parsing layer ---
-    parsing_data = ParsingDataStore(settings.bili_parsing_data_dir)
-    await parsing_data.open()
-
-    parse_cmd = ParsingCommand(data=parsing_data, fetching_query=fetch_qry)
-    parse_qry = ParsingQuery(data=parsing_data)
-
-    # --- processing layer ---
-    proc_data = ProcessingDataStore(settings.bili_processing_data_dir)
-    proc_error = ProcessingErrorStore(settings.bili_processing_error_dir)
-    await proc_data.open()
-    await proc_error.open()
-
-    backend_name = asr_backend_override or settings.bili_processing_asr_backend
-    asr_backend = create_asr_backend(backend_name, settings=settings)
-
-    proc_cmd = ProcessingCommand(
-        data=proc_data,
-        error=proc_error,
-        temp_dir=settings.bili_processing_temp_dir,
-        fetching_query=fetch_qry,
-        settings=settings,
-        asr_backend=asr_backend,
-        credential_provider=credential_provider,
+    fetch_cmd, fetch_qry, _fetch_data, _fetch_error = await _fetching_assemble(settings)
+    parse_cmd, parse_qry, _parse_data = await _parsing_assemble(
+        settings, fetching_query=fetch_qry,
     )
-    proc_qry = ProcessingQuery(
-        data=proc_data,
-        error=proc_error,
-        parsing_query=parse_qry,
+    proc_cmd, proc_qry, _proc_data, _proc_error = await _processing_assemble(
+        settings,
+        fetching_query=fetch_qry,
+        asr_backend_override=asr_backend_override,
+        credential_provider=credential_provider,
     )
 
     cmd = BiliCommand(fetch_cmd, parsing=parse_cmd, processing=proc_cmd)
@@ -179,8 +148,8 @@ __all__ = [
     "CredentialProvider",
     "EndpointDTO",
     "EndpointStatus",
-    "ErrorDTO",
     "FetchingError",
+    "FetchingErrorDTO",
     "ParsingCommandResult",
     "ParsingError",
     "ParsingImageDTO",
@@ -190,6 +159,7 @@ __all__ = [
     "ParsingTaskStatus",
     "ProcessingCommandResult",
     "ProcessingError",
+    "ProcessingErrorDTO",
     "ProcessingItemDTO",
     "ProcessingItemStatus",
     "ProcessingPipelineDTO",

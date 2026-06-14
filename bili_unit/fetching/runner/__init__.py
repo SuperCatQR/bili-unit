@@ -16,6 +16,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from ..._env import BiliSettings
 from ..._logging import Progress
 from .. import (
     AuthError,
@@ -54,12 +55,14 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         data: DataStore,
         error: ErrorStore,
         rate_limit: RateLimitController,
+        settings: BiliSettings,
         stale_running_threshold_ms: int = 15 * 60 * 1000,
         fetch_fn: FetchEndpointFn | None = None,
     ) -> None:
         self._data = data
         self._error = error
         self._rl = rate_limit
+        self._settings = settings
         self._stale_threshold_ms = stale_running_threshold_ms
         self._fetch_fn = fetch_fn if fetch_fn is not None else _real_fetch_endpoint
 

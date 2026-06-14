@@ -14,6 +14,17 @@ import time
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ._kv import StorageError
+
+
+class DecodeError(StorageError):
+    """JSON decode / schema mismatch in a KV store value.
+
+    Stages can subclass this in their own DataError when they want a
+    stage-specific exception family for backwards compatibility, or
+    pass DecodeError directly as KvDataStore(decode_error_cls=...).
+    """
+
 
 def normalise_retryable(value: Any) -> bool | None:
     """Coerce a stored ``retryable`` field to tri-state bool.

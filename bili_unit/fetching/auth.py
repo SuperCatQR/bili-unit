@@ -6,8 +6,8 @@ from pathlib import Path
 
 from bilibili_api import Credential, login_v2
 
+from .._env import get_settings, reload_settings
 from . import AuthError
-from .env import get_settings, reload_settings
 
 logger = logging.getLogger("bili.fetching.auth")
 

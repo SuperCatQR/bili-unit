@@ -7,6 +7,7 @@ import pytest
 import pytest_asyncio
 from bilibili_api import Credential
 
+from bili_unit._env import BiliSettings
 from bili_unit.fetching._bilibili_adapter import FetchPageResult
 from bili_unit.fetching.command import Command
 from bili_unit.fetching.data import DataStore
@@ -53,16 +54,21 @@ async def rl_ctl():
     return RateLimitController(global_qps=10.0, endpoint_qps=10.0, pause_seconds=0)
 
 
-@pytest_asyncio.fixture
-async def runner(stores, rl_ctl):
-    ds, es = stores
-    return Runner(ds, es, rl_ctl)
+@pytest.fixture
+def settings():
+    return BiliSettings()
 
 
 @pytest_asyncio.fixture
-async def command(stores, rl_ctl):
+async def runner(stores, rl_ctl, settings):
     ds, es = stores
-    return Command(ds, es, rl_ctl)
+    return Runner(ds, es, rl_ctl, settings)
+
+
+@pytest_asyncio.fixture
+async def command(stores, rl_ctl, settings):
+    ds, es = stores
+    return Command(ds, es, rl_ctl, settings)
 
 
 @pytest_asyncio.fixture

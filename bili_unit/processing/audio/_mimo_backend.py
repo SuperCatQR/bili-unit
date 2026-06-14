@@ -3,7 +3,7 @@
 #   POST {BASE_URL}/chat/completions with model=mimo-v2.5-asr.
 #   Uses OpenAI-compatible ``input_audio`` content part with base64 data URI.
 #
-# Profiles (resolved via ProcessingEnv.bili_processing_asr_profile):
+# Profiles (resolved via BiliSettings.bili_processing_asr_profile):
 #   token_plan_cn   https://token-plan-cn.xiaomimimo.com/v1   (Token Plan, tp-* keys)
 #   token_plan_sgp  https://token-plan-sgp.xiaomimimo.com/v1
 #   token_plan_ams  https://token-plan-ams.xiaomimimo.com/v1
@@ -27,7 +27,7 @@ from .. import ASRAPIError, ASRConfigError, ASRConnectionError
 from ._asr_backend import ASRResult
 
 if TYPE_CHECKING:
-    from ..env import ProcessingEnv
+    from ..._env import BiliSettings
 
 logger = logging.getLogger("bili.processing.audio.mimo")
 
@@ -225,7 +225,7 @@ class MimoASRBackend:
             self._session = None
 
 
-def create_mimo_backend(settings: ProcessingEnv) -> MimoASRBackend:
+def create_mimo_backend(settings: BiliSettings) -> MimoASRBackend:
     """Factory: build a :class:`MimoASRBackend` from env settings.
 
     Resolves the base URL from ``bili_processing_asr_profile`` (or from

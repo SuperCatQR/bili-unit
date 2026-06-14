@@ -18,12 +18,13 @@
 # Both let stages inject their own ``DataError`` subclass for decode failures
 # so the public exception surface of each stage stays unchanged.
 
-from ._errors import JsonErrorStore, normalise_retryable
+from ._errors import DecodeError, JsonErrorStore, normalise_retryable
 from ._kv import JsonKVStore, KeyMapper, StorageError
 from ._schema import KvSchema, PathShape, SchemaKeyMapper
 from ._store import KvDataStore
 
 __all__ = [
+    "DecodeError",
     "JsonErrorStore",
     "JsonKVStore",
     "KeyMapper",

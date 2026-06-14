@@ -3,9 +3,9 @@
 
 import pytest
 
+from bili_unit._env import reload_settings
 from bili_unit.fetching import AuthError
 from bili_unit.fetching.auth import get_credential
-from bili_unit.fetching.env import reload_settings
 
 
 @pytest.fixture(autouse=True)

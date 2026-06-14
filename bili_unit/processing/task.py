@@ -11,7 +11,7 @@ from . import (
 
 @dataclass
 class PipelineEntry:
-    """One pipeline (apeline (audio, and future subtitle/OCR) inside a processing task value.udio, and future subtitle/OCR) inside a processing task value.
+    """One pipeline (audio, and future subtitle/OCR) inside a processing task value.
 
     items: per-item-type rollup, e.g.
         {"transcription": {"total": 77, "completed": 77, "failed": 0, "skipped": 0}}
@@ -49,12 +49,12 @@ class ProcessingTaskValue:
         pipelines: dict[str, PipelineEntry] = {}
         for name, entry in d.get("pipelines", {}).items():
             pipelines[name] = PipelineEntry(
-                status=ProcessingPipelineStatus(entry["status"]),
+                status=ProcessingPipelineStatus(entry.get("status", "PENDING")),
                 items=dict(entry.get("items", {})),
             )
         return cls(
             uid=d["uid"],
-            status=ProcessingTaskStatus(d["status"]),
+            status=ProcessingTaskStatus(d.get("status", "PENDING")),
             pipelines=pipelines,
             created_at=d.get("created_at"),
             updated_at=d.get("updated_at"),

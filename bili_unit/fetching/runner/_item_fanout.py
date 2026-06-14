@@ -23,11 +23,10 @@ from .. import (
     ResourceUnavailableError,
 )
 from .._endpoint_spec import EndpointSpec
-from ..env import get_settings
 from ..keys import _fetch_key, _item_fetch_key, _progress_key, _task_key
 
 if TYPE_CHECKING:
-    pass
+    from ..._env import BiliSettings
 
 logger = logging.getLogger("bili.fetching.runner")
 
@@ -64,6 +63,7 @@ class _ItemFanoutMixin:
     _data: Any
     _error: Any
     _rl: Any
+    _settings: BiliSettings
 
     async def _update_endpoint_status(self, uid, ep_name, status, **kw) -> None: ...  # pragma: no cover
 
@@ -136,7 +136,7 @@ class _ItemFanoutMixin:
         completed_items = 0
         failed_items = 0
 
-        settings = get_settings()
+        settings = self._settings
         max_concurrent = max(settings.bili_fetching_item_concurrency, 1)
         semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -287,11 +287,11 @@ class _ItemFanoutMixin:
                 if fetched_at is not None:
                     now_ms = int(time.time() * 1000)
                     age_ms = now_ms - fetched_at
-                    threshold_ms = get_settings().bili_fetching_refresh_after_days * 86400 * 1000
+                    threshold_ms = self._settings.bili_fetching_refresh_after_days * 86400 * 1000
                     if age_ms < threshold_ms:
                         return _ItemFanoutResult.SUCCESS  # still fresh, skip
 
-        settings = get_settings()
+        settings = self._settings
         max_retries = settings.bili_fetching_max_retries
         retry_delays = settings.get_fetching_retry_delays()
         retry_state = {"count": 0}

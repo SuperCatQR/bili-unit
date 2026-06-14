@@ -232,7 +232,7 @@ async def _handle_video_full(args: argparse.Namespace) -> None:
     from bili_unit import session
 
     async with session() as (cmd, qry):
-        full = await qry.processing.get_video_full(args.uid, args.bvid)
+        full = await qry.get_video_full(args.uid, args.bvid)
         if full is None:
             print(f"uid={args.uid} bvid={args.bvid}: 未找到视频")
             return
@@ -240,11 +240,10 @@ async def _handle_video_full(args: argparse.Namespace) -> None:
         if meta is None:
             print(f"uid={args.uid} bvid={args.bvid}: 元数据未处理")
         else:
-            r = meta.result or {}
-            print(f"uid={args.uid} bvid={args.bvid}  status={meta.status.value}")
-            print(f"  title: {r.get('title')}")
-            print(f"  duration: {r.get('duration')}s")
-            print(f"  tags: {', '.join(r.get('tags', []))}")
+            print(f"uid={args.uid} bvid={args.bvid}")
+            print(f"  title: {meta.get('title')}")
+            print(f"  duration: {meta.get('duration')}s")
+            print(f"  tags: {', '.join(meta.get('tags', []))}")
         if full.transcription is None:
             print("  transcription: (none)")
         else:

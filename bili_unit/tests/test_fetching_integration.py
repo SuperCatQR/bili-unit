@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from bili_unit._env import BiliSettings
 from bili_unit.fetching import TaskStatus
 from bili_unit.fetching._bilibili_adapter import FetchPageResult
 from bili_unit.fetching.command import Command
@@ -24,7 +25,7 @@ async def test_integration_single_endpoint_success(
     ds, es = stores
     user_info_data = {"code": 0, "data": {"mid": 123, "name": "test"}}
 
-    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(return_value=_fake_page(123, user_info_data)))
+    cmd = Command(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(return_value=_fake_page(123, user_info_data)))
     result = await cmd.fetch_uid(123, endpoints=["user_info"])
     assert result.status == TaskStatus.SUCCESS
 
@@ -59,7 +60,7 @@ async def test_integration_multi_endpoint(
             return FetchPageResult(uid=uid, endpoint="videos", raw_payload={"list": []}, is_last_page=True)
         raise RuntimeError(f"unexpected {spec.name}")
 
-    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch))
+    cmd = Command(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch))
     result = await cmd.fetch_uid(999, endpoints=["user_info", "videos"])
     assert result.status == TaskStatus.SUCCESS
 
@@ -91,7 +92,7 @@ async def test_integration_delete_uid(
 
     user_info_data = {"code": 0, "data": {"mid": 555, "name": "delme"}}
 
-    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(return_value=_fake_page(555, user_info_data)))
+    cmd = Command(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(return_value=_fake_page(555, user_info_data)))
     result = await cmd.fetch_uid(555, endpoints=["user_info"])
     assert result.status == TaskStatus.SUCCESS
 
