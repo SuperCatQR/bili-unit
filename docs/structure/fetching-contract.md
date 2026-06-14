@@ -1,7 +1,19 @@
-## fetching 数据结构
+# fetching 数据契约
 
 > 本文描述 fetching 层抓取到的数据及其存储结构。
-> 下游（processing 层）通过 `fetching.query` 只读消费这些数据。
+> 下游（parsing / processing 层）通过 `fetching.query` 只读消费这些数据。
+
+## 目录
+
+1. [存储信封](#1-存储信封)
+2. [raw_payload 两种存储形态](#2-raw_payload-两种存储形态)
+3. [uid-level 端点数据](#3-uid-level-端点数据已文档化-22-个) — 已文档化 22 个 / 共 34 个
+4. [item-level 端点数据](#4-item-level-端点数据已文档化-6-个) — 已文档化 6 个 / 共 30 个
+5. [端点与 item 的派生关系](#5-端点与-item-的派生关系)
+6. [已知数据特征](#6-已知数据特征)
+7. [未文档化端点](#7-未文档化端点)
+
+> **覆盖范围**：本文已为 28 / 64 个注册端点写下了 raw_payload schema。已文档化的端点是 parsing 层目前消费的全部端点，加上一批历史已实测的 T1/T2 扩展端点。剩余 36 个端点有代码注册但尚未在本文录入 schema —— 它们的真实响应需要拿目标 uid 真跑一遍 fetch 后才能补全，参见 §7。
 
 ---
 
@@ -63,7 +75,7 @@
 
 ---
 
-### 3. uid-level 端点数据（22 个）
+### 3. uid-level 端点数据（已文档化 22 个）
 
 以下每个端点的 `raw_payload` 字段均来源于 bilibili-api-python 的 API 返回值。fetching 对非分页端点原样存储全部字段，对分页端点提取 item ID 和分页总数用于增量检测。
 
@@ -854,7 +866,7 @@ raw_payload 是 dict：
 
 ---
 
-### 4. item-level 端点数据（6 个）
+### 4. item-level 端点数据（已文档化 6 个）
 
 item-level 端点从父端点的 raw_payload 中派生 item ID 列表，然后逐个抓取。每个 item 独立存储。
 
@@ -1261,3 +1273,36 @@ processing 层通过这些父子关系，从列表端点获取 item ID 清单，
 - `up_stat.archive` 和 `up_stat.article` 在不同 API 版本中可能是 `{view: int}` 嵌套或直接 `int`。
 - `overview_stat` 的字段名在不同 API 版本中有 `video` vs `video_count` 等差异。
 - 非分页端点的 raw_payload 是 B 站 API 原样存储，包含本文未列出的额外字段（B 站随时可能新增字段）。fetching 不做字段筛选。
+
+---
+
+### 7. 未文档化端点
+
+下列 36 个端点已在 `bili_unit/fetching/_endpoint_catalog.py` 注册，可被 `fetch` 命令调用，但 raw_payload schema 未在本文录入。它们大多是 video 子接口的 fan-out（弹幕、字幕、播放数据等），少量是后期补充的关系类端点。要补完 schema 需要拿一个公开账号 uid 真跑一遍 `fetch <uid> -e <endpoint>`，把落盘的 `raw_payload` 摘录到本文对应小节。
+
+**uid-level（12 个）**
+
+```text
+access_id channels dynamics_legacy followers followings live_info
+media_list reservation same_followers top_followers uplikeimg user_relation
+```
+
+**item-level / video 子接口（23 个）**
+
+```text
+video_ai_conclusion video_chargers video_danmaku_snapshot video_danmaku_view
+video_danmaku_xml video_danmakus video_detail_full video_download_url
+video_is_episode video_is_forbid_note video_online video_pages video_pay_coins
+video_pbp video_player_info video_private_notes video_public_notes
+video_related video_relation video_snapshot video_special_dms video_subtitle
+video_up_mid
+```
+
+**item-level / 其他（1 个）**
+
+```text
+upower_qa_detail
+```
+
+> 注：`video_subtitle` 的 raw_payload 在某些视频上为 `null`（B 站未提供官方字幕），补 schema 时需要标注 nullable 形态。
+
