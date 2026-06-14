@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .._aggregates import VideoFullDTO, VideoSummaryDTO
 from ..fetching.query import Query as _FetchingQuery
 
 if TYPE_CHECKING:
@@ -49,6 +50,52 @@ class BiliQuery:
         if self._processing is None:
             raise RuntimeError("processing query was not assembled")
         return self._processing
+
+    # -- cross-stage aggregate views --------------------------------------
+
+    async def get_video_full(self, uid: int, bvid: str) -> VideoFullDTO | None:
+        """Combine parsing metadata + audio transcription for one bvid.
+
+        Returns None when parsing has no record for this bvid (the source
+        of truth for "does this video exist for this uid").
+        """
+        if self._parsing is None:
+            raise RuntimeError("parsing query was not assembled")
+        if self._processing is None:
+            raise RuntimeError("processing query was not assembled")
+        metadata = await self._parsing.get_video_detail(uid, bvid)
+        if metadata is None:
+            return None
+        transcription = await self._processing.get_item(uid, "audio", bvid)
+        return VideoFullDTO(
+            bvid=bvid, metadata=metadata, transcription=transcription,
+        )
+
+    async def list_all_videos(self, uid: int) -> list[VideoSummaryDTO]:
+        """List all videos with metadata from parsing + transcription status from audio."""
+        if self._parsing is None:
+            raise RuntimeError("parsing query was not assembled")
+        if self._processing is None:
+            raise RuntimeError("processing query was not assembled")
+        from ..processing import ProcessingItemStatus  # local to avoid cycle
+
+        metadata_dicts = await self._parsing.list_video_details(uid)
+        out: list[VideoSummaryDTO] = []
+        for d in metadata_dicts:
+            bvid = d.get("bvid", "")
+            if not bvid:
+                continue
+            item = await self._processing.get_item(uid, "audio", bvid)
+            out.append(VideoSummaryDTO(
+                bvid=bvid,
+                title=d.get("title", ""),
+                has_transcription=(
+                    item is not None
+                    and item.status == ProcessingItemStatus.SUCCESS
+                ),
+                duration=d.get("duration"),
+            ))
+        return out
 
 
 __all__ = ["BiliQuery"]

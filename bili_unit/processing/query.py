@@ -1,14 +1,13 @@
 # query — processing read-only view.
 #
-# ProcessingQuery exposes the read-only DTO surface. get_video_full /
-# list_all_videos read metadata from parsing.query (VideoDetail typed
-# objects) and transcription from the audio pipeline items in the
-# processing store.
+# ProcessingQuery exposes the read-only DTO surface for the audio
+# pipeline's task / item / error records. Cross-stage aggregate views
+# (parsing metadata + audio transcription) live on the unit-level
+# :class:`bili_unit.query.BiliQuery`, not here.
 
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING
 
 from . import (
@@ -18,14 +17,11 @@ from . import (
     ProcessingPipelineDTO,
     ProcessingTaskDTO,
     ProcessingTaskStatus,
-    VideoFullDTO,
-    VideoSummaryDTO,
 )
 from .keys import _proc_key, _task_key
 from .task import ProcessingTaskValue
 
 if TYPE_CHECKING:
-    from ..parsing.protocols import ParsingReadView
     from .data import ProcessingDataStore
     from .error import ProcessingErrorStore
 
@@ -39,11 +35,9 @@ class ProcessingQuery:
         self,
         data: ProcessingDataStore,
         error: ProcessingErrorStore,
-        parsing_query: ParsingReadView | None = None,
     ) -> None:
         self._data = data
         self._error = error
-        self._parse_qry = parsing_query
 
     # -- task / pipeline / item -------------------------------------------
 
@@ -97,50 +91,6 @@ class ProcessingQuery:
         rows = await self._data.list_prefix(prefix)
         return [self._to_item_dto(v) for _, v in rows]
 
-    # -- aggregate views ---------------------------------------------------
-
-    async def get_video_full(self, uid: int, bvid: str) -> VideoFullDTO | None:
-        """Return a VideoFullDTO combining parsing metadata + audio transcription.
-
-        metadata is a virtual ProcessingItemDTO constructed from the parsing
-        VideoDetail dict (pipeline="parsing", status=SUCCESS).  If parsing
-        has no record for this bvid the video is considered absent.
-        """
-        if self._parse_qry is not None:
-            parsing_dict = await self._parse_qry.get_video_detail(uid, bvid)
-        else:
-            parsing_dict = None
-
-        if parsing_dict is None:
-            return None
-
-        metadata = self._parsing_dict_to_item_dto(uid, bvid, parsing_dict)
-        transcription = await self.get_item(uid, "audio", bvid)
-        return VideoFullDTO(bvid=bvid, metadata=metadata, transcription=transcription)
-
-    async def list_all_videos(self, uid: int) -> list[VideoSummaryDTO]:
-        """List all videos with metadata from parsing + transcription status from audio."""
-        if self._parse_qry is not None:
-            parsing_dicts = await self._parse_qry.list_video_details(uid)
-        else:
-            parsing_dicts = []
-
-        out: list[VideoSummaryDTO] = []
-        for d in parsing_dicts:
-            bvid = d.get("bvid", "")
-            if not bvid:
-                continue
-            transcription_dto = await self.get_item(uid, "audio", bvid)
-            out.append(VideoSummaryDTO(
-                bvid=bvid,
-                title=d.get("title", ""),
-                status=ProcessingItemStatus.SUCCESS,
-                has_transcription=transcription_dto is not None
-                    and transcription_dto.status == ProcessingItemStatus.SUCCESS,
-                duration=d.get("duration"),
-            ))
-        return out
-
     # -- errors -----------------------------------------------------------
 
     async def list_errors(self, uid: int | None = None) -> list[ProcessingErrorDTO]:
@@ -162,26 +112,5 @@ class ProcessingQuery:
             status=status,
             result=d.get("result"),
             processed_at=d.get("processed_at"),
-            errors=[],
-        )
-
-    @staticmethod
-    def _parsing_dict_to_item_dto(uid: int, bvid: str, d: dict) -> ProcessingItemDTO:
-        """Construct a virtual ProcessingItemDTO from a parsing VideoDetail dict.
-
-        The caller (e.g. get_video_full) needs a ProcessingItemDTO for metadata
-        to keep the VideoFullDTO contract stable.  We synthesise one with
-        pipeline="parsing" and status=SUCCESS so existing callers can access
-        result fields (title, duration, tags) without code changes.
-        """
-        processed_at = d.get("_updated_at") or int(time.time() * 1000)
-        return ProcessingItemDTO(
-            uid=uid,
-            pipeline="parsing",
-            item_type="video_detail",
-            item_id=bvid,
-            status=ProcessingItemStatus.SUCCESS,
-            result=d,
-            processed_at=processed_at,
             errors=[],
         )

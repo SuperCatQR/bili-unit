@@ -135,22 +135,6 @@ class ProcessingTaskDTO:
 
 
 @dataclass
-class VideoFullDTO:
-    bvid: str
-    metadata: ProcessingItemDTO | None = None
-    transcription: ProcessingItemDTO | None = None
-
-
-@dataclass
-class VideoSummaryDTO:
-    bvid: str
-    title: str
-    status: ProcessingItemStatus
-    has_transcription: bool
-    duration: int | None = None
-
-
-@dataclass
 class ProcessingCommandResult:
     uid: int
     status: ProcessingTaskStatus
@@ -175,6 +159,4 @@ __all__ = [
     "ProcessingTaskDTO",
     "ProcessingTaskStatus",
     "QueueError",
-    "VideoFullDTO",
-    "VideoSummaryDTO",
 ]
