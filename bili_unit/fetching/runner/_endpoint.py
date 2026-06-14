@@ -20,12 +20,11 @@ from .. import (
     ResourceUnavailableError,
 )
 from .._endpoint_spec import EndpointSpec
-from ..env import get_settings
 from ..keys import _fetch_key, _progress_key
 from ._item_ids import _extract_item_ids_multi
 
 if TYPE_CHECKING:
-    pass
+    from ..._env import BiliSettings
 
 logger = logging.getLogger("bili.fetching.runner")
 
@@ -58,6 +57,7 @@ class _EndpointMixin:
     _error: Any
     _fetch_fn: Any
     _rl: Any
+    _settings: BiliSettings
 
     async def _load_progress(self, uid: int, endpoint: str) -> dict | None: ...  # pragma: no cover
     async def _update_endpoint_status(self, uid, ep_name, status, **kw) -> None: ...  # pragma: no cover
@@ -110,7 +110,7 @@ class _EndpointMixin:
             if nr:
                 request_params = nr
 
-        settings = get_settings()
+        settings = self._settings
         max_retries = settings.bili_fetching_max_retries
         retry_delays = settings.get_fetching_retry_delays()
 

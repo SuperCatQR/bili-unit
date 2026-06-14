@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from bili_unit._env import BiliSettings
 from bili_unit.fetching import EndpointStatus
 from bili_unit.fetching._bilibili_adapter import (
     FetchPageResult,
@@ -244,7 +245,7 @@ async def test_runner_can_fanout_new_video_endpoint(stores, rl_ctl):
     assert spec is not None
 
     with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_item)):
-        result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_or_resume(
+        result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_or_resume(
             uid, endpoints=["video_subtitle"], mode="incremental",
         )
 

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 import pytest_asyncio
 
+from bili_unit._env import BiliSettings
 from bili_unit.command import BiliCommand
 from bili_unit.fetching.command import Command as FetchingCommand
 from bili_unit.fetching.data import DataStore as FetchingDataStore
@@ -53,7 +54,7 @@ async def fetch_cmd(tmp_path: Path):
     await ds.open()
     await es.open()
     rl = RateLimitController(global_qps=10.0, endpoint_qps=10.0, pause_seconds=0)
-    cmd = FetchingCommand(ds, es, rl)
+    cmd = FetchingCommand(ds, es, rl, BiliSettings())
     yield cmd
     await ds.close()
     await es.close()
@@ -253,7 +254,7 @@ async def bili_cmd(tmp_path: Path):
     await f_ds.open()
     await f_es.open()
     rl = RateLimitController(global_qps=10.0, endpoint_qps=10.0, pause_seconds=0)
-    fetch_cmd = FetchingCommand(f_ds, f_es, rl)
+    fetch_cmd = FetchingCommand(f_ds, f_es, rl, BiliSettings())
 
     # Parsing
     p_ds = ParsingDataStore(tmp_path / "p-data")

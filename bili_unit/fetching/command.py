@@ -2,6 +2,7 @@
 
 import logging
 
+from .._env import BiliSettings
 from . import CommandResult
 from .data import DataStore
 from .error import ErrorStore
@@ -23,14 +24,16 @@ class Command:
         data: DataStore,
         error: ErrorStore,
         rate_limit: RateLimitController,
+        settings: BiliSettings,
         stale_running_threshold_ms: int = 15 * 60 * 1000,
         fetch_fn: FetchEndpointFn | None = None,
     ) -> None:
         self._data = data
         self._error = error
         self._rl = rate_limit
+        self._settings = settings
         self._runner = Runner(
-            data, error, rate_limit,
+            data, error, rate_limit, settings,
             stale_running_threshold_ms=stale_running_threshold_ms,
             fetch_fn=fetch_fn,
         )

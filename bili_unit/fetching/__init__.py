@@ -163,6 +163,6 @@ async def assemble(settings=None) -> tuple:
         recovery_cooldown=s.bili_fetching_recovery_cooldown,
     )
     stale_ms = int(s.bili_fetching_stale_running_threshold_seconds * 1000)
-    cmd = Command(data, error, rl, stale_running_threshold_ms=stale_ms)
+    cmd = Command(data, error, rl, s, stale_running_threshold_ms=stale_ms)
     qry = Query(data, error)
     return cmd, qry, data, error

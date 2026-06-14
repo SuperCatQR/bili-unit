@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from bili_unit._env import BiliSettings
 from bili_unit.fetching import (
     AuthError,
     EndpointStatus,
@@ -27,7 +28,7 @@ from .conftest import _fake_page
 @pytest.mark.asyncio
 async def test_runner_single_success(stores, rl_ctl):
     ds, es = stores
-    runner = Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(return_value=_fake_page(1, {"ok": True})))
+    runner = Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(return_value=_fake_page(1, {"ok": True})))
     result = await runner.run_task(1, endpoints=["user_info"])
     assert result.status == TaskStatus.SUCCESS
 
@@ -46,7 +47,7 @@ async def test_runner_partial(stores, rl_ctl):
         if spec.name == "videos":
             raise Http412Error("412 videos")
 
-    runner = Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch))
+    runner = Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch))
     with patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         # override retry delays to be instant for test
         result = await runner.run_task(2, endpoints=["user_info", "videos"])
@@ -67,7 +68,7 @@ async def test_runner_partial(stores, rl_ctl):
 @pytest.mark.asyncio
 async def test_runner_auth_permanent_fail(stores, rl_ctl):
     ds, es = stores
-    runner = Runner(ds, es, rl_ctl)
+    runner = Runner(ds, es, rl_ctl, BiliSettings())
 
     # Mark user_info as requiring credential for this test
     spec = get_endpoint("user_info")
@@ -86,7 +87,7 @@ async def test_runner_auth_permanent_fail(stores, rl_ctl):
 @pytest.mark.asyncio
 async def test_runner_auth_failure_is_permanent(stores, rl_ctl):
     ds, es = stores
-    runner = Runner(ds, es, rl_ctl)
+    runner = Runner(ds, es, rl_ctl, BiliSettings())
 
     # Auth is mandatory regardless of endpoint's credential_required flag.
     # Missing SESSDATA must cause FAILED_PERMANENT immediately.
@@ -113,7 +114,7 @@ async def test_runner_412_retry_eventually_succeeds(stores, rl_ctl):
             raise Http412Error("too fast")
         return _fake_page(uid, {"ok": True})
 
-    runner = Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch))
+    runner = Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch))
     with patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         result = await runner.run_task(4, endpoints=["user_info"])
 
@@ -143,7 +144,7 @@ async def test_runner_progress_resumption(stores, rl_ctl):
             )
         raise Http412Error("412 page 2")
 
-    runner1 = Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_1))
+    runner1 = Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch_1))
     with patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         result = await runner1.run_task(5, endpoints=["videos"])
 
@@ -166,7 +167,7 @@ async def test_runner_progress_resumption(stores, rl_ctl):
             is_last_page=True, next_request=None,
         )
 
-    runner2 = Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_2))
+    runner2 = Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch_2))
     await runner2.run_task(5, endpoints=["videos"])
 
     # Should have started from page 2
@@ -306,7 +307,7 @@ async def test_incremental_boundary_hit_stops_early(stores, rl_ctl):
         # Safety page (pn=2)
         return _fake_videos_page(["BV6", "BV7"], is_last=True)
 
-    result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
         100, endpoints=["videos"], mode="incremental",
     )
 
@@ -343,7 +344,7 @@ async def test_incremental_new_ids_continue_then_boundary(stores, rl_ctl):
         # Safety page (pn=3)
         return _fake_videos_page(["BV7"], is_last=True)
 
-    result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
         101, endpoints=["videos"], mode="incremental",
     )
 
@@ -375,7 +376,7 @@ async def test_incremental_no_stored_data_fetches_all(stores, rl_ctl):
             return _fake_videos_page(["BV1", "BV2"], next_pn=2)
         return _fake_videos_page(["BV3"], is_last=True)
 
-    result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
         102, endpoints=["videos"], mode="incremental",
     )
 
@@ -414,7 +415,7 @@ async def test_incremental_overwrites_stored_pages(stores, rl_ctl):
 
     # is_last_page defaults to False in _fake_videos_page → safety page attempted
     # But the safety fetch will also return the same mock → that's fine
-    result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
         103, endpoints=["videos"], mode="incremental",
     )
 
@@ -447,7 +448,7 @@ async def test_full_mode_overwrites_existing(stores, rl_ctl):
             return _fake_videos_page(["NEW1", "NEW2"], next_pn=2)
         return _fake_videos_page(["NEW3"], is_last=True)
 
-    result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
         104, endpoints=["videos"], mode="full",
     )
 
@@ -472,7 +473,7 @@ async def test_full_mode_does_not_accumulate(stores, rl_ctl):
     async def fake_fetch_1(uid, spec, credential, request_params, **kw):
         return _fake_videos_page(["A1", "A2"], is_last=True)
 
-    await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_1)).run_task(
+    await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch_1)).run_task(
         105, endpoints=["videos"], mode="full",
     )
 
@@ -483,7 +484,7 @@ async def test_full_mode_does_not_accumulate(stores, rl_ctl):
     async def fake_fetch_2(uid, spec, credential, request_params, **kw):
         return _fake_videos_page(["B1"], is_last=True)
 
-    await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch_2)).run_task(
+    await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch_2)).run_task(
         105, endpoints=["videos"], mode="full",
     )
 
@@ -508,7 +509,7 @@ async def test_full_mode_resets_exhausted_task(stores, rl_ctl):
     async def fake_fetch(uid, spec, credential, request_params, **kw):
         return _fake_videos_page(["NEW1"], is_last=True)
 
-    result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
         106, endpoints=["videos"], mode="full",
     )
 
@@ -531,7 +532,7 @@ async def test_run_or_resume_success_incremental_enters_scan(stores, rl_ctl):
         return _fake_videos_page(["BV1"], is_last=True)
 
     fetch_mock = AsyncMock(side_effect=fake_fetch)
-    result = await Runner(ds, es, rl_ctl, fetch_fn=fetch_mock).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=fetch_mock).run_or_resume(
         107, endpoints=["videos"], mode="incremental",
     )
 
@@ -550,7 +551,7 @@ async def test_run_or_resume_success_full_triggers_refetch(stores, rl_ctl):
     async def fake_fetch(uid, spec, credential, request_params, **kw):
         return _fake_videos_page(["NEW1", "NEW2"], is_last=True)
 
-    result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
         108, endpoints=["videos"], mode="full",
     )
 
@@ -570,12 +571,12 @@ async def test_run_or_resume_failed_permanent_both_modes(stores, rl_ctl):
     await ds.put("uid:109:task", tv.to_dict())
 
     fetch_mock = AsyncMock(return_value=_fake_videos_page(["X"], is_last=True))
-    r1 = await Runner(ds, es, rl_ctl, fetch_fn=fetch_mock).run_or_resume(
+    r1 = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=fetch_mock).run_or_resume(
         109, endpoints=["videos"], mode="incremental",
     )
     assert r1.status == TaskStatus.FAILED_PERMANENT
 
-    r2 = await Runner(ds, es, rl_ctl, fetch_fn=fetch_mock).run_or_resume(
+    r2 = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=fetch_mock).run_or_resume(
         109, endpoints=["videos"], mode="full",
     )
     assert r2.status == TaskStatus.FAILED_PERMANENT
@@ -602,7 +603,7 @@ async def test_incremental_non_paginated_overwrites(stores, rl_ctl):
     await _seed_success_task(ds, 110, ["user_info"])
 
     result = await Runner(
-        ds, es, rl_ctl,
+        ds, es, rl_ctl, BiliSettings(),
         fetch_fn=AsyncMock(return_value=_fake_page(110, {"name": "new_name"})),
     ).run_or_resume(110, endpoints=["user_info"], mode="incremental")
 
@@ -625,7 +626,7 @@ async def test_command_mode_passthrough(stores, rl_ctl):
     async def fake_fetch(uid, spec, credential, request_params, **kw):
         return _fake_page(uid, {"ok": True})
 
-    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch))
+    cmd = Command(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch))
     r1 = await cmd.fetch_uid(111, endpoints=["user_info"], mode="incremental")
     assert r1.status == TaskStatus.SUCCESS
 
@@ -654,7 +655,7 @@ async def test_query_endpoint_status_after_exhaustion(stores, rl_ctl, query):
     async def always_fail(uid, spec, credential, request_params, **kw):
         raise RequestError("53013: user privacy restricted")
 
-    runner = Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=always_fail))
+    runner = Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=always_fail))
     with patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         result = await runner.run_task(
             200, endpoints=["subscribed_bangumi"],
@@ -716,7 +717,7 @@ async def test_incremental_anchor_pagination_boundary(stores, rl_ctl):
             is_last_page=True, next_request=None,
         )
 
-    result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
         300, endpoints=["upower_qa"], mode="incremental",
     )
 
@@ -772,7 +773,7 @@ async def test_incremental_anchor_pagination_new_ids(stores, rl_ctl):
             is_last_page=True, next_request=None,
         )
 
-    result = await Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
+    result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch)).run_or_resume(
         301, endpoints=["upower_qa"], mode="incremental",
     )
 
@@ -797,7 +798,7 @@ async def test_runner_resource_unavailable_skips_retry(stores, rl_ctl):
         attempts[0] += 1
         raise ResourceUnavailableError("subscribed_bangumi code=53013: privacy")
 
-    runner = Runner(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch))
+    runner = Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch))
     with patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         result = await runner.run_task(701, endpoints=["subscribed_bangumi"])
 
@@ -844,7 +845,7 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(stores, rl_c
     spec = get_endpoint("video_detail")
     assert spec is not None
 
-    runner = Runner(ds, es, rl_ctl)
+    runner = Runner(ds, es, rl_ctl, BiliSettings())
     with patch.object(spec, "callable", fake_item), patch(
         "bili_unit._retry.asyncio.sleep", new=AsyncMock(),
     ):
@@ -898,7 +899,7 @@ async def test_running_task_within_threshold_is_rejected(stores, rl_ctl):
     tv.endpoints["user_info"] = EndpointEntry(status=EndpointStatus.RUNNING)
     await ds.put(_task_key(uid), tv.to_dict())
 
-    runner = Runner(ds, es, rl_ctl, stale_running_threshold_ms=15 * 60 * 1000)
+    runner = Runner(ds, es, rl_ctl, BiliSettings(), stale_running_threshold_ms=15 * 60 * 1000)
     result = await runner.run_or_resume(uid, endpoints=["user_info"])
 
     assert result.status == TaskStatus.RUNNING
@@ -936,7 +937,7 @@ async def test_running_task_past_threshold_is_taken_over(stores, rl_ctl, monkeyp
     monkeypatch.setattr("bili_unit.fetching.runner.time.time", lambda: future_time)
     monkeypatch.setattr("bili_unit._storage._kv.time.time", lambda: future_time)
 
-    runner = Runner(ds, es, rl_ctl, stale_running_threshold_ms=15 * 60 * 1000, fetch_fn=fake_fetch)
+    runner = Runner(ds, es, rl_ctl, BiliSettings(), stale_running_threshold_ms=15 * 60 * 1000, fetch_fn=fake_fetch)
     result = await runner.run_or_resume(uid, endpoints=["user_info"])
 
     # Stale RUNNING was taken over — final status reflects actual run, not RUNNING-frozen
@@ -1009,7 +1010,7 @@ async def test_running_task_with_missing_updated_at_is_treated_as_stale(
     monkeypatch.setattr("bili_unit.fetching.runner.time.time", lambda: future_time)
     monkeypatch.setattr("bili_unit._storage._kv.time.time", lambda: future_time)
 
-    runner = Runner(ds, es, rl_ctl, stale_running_threshold_ms=15 * 60 * 1000, fetch_fn=fake_fetch)
+    runner = Runner(ds, es, rl_ctl, BiliSettings(), stale_running_threshold_ms=15 * 60 * 1000, fetch_fn=fake_fetch)
     result = await runner.run_or_resume(uid, endpoints=["user_info"])
     assert result.status != TaskStatus.RUNNING
 
