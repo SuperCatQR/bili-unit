@@ -1,6 +1,5 @@
 # audio/_mimo_backend — MiMo ASR backend via aiohttp.
 #
-# Per docs/design/processing.md §7.4:
 #   POST {BASE_URL}/chat/completions with model=mimo-v2.5-asr.
 #   Uses OpenAI-compatible ``input_audio`` content part with base64 data URI.
 #

@@ -1,6 +1,5 @@
 # runner — orchestrates the processing task for a uid (audio pipeline only).
 #
-# Per docs/design/processing.md §10:
 #   Phase 0  扫描     读取 fetching task；生成工作项；增量/全量决策
 #   Phase 1  分发执行 入队 audio_queue；启动 worker pool；处理
 #   Phase 2  收尾     汇总状态；更新 processing task；清理 temp

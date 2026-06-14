@@ -1,7 +1,6 @@
 # audio/_ffmpeg — ffmpeg binary discovery with imageio-ffmpeg fallback.
 #
-# Per docs/design/processing.md §19 已决: BILI_PROCESSING_FFMPEG_PATH
-# defaults to "auto", which resolves in this order:
+# BILI_PROCESSING_FFMPEG_PATH defaults to "auto", which resolves in this order:
 #   1. system ffmpeg via shutil.which("ffmpeg")
 #   2. imageio-ffmpeg's bundled binary (if `pip install dialectica[audio]`)
 #   3. raise FFmpegUnavailable

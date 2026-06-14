@@ -1,6 +1,5 @@
 # audio/_converter — m4s → mp3 conversion + long-audio segmentation via ffmpeg.
 #
-# Per docs/design/processing.md §7.3:
 #   - B站 CDN audio is m4s (DASH segment); MiMo ASR accepts mp3.
 #   - Conversion: -ar 16000 -ac 1 (16 kHz mono — sufficient for speech ASR).
 #   - Long videos: -segment_time {seconds} to split.

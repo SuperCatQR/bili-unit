@@ -27,7 +27,7 @@ async def proc_error(tmp_path):
 
 @pytest.mark.asyncio
 async def test_data_put_get_delete(proc_data):
-    key = "uid:42:proc:video_metadata:BV1aa"
+    key = "uid:42:proc:audio:BV1aa"
     value = {"uid": 42, "result": {"title": "T"}}
     await proc_data.put(key, value)
     got = await proc_data.get(key)
@@ -42,16 +42,16 @@ async def test_data_put_get_delete(proc_data):
 
 @pytest.mark.asyncio
 async def test_data_list_prefix(proc_data):
-    await proc_data.put("uid:1:proc:video_metadata:BVa", {"a": 1})
-    await proc_data.put("uid:1:proc:video_metadata:BVb", {"a": 2})
-    await proc_data.put("uid:1:proc:articles:5", {"a": 3})
-    await proc_data.put("uid:2:proc:video_metadata:BVc", {"a": 4})
+    await proc_data.put("uid:1:proc:audio:BVa", {"a": 1})
+    await proc_data.put("uid:1:proc:audio:BVb", {"a": 2})
+    await proc_data.put("uid:1:proc:other:5", {"a": 3})
+    await proc_data.put("uid:2:proc:audio:BVc", {"a": 4})
 
-    rows = await proc_data.list_prefix("uid:1:proc:video_metadata:")
+    rows = await proc_data.list_prefix("uid:1:proc:audio:")
     keys = sorted(k for k, _ in rows)
     assert keys == [
-        "uid:1:proc:video_metadata:BVa",
-        "uid:1:proc:video_metadata:BVb",
+        "uid:1:proc:audio:BVa",
+        "uid:1:proc:audio:BVb",
     ]
 
     rows = await proc_data.list_prefix("uid:1:proc:")

@@ -1,9 +1,9 @@
 # query — processing read-only view.
 #
-# Per docs/design/processing.md §11.2: ProcessingQuery exposes the
-# read-only DTO surface. get_video_full / list_all_videos read metadata
-# from parsing.query (VideoDetail typed objects) and transcription from
-# the audio pipeline items in the processing store.
+# ProcessingQuery exposes the read-only DTO surface. get_video_full /
+# list_all_videos read metadata from parsing.query (VideoDetail typed
+# objects) and transcription from the audio pipeline items in the
+# processing store.
 
 from __future__ import annotations
 
