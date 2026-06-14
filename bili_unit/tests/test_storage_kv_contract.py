@@ -38,16 +38,16 @@ _PARAMS = [
     ),
     pytest.param(
         ProcessingKeyMapper,
-        ("uid:7:proc:video_metadata:BVa", "uid:7:progress:transform"),
+        ("uid:7:proc:audio:BVa", "uid:7:progress:audio"),
         [
-            ("uid:1:proc:video_metadata:BVa", {"x": 1}),
-            ("uid:1:proc:video_metadata:BVb", {"x": 2}),
-            ("uid:1:progress:transform", {"x": 3}),
-            ("uid:2:proc:video_metadata:BVc", {"x": 4}),
+            ("uid:1:proc:audio:BVa", {"x": 1}),
+            ("uid:1:proc:audio:BVb", {"x": 2}),
+            ("uid:1:progress:audio", {"x": 3}),
+            ("uid:2:proc:audio:BVc", {"x": 4}),
         ],
         "uid:1:",
         3,
-        ("uid:9:proc:video_metadata:BVa", "uid:9:progress:transform"),
+        ("uid:9:proc:audio:BVa", "uid:9:progress:audio"),
         id="processing",
     ),
     pytest.param(

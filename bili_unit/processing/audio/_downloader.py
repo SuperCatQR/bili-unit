@@ -1,6 +1,5 @@
 # audio/_downloader — bilibili CDN audio stream downloader.
 #
-# Per docs/design/processing.md §7.2:
 #   1. Video(bvid, credential=cred).get_download_url_data()
 #   2. VideoDownloadURLDataDetecter(data).detect(audio_max_quality=...)
 #   3. Filter by type(stream).__name__ == "AudioStreamDownloadURL"

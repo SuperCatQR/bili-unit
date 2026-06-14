@@ -1,7 +1,8 @@
 # command — processing write-side entry.
 #
-# Per docs/design/processing.md §11.1: ProcessingCommand exposes only
-# process_uid(); MVP does not provide retry_failed() (decision §19).
+# ProcessingCommand exposes only process_uid(); there is no retry_failed()
+# — failed work items are retried by re-invoking process_uid() in
+# incremental mode.
 #
 # Boundaries (docs/structure/bili.md §8):
 #   - command 不直接调用 audio

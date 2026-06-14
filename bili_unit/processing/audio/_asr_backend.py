@@ -1,7 +1,6 @@
 # audio/_asr_backend — ASRBackend protocol + MockASRBackend + factory.
 #
-# Per docs/design/processing.md §7.5: ASR backend abstraction with
-# multiple impls (mimo / whisper / mock).
+# ASR backend abstraction with multiple impls (mimo / whisper / mock).
 
 from __future__ import annotations
 
@@ -85,7 +84,6 @@ def create_asr_backend(backend_name: str, **kw: Any) -> ASRBackend:
         return create_mimo_backend(settings)
     if name == "whisper":
         raise NotImplementedError(
-            "ASR backend 'whisper' is scheduled for a future batch "
-            "(see docs/design/processing.md §16)."
+            "ASR backend 'whisper' is scheduled for a future batch."
         )
     raise ValueError(f"unknown ASR backend: {backend_name!r}")

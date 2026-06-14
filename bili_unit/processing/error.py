@@ -1,12 +1,10 @@
 # error — file-directory error-state store for processing.
 #
-# Per docs/design/processing.md §9.2: each uid gets a JSON file with
-# error records; errors without a uid go to ``_null.json``.
-#
-# Each record adds processing-specific fields (pipeline / item_type / item_id)
-# on top of the fetching-style fields (id, error_type, message, retryable, ...).
-# The store reuses :class:`bili_unit._storage.JsonErrorStore`; this module only
-# declares the schema and DTO mapping.
+# Each uid gets a JSON file with error records; errors without a uid go to
+# ``_null.json``. Each record adds processing-specific fields (pipeline /
+# item_type / item_id) on top of the fetching-style fields (id, error_type,
+# message, retryable, ...). The store reuses :class:`bili_unit._storage.JsonErrorStore`;
+# this module only declares the schema and DTO mapping.
 
 import json
 import logging
