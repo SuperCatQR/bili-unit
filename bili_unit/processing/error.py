@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Any
 
-from .._storage import JsonErrorStore
+from .._storage import JsonErrorStore, normalise_retryable
 from . import DataError, ErrorDTO
 
 logger = logging.getLogger("bili.processing.error")
@@ -46,7 +46,7 @@ class ProcessingErrorStore(JsonErrorStore):
                 item_id=r.get("item_id"),
                 error_type=r["error_type"],
                 message=r["message"],
-                retryable=r.get("retryable", "unknown"),
+                retryable=normalise_retryable(r.get("retryable")),
                 detail=json.loads(r["detail"]) if r.get("detail") else None,
                 timestamp=r.get("timestamp"),
             )

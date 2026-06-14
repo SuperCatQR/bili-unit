@@ -94,7 +94,7 @@ class _ItemFanoutMixin:
             )
             await self._error.record(
                 FetchingError(f"source {spec.source_endpoint} data not available"),
-                uid=uid, endpoint=ep_name, retryable="false",
+                uid=uid, endpoint=ep_name, retryable=False,
             )
             now_ms = int(time.time() * 1000)
             await self._data.put(_fetch_key(uid, ep_name), {
@@ -308,13 +308,13 @@ class _ItemFanoutMixin:
         ) -> int | None:
             if isinstance(exc, AuthError):
                 await self._error.record(
-                    exc, uid=uid, endpoint=ep_name, retryable="false",
+                    exc, uid=uid, endpoint=ep_name, retryable=False,
                 )
                 return None
 
             if isinstance(exc, ResourceUnavailableError):
                 await self._error.record(
-                    exc, uid=uid, endpoint=ep_name, retryable="false",
+                    exc, uid=uid, endpoint=ep_name, retryable=False,
                     detail={"item_id": item_id},
                 )
                 logger.info(
@@ -336,7 +336,7 @@ class _ItemFanoutMixin:
                 retry_state["count"] += 1
                 await self._error.record(
                     exc, uid=uid, endpoint=ep_name,
-                    retryable="true" if outcome.will_retry else "false",
+                    retryable=outcome.will_retry,
                     detail={"item_id": item_id, "retry_count": retry_state["count"]},
                 )
                 if not outcome.will_retry:
@@ -363,7 +363,7 @@ class _ItemFanoutMixin:
                 retry_state["count"] += 1
                 await self._error.record(
                     exc, uid=uid, endpoint=ep_name,
-                    retryable="true" if outcome.will_retry else "false",
+                    retryable=outcome.will_retry,
                     detail={"item_id": item_id},
                 )
                 if not outcome.will_retry:
@@ -390,7 +390,7 @@ class _ItemFanoutMixin:
             wrapped = FetchingError(f"unexpected: {type(exc).__name__}: {exc}")
             await self._error.record(
                 wrapped, uid=uid, endpoint=ep_name,
-                retryable="false",
+                retryable=False,
                 detail={"item_id": item_id},
             )
             return None

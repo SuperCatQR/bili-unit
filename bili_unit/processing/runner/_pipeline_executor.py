@@ -142,7 +142,7 @@ async def run_item_with_retry(
             await error.record(
                 exc, uid=ctx.uid, pipeline=ctx.pipeline,
                 item_type=ctx.item_type, item_id=ctx.item_id,
-                retryable="true",
+                retryable=True,
                 detail={"retry_count": outcome.attempt},
             )
             await data.put(ctx.key, _record(
@@ -161,7 +161,7 @@ async def run_item_with_retry(
         await error.record(
             exc, uid=ctx.uid, pipeline=ctx.pipeline,
             item_type=ctx.item_type, item_id=ctx.item_id,
-            retryable="false",
+            retryable=False,
             detail=(
                 {"retry_count": outcome.attempt}
                 if outcome.attempt > 1 else None

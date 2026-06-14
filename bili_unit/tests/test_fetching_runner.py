@@ -939,7 +939,7 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(stores, rl_c
     errs = await es.list_by_uid(uid)
     dead_errs = [e for e in errs if (e.detail or {}).get("item_id") == "BV_dead"]
     assert len(dead_errs) == 1
-    assert dead_errs[0].retryable == "false"
+    assert dead_errs[0].retryable is False
 
 
 # ---------------------------------------------------------------------------
