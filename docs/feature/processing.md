@@ -234,12 +234,9 @@ processing 与 fetching 的 task key 同名（`uid:{uid}:task`），但因为 st
 
 ## 错误处理
 
-异常层级（`bili_unit/processing/__init__.py`，与历史版本兼容；`TransformError` 等保留为基类，但当前没有任何 pipeline 抛出）：
+异常层级（`bili_unit/processing/__init__.py`）：
 ```
 ProcessingError
-├── TransformError      # legacy；transform 子系统已删除（2026-06-14），保留以避免下游 import 断裂
-│   ├── FieldExtractionError
-│   └── FormatError
 ├── AudioError
 │   ├── ASRConfigError
 │   ├── DownloadError
