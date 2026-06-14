@@ -47,18 +47,6 @@ class ProcessingError(Exception):
     """Base for all processing-layer exceptions."""
 
 
-class TransformError(ProcessingError):
-    """transform 阶段错误。"""
-
-
-class FieldExtractionError(TransformError):
-    """字段提取失败。"""
-
-
-class FormatError(TransformError):
-    """格式异常。"""
-
-
 class AudioError(ProcessingError):
     """audio 阶段错误基类。"""
 
@@ -180,8 +168,6 @@ __all__ = [
     "DataError",
     "DownloadError",
     "ErrorDTO",
-    "FieldExtractionError",
-    "FormatError",
     "ProcessingCommandResult",
     "ProcessingError",
     "ProcessingItemDTO",
@@ -191,7 +177,6 @@ __all__ = [
     "ProcessingTaskDTO",
     "ProcessingTaskStatus",
     "QueueError",
-    "TransformError",
     "VideoFullDTO",
     "VideoSummaryDTO",
 ]
