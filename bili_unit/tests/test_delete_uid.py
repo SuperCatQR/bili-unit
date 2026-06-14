@@ -27,7 +27,6 @@ from bili_unit.processing.data import ProcessingDataStore
 from bili_unit.processing.env import ProcessingEnv
 from bili_unit.processing.error import ProcessingErrorStore
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------

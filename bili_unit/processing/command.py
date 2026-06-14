@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import ProcessingCommandResult, ProcessingTaskStatus
-from .runner import CredentialProvider, ConvertFn, DownloaderFactory, ProcessingRunner
+from .runner import ConvertFn, CredentialProvider, DownloaderFactory, ProcessingRunner
 
 if TYPE_CHECKING:
     from ..fetching.protocols import FetchingReadView

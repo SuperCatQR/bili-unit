@@ -5,15 +5,16 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
+from ...fetching import EndpointStatus
 from .. import (
     ProcessingItemStatus,
     ProcessingPipelineStatus,
 )
 from ..keys import _proc_key, _task_key
-from ...fetching import EndpointStatus
 from ..task import PipelineEntry, ProcessingTaskValue
 from ._audio_work import (
     audio_convert_page,
@@ -30,9 +31,10 @@ from ._pipeline_executor import (
 
 if TYPE_CHECKING:
     from bilibili_api import Credential
+
+    from ..._env import BiliSettings
     from ..audio._asr_backend import ASRBackend
     from ..audio._asr_cache import ASRCacheStore
-    from ..._env import BiliSettings
 
 # Boundaries (docs/structure/bili.md §8): processing runner must not import
 # fetching.auth directly.  The caller (assemble / ProcessingCommand) injects

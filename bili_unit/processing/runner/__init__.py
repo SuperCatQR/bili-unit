@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import shutil
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
