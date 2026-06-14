@@ -5,7 +5,7 @@ import logging
 from . import (
     EndpointDTO,
     EndpointStatus,
-    ErrorDTO,
+    FetchingErrorDTO,
     TaskDTO,
     TaskStatus,
 )
@@ -141,7 +141,7 @@ class Query:
             errors=ep_errors,
         )
 
-    async def list_errors(self, uid: int | None = None) -> list[ErrorDTO]:
+    async def list_errors(self, uid: int | None = None) -> list[FetchingErrorDTO]:
         """List errors, optionally filtered by uid."""
         return await self._error.list_errors(uid=uid)
 

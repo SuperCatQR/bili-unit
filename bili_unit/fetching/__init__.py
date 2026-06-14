@@ -84,7 +84,7 @@ class EndpointDTO:
     raw_payload: dict[str, Any] | None = None
     fetched_at: int | None = None
     progress: dict[str, Any] | None = None
-    errors: list["ErrorDTO"] = field(default_factory=list)
+    errors: list["FetchingErrorDTO"] = field(default_factory=list)
 
 
 @dataclass
@@ -97,7 +97,7 @@ class TaskDTO:
 
 
 @dataclass
-class ErrorDTO:
+class FetchingErrorDTO:
     id: int
     uid: int | None
     endpoint: str | None

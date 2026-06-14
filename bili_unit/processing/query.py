@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING
 
 from . import (
-    ErrorDTO,
+    ProcessingErrorDTO,
     ProcessingItemDTO,
     ProcessingItemStatus,
     ProcessingPipelineDTO,
@@ -153,7 +153,7 @@ class ProcessingQuery:
 
     # -- errors -----------------------------------------------------------
 
-    async def list_errors(self, uid: int | None = None) -> list[ErrorDTO]:
+    async def list_errors(self, uid: int | None = None) -> list[ProcessingErrorDTO]:
         return await self._error.list_errors(uid=uid)
 
     # -- helpers ----------------------------------------------------------

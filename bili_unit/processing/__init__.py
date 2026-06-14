@@ -90,7 +90,7 @@ class DataError(ProcessingError):
 # ---------------------------------------------------------------------------
 
 @dataclass
-class ErrorDTO:
+class ProcessingErrorDTO:
     """Read-only error record returned by ProcessingQuery.list_errors()."""
 
     id: int
@@ -114,7 +114,7 @@ class ProcessingItemDTO:
     status: ProcessingItemStatus
     result: dict[str, Any] | None = None
     processed_at: int | None = None
-    errors: list[ErrorDTO] = field(default_factory=list)
+    errors: list[ProcessingErrorDTO] = field(default_factory=list)
 
 
 @dataclass
@@ -165,9 +165,9 @@ __all__ = [
     "ConvertError",
     "DataError",
     "DownloadError",
-    "ErrorDTO",
     "ProcessingCommandResult",
     "ProcessingError",
+    "ProcessingErrorDTO",
     "ProcessingItemDTO",
     "ProcessingItemStatus",
     "ProcessingPipelineDTO",
