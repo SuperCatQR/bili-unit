@@ -20,15 +20,12 @@ from .. import (
     TaskResult,
     TaskStatus,
 )
-from ..auth import get_credential
-from ..client import (
-    ENDPOINTS,
-    EndpointSpec,
-    get_endpoint,
-)
-from ..client import (
+from .._bilibili_adapter import (
     fetch_endpoint as _client_fetch_endpoint,
 )
+from .._endpoint_catalog import ENDPOINTS, get_endpoint
+from .._endpoint_spec import EndpointSpec
+from ..auth import get_credential
 from ..data import DataStore
 from ..error import ErrorStore
 from ..keys import _progress_key, _task_key

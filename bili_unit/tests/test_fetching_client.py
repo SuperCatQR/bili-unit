@@ -6,11 +6,8 @@ from unittest.mock import patch
 import pytest
 
 from bili_unit.fetching import Http412Error
-from bili_unit.fetching.client import (
-    ENDPOINTS,
-    fetch_endpoint,
-    get_endpoint,
-)
+from bili_unit.fetching._bilibili_adapter import fetch_endpoint
+from bili_unit.fetching._endpoint_catalog import ENDPOINTS, get_endpoint
 
 
 def test_endpoints_exist():
@@ -357,7 +354,7 @@ def test_t2_upower_qa_registered():
 def test_wrap_list_result_with_list():
     import asyncio
 
-    from bili_unit.fetching.client import _wrap_list_result
+    from bili_unit.fetching._bilibili_adapter import _wrap_list_result
 
     async def fake():
         return [{"a": 1}, {"a": 2}]
@@ -369,7 +366,7 @@ def test_wrap_list_result_with_list():
 def test_wrap_list_result_with_dict():
     import asyncio
 
-    from bili_unit.fetching.client import _wrap_list_result
+    from bili_unit.fetching._bilibili_adapter import _wrap_list_result
 
     async def fake():
         return {"key": "value"}
@@ -379,7 +376,7 @@ def test_wrap_list_result_with_dict():
 
 
 def test_extract_season_ids():
-    from bili_unit.fetching.client import _extract_season_ids
+    from bili_unit.fetching._bilibili_adapter import _extract_season_ids
 
     payload = {
         "pages": [
@@ -398,7 +395,7 @@ def test_extract_season_ids():
 
 
 def test_extract_series_ids():
-    from bili_unit.fetching.client import _extract_series_ids
+    from bili_unit.fetching._bilibili_adapter import _extract_series_ids
 
     payload = {
         "pages": [
@@ -416,7 +413,7 @@ def test_extract_series_ids():
 
 
 def test_extract_season_ids_empty():
-    from bili_unit.fetching.client import _extract_season_ids
+    from bili_unit.fetching._bilibili_adapter import _extract_season_ids
 
     assert _extract_season_ids({"pages": []}) == []
     assert _extract_season_ids({}) == []

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from bili_unit.fetching import TaskStatus
-from bili_unit.fetching.client import FetchPageResult
+from bili_unit.fetching._bilibili_adapter import FetchPageResult
 from bili_unit.fetching.command import Command
 from bili_unit.fetching.query import Query
 

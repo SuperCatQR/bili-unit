@@ -22,7 +22,7 @@ from .. import (
     Http412Error,
     ResourceUnavailableError,
 )
-from ..client import EndpointSpec
+from .._endpoint_spec import EndpointSpec
 from ..env import get_settings
 from ..keys import _fetch_key, _item_fetch_key, _progress_key, _task_key
 

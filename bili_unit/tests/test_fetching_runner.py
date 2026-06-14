@@ -12,10 +12,8 @@ from bili_unit.fetching import (
     ResourceUnavailableError,
     TaskStatus,
 )
-from bili_unit.fetching.client import (
-    FetchPageResult,
-    get_endpoint,
-)
+from bili_unit.fetching._bilibili_adapter import FetchPageResult
+from bili_unit.fetching._endpoint_catalog import get_endpoint
 from bili_unit.fetching.keys import _fetch_key
 from bili_unit.fetching.runner import Runner, _extract_item_ids
 from bili_unit.fetching.task import EndpointEntry, TaskValue

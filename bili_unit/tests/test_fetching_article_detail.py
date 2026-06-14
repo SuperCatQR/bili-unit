@@ -10,11 +10,11 @@ from bili_unit.fetching import (
     RequestError,
     ResourceUnavailableError,
 )
-from bili_unit.fetching.client import (
+from bili_unit.fetching._bilibili_adapter import (
     _extract_cvids_from_articles,
     fetch_article_detail_item,
-    get_endpoint,
 )
+from bili_unit.fetching._endpoint_catalog import get_endpoint
 
 # ======================================================================
 # Client — _extract_cvids_from_articles

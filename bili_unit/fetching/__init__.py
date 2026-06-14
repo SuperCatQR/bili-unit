@@ -135,7 +135,7 @@ async def assemble() -> tuple:
     Caller is responsible for closing stores via ``await data.close()`` /
     ``await error.close()`` when done.
     """
-    from .client import init_http_backend
+    from ._bilibili_adapter import init_http_backend
     from .command import Command
     from .data import DataStore
     from .env import get_settings

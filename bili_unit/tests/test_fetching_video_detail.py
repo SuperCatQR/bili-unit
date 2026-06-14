@@ -12,12 +12,11 @@ from bili_unit.fetching import (
     ResourceUnavailableError,
     TaskStatus,
 )
-from bili_unit.fetching.client import (
-    ENDPOINTS,
+from bili_unit.fetching._bilibili_adapter import (
     _extract_bvids_from_videos,
     fetch_video_detail_item,
-    get_endpoint,
 )
+from bili_unit.fetching._endpoint_catalog import ENDPOINTS, get_endpoint
 from bili_unit.fetching.keys import (
     _fetch_key,
     _item_fetch_key,
@@ -344,7 +343,7 @@ async def test_video_detail_full_mode_refetches_all(stores, rl_ctl):
         fetched.append(bvid)
         return {"info": {"bvid": bvid, "new": True}, "tags": []}
 
-    from bili_unit.fetching.client import FetchPageResult
+    from bili_unit.fetching._bilibili_adapter import FetchPageResult
 
     async def fake_fetch_endpoint(uid, spec, credential, request_params, **kw):
         if spec.name == "videos":
@@ -426,7 +425,7 @@ async def test_video_detail_two_phase_with_videos(stores, rl_ctl):
     """Running both videos + video_detail → Phase 1 runs videos, Phase 2 runs video_detail."""
     ds, es = stores
 
-    from bili_unit.fetching.client import FetchPageResult
+    from bili_unit.fetching._bilibili_adapter import FetchPageResult
 
     async def fake_fetch_endpoint(uid, spec, credential, request_params, **kw):
         if spec.name == "videos":
