@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from .._storage import DecodeError as _DecodeError
+
 # ---------------------------------------------------------------------------
 # Status enums
 # ---------------------------------------------------------------------------
@@ -81,7 +83,7 @@ class QueueError(ProcessingError):
     """队列操作错误。"""
 
 
-class DataError(ProcessingError):
+class DataError(_DecodeError, ProcessingError):
     """存储 / 序列化失败。"""
 
 

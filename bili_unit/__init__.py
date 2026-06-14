@@ -15,6 +15,7 @@ from importlib.metadata import version as _pkg_version
 
 from ._aggregates import VideoFullDTO, VideoSummaryDTO  # noqa: F401
 from ._env import BiliSettings, get_settings, reload_settings  # noqa: F401
+from ._types import CredentialProvider  # noqa: F401
 from .command import BiliCommand
 from .fetching import (  # noqa: F401 – public re-exports
     CommandResult,
@@ -47,7 +48,6 @@ from .processing import (  # noqa: F401 – public re-exports
     ProcessingTaskDTO,
     ProcessingTaskStatus,
 )
-from .processing.runner._audio import CredentialProvider  # noqa: F401
 from .query import BiliQuery
 
 __version__ = _pkg_version("bili-unit")

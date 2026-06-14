@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from .._storage import DecodeError as _DecodeError
+
 # ---------------------------------------------------------------------------
 # Status enums
 # ---------------------------------------------------------------------------
@@ -42,7 +44,7 @@ class ModelParseError(ParsingError):
     """Failed to parse a raw dict into a typed model."""
 
 
-class DataError(ParsingError):
+class DataError(_DecodeError, ParsingError):
     """Storage / serialisation failure."""
 
 

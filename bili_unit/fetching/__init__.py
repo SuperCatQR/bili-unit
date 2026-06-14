@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from .._storage import DecodeError as _DecodeError
+
 # ---------------------------------------------------------------------------
 # Task / Endpoint status enums (cf. fetching_engineering.md §12)
 # ---------------------------------------------------------------------------
@@ -67,7 +69,7 @@ class ResourceUnavailableError(FetchingError):
     """
 
 
-class DataError(FetchingError):
+class DataError(_DecodeError, FetchingError):
     """Storage / serialisation failure."""
 
 
