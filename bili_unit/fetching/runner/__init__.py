@@ -161,7 +161,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         try:
             credential = await get_credential()
         except AuthError as exc:
-            await self._error.record(exc, uid=uid, retryable="false")
+            await self._error.record(exc, uid=uid, retryable=False)
             return TaskResult(uid=uid, status=TaskStatus.FAILED_PERMANENT)
 
         # load / create task
@@ -206,7 +206,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                 entry.status = EndpointStatus.FAILED_PERMANENT
                 await self._error.record(
                     FetchingError(f"unknown endpoint: {ep_name}"),
-                    uid=uid, endpoint=ep_name, retryable="false",
+                    uid=uid, endpoint=ep_name, retryable=False,
                 )
                 continue
 
@@ -264,7 +264,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                             FetchingError(
                                 f"source endpoint {spec.source_endpoint} not SUCCESS"
                             ),
-                            uid=uid, endpoint=ep_name, retryable="false",
+                            uid=uid, endpoint=ep_name, retryable=False,
                         )
                         logger.info(
                             "item_endpoint_source_failed",

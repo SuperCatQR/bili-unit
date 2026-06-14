@@ -143,7 +143,7 @@ class _EndpointMixin:
                 # Permanent — no retry.  Write FAILED_PERMANENT and let the
                 # caller swallow the raise via try/except.
                 await self._error.record(
-                    exc, uid=uid, endpoint=ep_name, retryable="false",
+                    exc, uid=uid, endpoint=ep_name, retryable=False,
                 )
                 await self._update_endpoint_status(
                     uid, ep_name, EndpointStatus.FAILED_PERMANENT,
@@ -153,7 +153,7 @@ class _EndpointMixin:
 
             if isinstance(exc, ResourceUnavailableError):
                 err_id = await self._error.record(
-                    exc, uid=uid, endpoint=ep_name, retryable="false",
+                    exc, uid=uid, endpoint=ep_name, retryable=False,
                 )
                 await self._update_endpoint_status(
                     uid, ep_name, EndpointStatus.FAILED_PERMANENT,
@@ -180,7 +180,7 @@ class _EndpointMixin:
                 }
                 err_id = await self._error.record(
                     exc, uid=uid, endpoint=ep_name,
-                    retryable="true" if outcome.will_retry else "false",
+                    retryable=outcome.will_retry,
                     detail=detail,
                 )
                 retry_state["last_error_id"] = err_id
@@ -209,7 +209,7 @@ class _EndpointMixin:
                 retry_state["count"] += 1
                 err_id = await self._error.record(
                     exc, uid=uid, endpoint=ep_name,
-                    retryable="true" if outcome.will_retry else "false",
+                    retryable=outcome.will_retry,
                 )
                 retry_state["last_error_id"] = err_id
                 await self._update_endpoint_status(
@@ -235,7 +235,7 @@ class _EndpointMixin:
             # Unexpected non-fetching error — wrap and treat as permanent.
             wrapped = FetchingError(f"unexpected: {type(exc).__name__}: {exc}")
             err_id = await self._error.record(
-                wrapped, uid=uid, endpoint=ep_name, retryable="false",
+                wrapped, uid=uid, endpoint=ep_name, retryable=False,
             )
             await self._update_endpoint_status(
                 uid, ep_name, EndpointStatus.FAILED_PERMANENT,

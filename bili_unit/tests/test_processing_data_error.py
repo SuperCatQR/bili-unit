@@ -109,7 +109,7 @@ async def test_error_record_and_list(proc_error):
         pipeline="audio",
         item_type="transcription",
         item_id="BVa",
-        retryable="false",
+        retryable=False,
     )
     e2 = await proc_error.record(
         RuntimeError("partial"),
@@ -117,7 +117,7 @@ async def test_error_record_and_list(proc_error):
         pipeline="audio",
         item_type="transcription",
         item_id="BVb",
-        retryable="true",
+        retryable=True,
         detail={"step": "download"},
     )
     assert e1 != e2

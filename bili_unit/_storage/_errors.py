@@ -15,6 +15,25 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 
+def normalise_retryable(value: Any) -> bool | None:
+    """Coerce a stored ``retryable`` field to tri-state bool.
+
+    Tolerates legacy ``"true"``/``"false"``/``"unknown"`` strings written by
+    older versions, plus actual booleans / ``None`` written by current code.
+    Anything else (typo, schema drift) → ``None``.  Used by the per-stage
+    DTO mappers when reading old JSON records back from disk.
+    """
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v == "true":
+            return True
+        if v == "false":
+            return False
+    return None
+
+
 class JsonErrorStore:
     """Generic per-uid JSON error log.
 
@@ -85,11 +104,16 @@ class JsonErrorStore:
         self,
         error: BaseException,
         uid: int | None = None,
-        retryable: str = "unknown",
+        retryable: bool | None = None,
         detail: dict[str, Any] | None = None,
         **extra: Any,
     ) -> int:
         """Persist an error and return its auto-increment id.
+
+        ``retryable`` is a tri-state bool: ``True`` / ``False`` / ``None``
+        (unknown).  Stored verbatim — the JSON encoder writes ``null`` for
+        ``None``.  Strings ``"true"``/``"false"``/``"unknown"`` from old
+        records on disk are normalised on read by the DTO mappers.
 
         ``extra`` keys named in ``self.extra_fields`` are pulled into the
         record (defaulting to ``None`` if not supplied).  Other keys in

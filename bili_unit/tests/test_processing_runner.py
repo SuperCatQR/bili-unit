@@ -396,9 +396,9 @@ async def test_audio_retry_exhausts_then_fails(tmp_path, fetching_stack):
     errs = await qry.list_errors(uid=uid)
     audio_errs = [e for e in errs if e.error_type == "DownloadError"]
     assert len(audio_errs) == 3
-    assert audio_errs[0].retryable == "true"
-    assert audio_errs[1].retryable == "true"
-    assert audio_errs[2].retryable == "false"
+    assert audio_errs[0].retryable is True
+    assert audio_errs[1].retryable is True
+    assert audio_errs[2].retryable is False
 
     await pd.close()
     await pe.close()
@@ -449,7 +449,7 @@ async def test_audio_retry_succeeds_after_first_failure(tmp_path, fetching_stack
     errs = await qry.list_errors(uid=uid)
     audio_errs = [e for e in errs if e.error_type == "DownloadError"]
     assert len(audio_errs) == 1
-    assert audio_errs[0].retryable == "true"
+    assert audio_errs[0].retryable is True
 
     await pd.close()
     await pe.close()
@@ -484,7 +484,7 @@ async def test_audio_non_retryable_no_retry(tmp_path, fetching_stack):
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
     errs = await qry.list_errors(uid=uid)
     assert len(errs) == 1
-    assert errs[0].retryable == "false"
+    assert errs[0].retryable is False
 
     await pd.close()
     await pe.close()
@@ -519,7 +519,7 @@ async def test_audio_zero_max_retries_immediate_fail(tmp_path, fetching_stack):
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
     errs = await qry.list_errors(uid=uid)
     assert len(errs) == 1
-    assert errs[0].retryable == "false"
+    assert errs[0].retryable is False
 
     await pd.close()
     await pe.close()

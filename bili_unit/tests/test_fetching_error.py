@@ -16,20 +16,63 @@ async def test_error_store_record_and_list(tmp_path: Path):
     try:
         eid = await es.record(
             Http412Error("too fast"), uid=99, endpoint="videos",
-            retryable="true", detail={"page": 3},
+            retryable=True, detail={"page": 3},
         )
         assert eid == 1
 
         await es.record(
-            AuthError("no sessdata"), uid=None, retryable="false",
+            AuthError("no sessdata"), uid=None, retryable=False,
         )
 
         errs = await es.list_errors()
         assert len(errs) == 2
+        # retryable round-trips as bool (was a string in older releases).
+        retryable_values = {e.retryable for e in errs}
+        assert retryable_values == {True, False}
 
         errs_uid = await es.list_by_uid(99)
         # uid=NULL should NOT match uid=99 filter
         assert len(errs_uid) == 1
+    finally:
+        await es.close()
+
+
+@pytest.mark.asyncio
+async def test_error_store_normalises_legacy_string_retryable(tmp_path: Path):
+    """Old releases wrote ``retryable`` as ``"true"``/``"false"``/``"unknown"``.
+
+    Records on disk from those releases must still load — read coerces them
+    back to ``True`` / ``False`` / ``None``.  Anything unrecognised collapses
+    to ``None`` rather than raising.
+    """
+    import json
+
+    base = tmp_path / "legacy_errors"
+    base.mkdir()
+    (base / "_counter.json").write_text(json.dumps({"next_id": 5}), encoding="utf-8")
+    (base / "42.json").write_text(
+        json.dumps([
+            {"id": 1, "uid": 42, "endpoint": "videos",
+             "error_type": "Http412Error", "message": "old retryable",
+             "retryable": "true", "detail": None, "timestamp": 1},
+            {"id": 2, "uid": 42, "endpoint": "videos",
+             "error_type": "AuthError", "message": "old non-retryable",
+             "retryable": "false", "detail": None, "timestamp": 2},
+            {"id": 3, "uid": 42, "endpoint": "videos",
+             "error_type": "RequestError", "message": "old unknown",
+             "retryable": "unknown", "detail": None, "timestamp": 3},
+            {"id": 4, "uid": 42, "endpoint": "videos",
+             "error_type": "RequestError", "message": "garbage",
+             "retryable": "yes please", "detail": None, "timestamp": 4},
+        ]),
+        encoding="utf-8",
+    )
+
+    es = ErrorStore(str(base))
+    await es.open()
+    try:
+        errs = sorted(await es.list_by_uid(42), key=lambda e: e.id)
+        assert [e.retryable for e in errs] == [True, False, None, None]
     finally:
         await es.close()
 

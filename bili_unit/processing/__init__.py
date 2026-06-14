@@ -114,7 +114,7 @@ class ErrorDTO:
     item_id: str | None
     error_type: str
     message: str
-    retryable: str  # "true" | "false" | "unknown"
+    retryable: bool | None  # True / False / None when unknown (legacy "unknown")
     detail: dict[str, Any] | None = None
     timestamp: int | None = None
 
