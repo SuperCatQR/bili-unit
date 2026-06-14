@@ -131,6 +131,38 @@ class ParsingTaskValue:
         )
 
 
+# ---------------------------------------------------------------------------
+# Assembly root — opens parsing stores and wires dependencies
+# ---------------------------------------------------------------------------
+
+async def assemble(
+    settings,
+    *,
+    fetching_query,  # FetchingReadView (kept untyped to avoid runtime cyclic import)
+):
+    """Open parsing stores, wire dependencies, return ``(cmd, qry, data)``.
+
+    Args:
+        settings: ``BiliSettings`` already loaded by the caller.
+        fetching_query: a :class:`FetchingReadView`-shaped object (typically
+            ``bili_unit.fetching.query.Query``). Required: parsing reads raw
+            payloads from upstream.
+
+    Caller is responsible for closing the returned data store via
+    ``await data.close()`` (or via cmd.close()).
+    """
+    from .command import ParsingCommand
+    from .data import ParsingDataStore
+    from .query import ParsingQuery
+
+    data = ParsingDataStore(settings.bili_parsing_data_dir)
+    await data.open()
+
+    cmd = ParsingCommand(data=data, fetching_query=fetching_query)
+    qry = ParsingQuery(data=data)
+    return cmd, qry, data
+
+
 __all__ = [
     "DataError",
     "ImageDownloadError",
@@ -143,4 +175,5 @@ __all__ = [
     "ParsingTaskDTO",
     "ParsingTaskStatus",
     "ParsingTaskValue",
+    "assemble",
 ]

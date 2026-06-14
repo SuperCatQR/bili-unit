@@ -140,6 +140,59 @@ class ProcessingCommandResult:
     status: ProcessingTaskStatus
 
 
+# ---------------------------------------------------------------------------
+# Assembly root — opens processing stores, wires dependencies, picks ASR backend
+# ---------------------------------------------------------------------------
+
+async def assemble(
+    settings,
+    *,
+    fetching_query,
+    asr_backend_override: str | None = None,
+    credential_provider=None,
+):
+    """Open processing stores, wire dependencies, return ``(cmd, qry, data, error)``.
+
+    Args:
+        settings: ``BiliSettings`` already loaded by the caller.
+        fetching_query: a :class:`FetchingReadView`-shaped object.
+        asr_backend_override: takes precedence over BILI_PROCESSING_ASR_BACKEND.
+        credential_provider: async callable returning a ``Credential | None``;
+            defaults to ``bili_unit.fetching.auth.get_credential`` when None.
+
+    Caller is responsible for closing the returned stores via cmd.close().
+    """
+    from ..fetching.auth import get_credential
+    from .audio._asr_backend import create_asr_backend
+    from .command import ProcessingCommand
+    from .data import ProcessingDataStore
+    from .error import ProcessingErrorStore
+    from .query import ProcessingQuery
+
+    data = ProcessingDataStore(settings.bili_processing_data_dir)
+    error = ProcessingErrorStore(settings.bili_processing_error_dir)
+    await data.open()
+    await error.open()
+
+    backend_name = asr_backend_override or settings.bili_processing_asr_backend
+    asr_backend = create_asr_backend(backend_name, settings=settings)
+
+    if credential_provider is None:
+        credential_provider = get_credential
+
+    cmd = ProcessingCommand(
+        data=data,
+        error=error,
+        temp_dir=settings.bili_processing_temp_dir,
+        fetching_query=fetching_query,
+        settings=settings,
+        asr_backend=asr_backend,
+        credential_provider=credential_provider,
+    )
+    qry = ProcessingQuery(data=data, error=error)
+    return cmd, qry, data, error
+
+
 __all__ = [
     "ASRAPIError",
     "ASRConfigError",
@@ -159,4 +212,5 @@ __all__ = [
     "ProcessingTaskDTO",
     "ProcessingTaskStatus",
     "QueueError",
+    "assemble",
 ]
