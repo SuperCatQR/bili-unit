@@ -200,6 +200,33 @@ class ParsingMaterializer:
         logger.info("video works parsed", extra={"uid": uid, "count": count})
         return count
 
+    async def _parse_video_subtitle(self, uid: int, mode: str) -> int:
+        from .models.video_subtitle import VideoSubtitle
+
+        try:
+            payloads = await self._fetch_qry.list_fanout_payloads(uid, "video_subtitle")
+        except Exception:
+            logger.warning(
+                "video_subtitle fanout unavailable",
+                extra={"uid": uid},
+                exc_info=True,
+            )
+            return 0
+
+        count = 0
+        for bvid, raw in payloads.items():
+            if not bvid or not isinstance(raw, dict):
+                continue
+            if await self._should_skip_item(uid, "video_subtitle", bvid, mode):
+                continue
+
+            obj = VideoSubtitle.from_raw(bvid, raw)
+            await self._put_item(uid, "video_subtitle", bvid, obj.to_dict())
+            count += 1
+
+        logger.info("video subtitles parsed", extra={"uid": uid, "count": count})
+        return count
+
     async def _parse_article_posts(self, uid: int, mode: str) -> int:
         from .models.article import Article, _build_cvid_to_lists
 
@@ -377,6 +404,7 @@ class ParsingMaterializer:
             article_posts_from_parsed,
             dynamic_posts_from_parsed,
             opus_posts_from_parsed,
+            video_posts_from_parsed,
         )
 
         candidates: list[Any] = []
@@ -391,6 +419,11 @@ class ParsingMaterializer:
         candidates.extend(
             dynamic_posts_from_parsed(
                 await self._load_typed_objects(uid, "dynamic_event")
+            )
+        )
+        candidates.extend(
+            video_posts_from_parsed(
+                await self._load_typed_objects(uid, "video_work")
             )
         )
         return candidates

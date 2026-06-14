@@ -28,6 +28,14 @@ class ProcessingTaskValue:
     pipelines: dict[str, PipelineEntry] = field(default_factory=dict)
     created_at: int | None = None
     updated_at: int | None = None
+    failed_item_ids: list[str] = field(default_factory=list)
+    """Aggregated identifiers of failed work units (``"pipeline:item_type:item_id"``).
+
+    The runner derives this from the ErrorStore at task finalisation; mid-run
+    instances normally carry an empty list. Persisted on disk for downstream
+    consumers (e.g. CLI ``query <uid>``) so they can display "what failed"
+    without joining task.json with the error log.
+    """
 
     def to_dict(self) -> dict:
         pipelines: dict[str, dict] = {}
@@ -42,6 +50,7 @@ class ProcessingTaskValue:
             "pipelines": pipelines,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "failed_item_ids": list(self.failed_item_ids),
         }
 
     @classmethod
@@ -58,4 +67,5 @@ class ProcessingTaskValue:
             pipelines=pipelines,
             created_at=d.get("created_at"),
             updated_at=d.get("updated_at"),
+            failed_item_ids=list(d.get("failed_item_ids", [])),
         )

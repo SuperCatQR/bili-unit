@@ -139,6 +139,15 @@ class UpProfile:
         """Stable string ID for this item."""
         return str(self.mid)
 
+    @property
+    def is_complete(self) -> bool:
+        """True iff the 3 required endpoints all contributed a source_ref.
+
+        ``overview_stat`` is optional and does not affect completeness.
+        """
+        seen = {ref.endpoint for ref in self.source_refs}
+        return {"user_info", "relation_info", "up_stat"} <= seen
+
     @classmethod
     def from_raw(
         cls,
@@ -192,6 +201,7 @@ class UpProfile:
             "stats": dict(self.stats),
             "overview": dict(self.overview) if self.overview is not None else None,
             "avatar_local": self.avatar_local,
+            "is_complete": self.is_complete,
             "_source_refs": [ref.to_dict() for ref in self.source_refs],
             "_cross_refs": self.cross_refs.to_dict(),
         }

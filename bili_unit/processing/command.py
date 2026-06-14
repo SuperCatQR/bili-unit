@@ -16,12 +16,13 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import ProcessingCommandResult, ProcessingTaskStatus
+from . import ProcessingCommandResult
 from .runner import ConvertFn, CredentialProvider, DownloaderFactory, ProcessingRunner
 
 if TYPE_CHECKING:
     from .._env import BiliSettings
     from ..fetching.protocols import FetchingReadView
+    from ..parsing.query import ParsingQuery
     from .audio._asr_backend import ASRBackend
     from .data import ProcessingDataStore
     from .error import ProcessingErrorStore
@@ -39,6 +40,7 @@ class ProcessingCommand:
         temp_dir: str | Path,
         fetching_query: FetchingReadView,
         settings: BiliSettings,
+        parsing_query: ParsingQuery | None = None,
         asr_backend: ASRBackend | None = None,
         credential_provider: CredentialProvider | None = None,
         downloader_factory: DownloaderFactory | None = None,
@@ -54,6 +56,7 @@ class ProcessingCommand:
             error=error,
             temp_dir=self._temp_dir,
             fetching_query=fetching_query,
+            parsing_query=parsing_query,
             settings=settings,
             asr_backend=asr_backend,
             credential_provider=credential_provider,
@@ -65,18 +68,48 @@ class ProcessingCommand:
         self,
         uid: int,
         mode: str = "incremental",
+        *,
+        limit: int | None = None,
+        only_bvids: list[str] | None = None,
+        retry_failed_only: bool = False,
+        dry_run: bool = False,
     ) -> ProcessingCommandResult:
         """Trigger processing for a uid.
 
         Args:
             mode: "incremental" (default) | "full".
+            limit: cap discovered bvids to the first N after other filters.
+            only_bvids: restrict processing to this explicit set of bvids.
+            retry_failed_only: only re-process bvids whose existing status is
+                FAILED (incremental-mode extension).
+            dry_run: discover candidates and write task / progress markers,
+                but skip worker dispatch. Status is SUCCESS; the candidate
+                list is returned via ``ProcessingCommandResult.dry_run_candidates``.
         """
         logger.info(
             "command_received",
-            extra={"uid": uid, "mode": mode},
+            extra={
+                "uid": uid,
+                "mode": mode,
+                "limit": limit,
+                "only_bvids": only_bvids,
+                "retry_failed_only": retry_failed_only,
+                "dry_run": dry_run,
+            },
         )
-        status: ProcessingTaskStatus = await self._runner.run(uid, mode=mode)
-        return ProcessingCommandResult(uid=uid, status=status)
+        status, candidates = await self._runner.run(
+            uid,
+            mode=mode,
+            limit=limit,
+            only_bvids=only_bvids,
+            retry_failed_only=retry_failed_only,
+            dry_run=dry_run,
+        )
+        return ProcessingCommandResult(
+            uid=uid,
+            status=status,
+            dry_run_candidates=candidates if dry_run else None,
+        )
 
     async def delete_uid(self, uid: int) -> dict[str, int]:
         """Delete all processing state for a uid. Returns counts."""

@@ -105,6 +105,11 @@ class ParsingCommand:
         if task_d is not None:
             tv = ParsingTaskValue.from_dict(task_d)
             tv.status = overall_status
+            tv.failed_item_ids = sorted(
+                model
+                for model, entry in tv.models.items()
+                if entry.get("status") == ParsingModelStatus.FAILED.value
+            )
             await self._data.put(task_key, tv.to_dict())
 
         return ParsingCommandResult(uid=uid, status=overall_status)

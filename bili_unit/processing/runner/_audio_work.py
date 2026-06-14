@@ -100,8 +100,14 @@ async def audio_transcribe_page(
     already-paid segments.
 
     Returns a dict with ``text`` (stitched), ``segment_duration_sum``,
-    ``got_any_segment_duration``, ``cache_hits``.  The orchestrator combines
-    that with the page metadata / CDN duration to pick the final value.
+    ``got_any_segment_duration``, ``cache_hits``, ``segments``,
+    ``audio_tokens_total``, ``asr_seconds_total``, and
+    ``fresh_segment_count`` — one ``segments`` entry per input mp3 segment
+    (in order) carrying its source-timeline range, transcribed text,
+    ASR-reported duration, and model id.  Cache hits and fresh ASR calls
+    both contribute to ``segments`` (and to ``audio_tokens_total`` /
+    ``asr_seconds_total``); ``fresh_segment_count`` counts only the
+    segments that actually hit the ASR backend on this run.
     """
     page_cache = (
         asr_cache.load_page(uid, bvid, page_index)
@@ -112,6 +118,11 @@ async def audio_transcribe_page(
     got_any_segment_duration = False
     cache_hits = 0
     segment_texts: list[str] = []
+    segments_out: list[dict] = []
+    backend_model = getattr(asr_backend, "model", "")
+    audio_tokens_total: int = 0
+    asr_seconds_total: float = 0.0
+    fresh_segment_count: int = 0
 
     for seg in segments:
         cached: CachedSegment | None = (
@@ -125,6 +136,16 @@ async def audio_transcribe_page(
             if cached.duration is not None:
                 segment_duration_sum += cached.duration
                 got_any_segment_duration = True
+                asr_seconds_total += float(cached.duration)
+            if cached.audio_tokens is not None:
+                audio_tokens_total += int(cached.audio_tokens)
+            segments_out.append({
+                "start_s": cached.start_s,
+                "end_s": cached.end_s,
+                "text": cached.text,
+                "duration": cached.duration,
+                "model": cached.model,
+            })
             continue
 
         audio_bytes = seg.path.read_bytes()
@@ -132,9 +153,24 @@ async def audio_transcribe_page(
             audio_bytes, mime_type="audio/mp3", language=asr_language,
         )
         segment_texts.append(asr_result.text)
+        fresh_segment_count += 1
         if asr_result.duration is not None:
             segment_duration_sum += float(asr_result.duration)
             got_any_segment_duration = True
+            asr_seconds_total += float(asr_result.duration)
+        seg_audio_tokens = getattr(asr_result, "audio_tokens", None)
+        if seg_audio_tokens is not None:
+            audio_tokens_total += int(seg_audio_tokens)
+        segments_out.append({
+            "start_s": seg.start_s,
+            "end_s": seg.end_s,
+            "text": asr_result.text,
+            "duration": (
+                float(asr_result.duration)
+                if asr_result.duration is not None else None
+            ),
+            "model": backend_model,
+        })
 
         # Persist immediately — the whole point of the cache.
         if asr_cache is not None and page_cache is not None:
@@ -144,7 +180,8 @@ async def audio_transcribe_page(
                 text=asr_result.text,
                 language=asr_language,
                 duration=asr_result.duration,
-                model=getattr(asr_backend, "model", ""),
+                model=backend_model,
+                audio_tokens=seg_audio_tokens,
             ))
 
     if cache_hits > 0:
@@ -169,4 +206,8 @@ async def audio_transcribe_page(
         "segment_duration_sum": segment_duration_sum,
         "got_any_segment_duration": got_any_segment_duration,
         "cache_hits": cache_hits,
+        "segments": segments_out,
+        "audio_tokens_total": audio_tokens_total,
+        "asr_seconds_total": asr_seconds_total,
+        "fresh_segment_count": fresh_segment_count,
     }

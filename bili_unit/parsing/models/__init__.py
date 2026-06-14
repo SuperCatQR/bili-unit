@@ -16,6 +16,7 @@ from __future__ import annotations
 _PARSER_NAMES: dict[str, str] = {
     "user_profile": ".models.up_profile",
     "video_work": ".models.video_detail",
+    "video_subtitle": ".models.video_subtitle",
     "article_post": ".models.article",
     "opus_post": ".models.opus",
     "dynamic_event": ".models.dynamic",

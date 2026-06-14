@@ -56,6 +56,7 @@ class CachedSegment:
     language: str
     duration: float | None
     model: str
+    audio_tokens: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -65,10 +66,18 @@ class CachedSegment:
             "language": self.language,
             "duration": self.duration,
             "model": self.model,
+            "audio_tokens": self.audio_tokens,
         }
 
     @classmethod
     def from_dict(cls, raw: dict) -> CachedSegment:
+        audio_tokens_raw = raw.get("audio_tokens")
+        try:
+            audio_tokens = (
+                int(audio_tokens_raw) if audio_tokens_raw is not None else None
+            )
+        except (TypeError, ValueError):
+            audio_tokens = None
         return cls(
             start_s=float(raw["start_s"]),
             end_s=float(raw["end_s"]),
@@ -78,6 +87,7 @@ class CachedSegment:
                 float(raw["duration"]) if raw.get("duration") is not None else None
             ),
             model=str(raw.get("model", "")),
+            audio_tokens=audio_tokens,
         )
 
 

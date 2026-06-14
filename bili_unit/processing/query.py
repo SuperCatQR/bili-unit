@@ -53,12 +53,18 @@ class ProcessingQuery:
                 status=entry.status,
                 items=dict(entry.items),
             )
+        # Prefer persisted ``failed_item_ids``; fall back to a live recomputation
+        # so old task values written before the field still surface failed work.
+        failed_item_ids = list(tv.failed_item_ids)
+        if not failed_item_ids:
+            failed_item_ids = await self._derive_failed_item_ids(uid)
         return ProcessingTaskDTO(
             uid=tv.uid,
             status=tv.status,
             pipelines=pipelines,
             created_at=tv.created_at,
             updated_at=tv.updated_at,
+            failed_item_ids=failed_item_ids,
         )
 
     async def list_tasks(self) -> list[dict]:
@@ -130,3 +136,22 @@ class ProcessingQuery:
             processed_at=d.get("processed_at"),
             errors=errors or [],
         )
+
+    async def _derive_failed_item_ids(self, uid: int) -> list[str]:
+        """Recompute ``failed_item_ids`` from the error store on the fly.
+
+        Used as a fallback when the persisted task value predates the field.
+        Mirrors :meth:`ProcessingRunner._collect_failed_item_ids`.
+        """
+        try:
+            errors = await self._error.list_by_uid(uid)
+        except Exception:  # noqa: BLE001
+            return []
+        ids: set[str] = set()
+        for err in errors:
+            if err.item_id is None:
+                continue
+            pipeline = err.pipeline or "unknown"
+            item_type = err.item_type or "unknown"
+            ids.add(f"{pipeline}:{item_type}:{err.item_id}")
+        return sorted(ids)

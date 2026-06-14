@@ -150,6 +150,11 @@ class VideoDetail:
         """Stable string ID for this item."""
         return self.bvid
 
+    @property
+    def is_complete(self) -> bool:
+        """True iff the ``video_detail`` endpoint contributed and a bvid is set."""
+        return any(ref.endpoint == "video_detail" for ref in self.source_refs) and bool(self.bvid)
+
     @classmethod
     def from_raw(cls, raw: dict) -> VideoDetail:
         """Create from a raw fetching dict.
@@ -244,6 +249,7 @@ class VideoDetail:
             "subtitle": dict(self.subtitle),
             "label": dict(self.label),
             "pic_local": self.pic_local,
+            "is_complete": self.is_complete,
             "_source_refs": [ref.to_dict() for ref in self.source_refs],
             "_cross_refs": self.cross_refs.to_dict(),
         }

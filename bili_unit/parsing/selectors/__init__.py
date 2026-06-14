@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._common import video_posts_from_parsed
 from .article import article_posts_from_parsed, select_article_posts
 from .dynamic import (
     dynamic_posts_from_parsed,
@@ -20,4 +21,5 @@ __all__ = [
     "select_dynamic_events",
     "select_dynamic_posts",
     "select_opus_posts",
+    "video_posts_from_parsed",
 ]

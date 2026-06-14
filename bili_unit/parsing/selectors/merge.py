@@ -49,6 +49,8 @@ def _aliases_for(post: ContentPost) -> set[str]:
         aliases.add(f"article:{post.cross_refs.cvid}")
     if post.cross_refs.opus_id:
         aliases.add(f"opus:{post.cross_refs.opus_id}")
+    if post.cross_refs.bvid:
+        aliases.add(f"video:{post.cross_refs.bvid}")
     if post.cross_refs.dynamic_id:
         aliases.add(f"dynamic:{post.cross_refs.dynamic_id}")
     return aliases
@@ -77,7 +79,7 @@ def _merge_into(base: ContentPost, incoming: ContentPost) -> None:
     base.content_key = content_key_for_refs(base.cross_refs, base.content_key)
 
     if incoming.kind and (
-        incoming.kind in {"article", "opus"} and base.kind.startswith("dynamic")
+        incoming.kind in {"article", "opus", "video"} and base.kind.startswith("dynamic")
         or not base.kind
     ):
         base.kind = incoming.kind
@@ -139,7 +141,10 @@ def merge_content_posts(posts: Iterable[ContentPost | dict[str, Any]]) -> list[C
     return sorted(
         merged.values(),
         key=lambda post: (
-            0 if post.content_key.startswith("article:") else 1 if post.content_key.startswith("opus:") else 2,
+            0 if post.content_key.startswith("article:")
+            else 1 if post.content_key.startswith("opus:")
+            else 2 if post.content_key.startswith("video:")
+            else 3,
             post.content_key,
         ),
     )

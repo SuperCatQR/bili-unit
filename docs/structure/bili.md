@@ -149,7 +149,8 @@ command → runner → auth → env
                     ↘ ImageDownloader（可选）→ images/
                     ↘ parsing.data → typed object 入库
          runner → data（write results / task / status / progress）
-         runner → parsing.query（read VideoDetail for audio cid lookup）
+         runner → parsing.query（read VideoDetail for audio cid lookup;
+                                  read VideoSubtitle for ASR shortcut）
          runner → temp（处理完成后删除）
 query → data（read）
 query → error（read）

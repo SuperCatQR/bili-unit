@@ -1,0 +1,32 @@
+{
+  "id": "zh01a04ce91d4244b6b8a6ddc73e62d7c2",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "今天我们来聊聊深度学习的基础原理，从感知机讲起。",
+        "role": "assistant",
+        "audio": null,
+        "tool_calls": null,
+        "audio_tokens": []
+      }
+    }
+  ],
+  "created": 1781200000,
+  "model": "mimo-v2.5-asr",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 25,
+    "prompt_tokens": 215,
+    "total_tokens": 240,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 195,
+      "cached_tokens": 0
+    },
+    "seconds": 30
+  }
+}

@@ -8,12 +8,12 @@
 1. [存储信封](#1-存储信封)
 2. [raw_payload 两种存储形态](#2-raw_payload-两种存储形态)
 3. [uid-level 端点数据](#3-uid-level-端点数据已文档化-22-个) — 已文档化 22 个 / 共 34 个
-4. [item-level 端点数据](#4-item-level-端点数据已文档化-6-个) — 已文档化 6 个 / 共 30 个
+4. [item-level 端点数据](#4-item-level-端点数据已文档化-7-个) — 已文档化 7 个 / 共 30 个
 5. [端点与 item 的派生关系](#5-端点与-item-的派生关系)
 6. [已知数据特征](#6-已知数据特征)
 7. [未文档化端点](#7-未文档化端点)
 
-> **覆盖范围**：本文已为 28 / 64 个注册端点写下了 raw_payload schema。已文档化的端点是 parsing 层目前消费的全部端点，加上一批历史已实测的 T1/T2 扩展端点。剩余 36 个端点有代码注册但尚未在本文录入 schema —— 它们的真实响应需要拿目标 uid 真跑一遍 fetch 后才能补全，参见 §7。
+> **覆盖范围**：本文已为 29 / 64 个注册端点写下了 raw_payload schema。已文档化的端点是 parsing 层目前消费的全部端点，加上一批历史已实测的 T1/T2 扩展端点。剩余 35 个端点有代码注册但尚未在本文录入 schema —— 它们的真实响应需要拿目标 uid 真跑一遍 fetch 后才能补全，参见 §7。
 
 ---
 
@@ -866,7 +866,7 @@ raw_payload 是 dict：
 
 ---
 
-### 4. item-level 端点数据（已文档化 6 个）
+### 4. item-level 端点数据（已文档化 7 个）
 
 item-level 端点从父端点的 raw_payload 中派生 item ID 列表，然后逐个抓取。每个 item 独立存储。
 
@@ -1246,6 +1246,77 @@ raw_payload 结构与 `channel_videos_season` 完全一致：
 
 ---
 
+#### 4.7 video_subtitle
+
+父端点：`videos`。item_id：bvid。
+API：`Video(bvid).get_pages()` + 每个 page 调 `Video.get_subtitle(cid)` 拿索引 + 对索引中每条 `subtitle_url` 用 aiohttp 拉 JSON 正文。
+
+raw_payload 是由 fetching 代码构造的 dict，分两层：(a) `result` 是 `get_subtitle` 的原始索引，(b) `content` 是 fetching 进一步把每条 `subtitle_url` 的 JSON 体内联进来后的形态。
+
+```
+{
+  "pages": [                              // get_pages() 返回值（同 video_pages 端点）
+    {
+      "cid": int,
+      "page": int,
+      "part": str,
+      "duration": int,
+      "vid": str,
+      "weblink": str,
+      "dimension": dict
+    }
+  ],
+  "subtitle": [                           // 每个 page 一条
+    {
+      "page_index": int,                  // 在 pages 中的下标 (0-based)
+      "cid": int | null,
+      "part": str,
+      "result": {                         // Video.get_subtitle(cid) 原始返回
+        "allow_submit": bool,
+        "lan": str,
+        "lan_doc": str,
+        "subtitles": [
+          {
+            "id": int,
+            "lan": str,                   // e.g. "zh-CN", "ai-zh", "en-US"
+            "lan_doc": str,               // e.g. "中文（中国）"
+            "is_lock": bool,
+            "subtitle_url": str,          // 协议相对 URL（//host/...） — fetching 拉取时补 https:
+            "type": int,                  // 0=人工，1=AI
+            "id_str": str,
+            "ai_type": int,
+            "ai_status": int
+          }
+        ]
+      },
+      "content": [                        // 与 result.subtitles 一一对应；URL 拉成功才有 body
+        {
+          "lan": str,                     // 同 result.subtitles[i].lan
+          "lan_doc": str,
+          "body": [                       // 字幕 JSON 的 body 字段（仅成功项）
+            {"from": float, "to": float, "content": str, "sid": int, ...}
+          ]
+        },
+        {
+          "lan": str,
+          "lan_doc": str,
+          "_fetch_error": str             // 拉失败的项有此字段，无 body
+        }
+      ]
+    }
+  ]
+}
+```
+
+**特征**：
+
+- `result.subtitles` 为空 list 时，对应 `content` 也是 `[]`（视频无官方/AI 字幕）。
+- 单条 lang 的 URL 拉取失败（HTTP / JSON parse / 超时 / `aiohttp.ClientError`）只记录在该 lang 项的 `_fetch_error` 字段，不阻塞其他 lang 或其他 page。
+- B 站返回的 `subtitle_url` 通常是协议相对（`//i0.hdslb.com/...`），fetching 在 GET 之前自动补 `https:`。
+- `content[i].body[*]` 的 `from` / `to` 是相对该 page 起始的秒数浮点。
+
+---
+
 ### 5. 端点与 item 的派生关系
 
 ```
@@ -1278,7 +1349,7 @@ processing 层通过这些父子关系，从列表端点获取 item ID 清单，
 
 ### 7. 未文档化端点
 
-下列 36 个端点已在 `bili_unit/fetching/_endpoint_catalog.py` 注册，可被 `fetch` 命令调用，但 raw_payload schema 未在本文录入。它们大多是 video 子接口的 fan-out（弹幕、字幕、播放数据等），少量是后期补充的关系类端点。要补完 schema 需要拿一个公开账号 uid 真跑一遍 `fetch <uid> -e <endpoint>`，把落盘的 `raw_payload` 摘录到本文对应小节。
+下列 35 个端点已在 `bili_unit/fetching/_endpoint_catalog.py` 注册，可被 `fetch` 命令调用，但 raw_payload schema 未在本文录入。它们大多是 video 子接口的 fan-out（弹幕、播放数据等），少量是后期补充的关系类端点。要补完 schema 需要拿一个公开账号 uid 真跑一遍 `fetch <uid> -e <endpoint>`，把落盘的 `raw_payload` 摘录到本文对应小节。
 
 **uid-level（12 个）**
 
@@ -1287,15 +1358,14 @@ access_id channels dynamics_legacy followers followings live_info
 media_list reservation same_followers top_followers uplikeimg user_relation
 ```
 
-**item-level / video 子接口（23 个）**
+**item-level / video 子接口（22 个）**
 
 ```text
 video_ai_conclusion video_chargers video_danmaku_snapshot video_danmaku_view
 video_danmaku_xml video_danmakus video_detail_full video_download_url
 video_is_episode video_is_forbid_note video_online video_pages video_pay_coins
 video_pbp video_player_info video_private_notes video_public_notes
-video_related video_relation video_snapshot video_special_dms video_subtitle
-video_up_mid
+video_related video_relation video_snapshot video_special_dms video_up_mid
 ```
 
 **item-level / 其他（1 个）**
@@ -1303,6 +1373,4 @@ video_up_mid
 ```text
 upower_qa_detail
 ```
-
-> 注：`video_subtitle` 的 raw_payload 在某些视频上为 `null`（B 站未提供官方字幕），补 schema 时需要标注 nullable 形态。
 

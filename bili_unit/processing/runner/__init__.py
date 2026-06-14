@@ -50,6 +50,7 @@ DownloaderFactory = Callable[..., Any]  # AudioDownloader constructor, compatibl
 if TYPE_CHECKING:
     from ..._env import BiliSettings
     from ...fetching.protocols import FetchingReadView
+    from ...parsing.query import ParsingQuery
     from ..audio._asr_backend import ASRBackend
     from ..data import ProcessingDataStore
     from ..error import ProcessingErrorStore
@@ -70,6 +71,7 @@ class ProcessingRunner(_AudioMixin):
         temp_dir: str | Path,
         fetching_query: FetchingReadView,
         settings: BiliSettings,
+        parsing_query: ParsingQuery | None = None,
         asr_backend: ASRBackend | None = None,
         credential_provider: CredentialProvider | None = None,
         downloader_factory: DownloaderFactory | None = None,
@@ -79,6 +81,7 @@ class ProcessingRunner(_AudioMixin):
         self._error = error
         self._temp_dir = Path(temp_dir)
         self._fetch_qry = fetching_query
+        self._parse_qry = parsing_query
         self._settings = settings
         self._asr_backend = asr_backend
         self._credential_provider = credential_provider
@@ -110,19 +113,36 @@ class ProcessingRunner(_AudioMixin):
         self,
         uid: int,
         mode: str = "incremental",
-    ) -> ProcessingTaskStatus:
+        *,
+        limit: int | None = None,
+        only_bvids: list[str] | None = None,
+        retry_failed_only: bool = False,
+        dry_run: bool = False,
+    ) -> tuple[ProcessingTaskStatus, list[str]]:
         """Run the audio processing pipeline for a uid.
 
         Args:
             uid: target user.
             mode: "incremental" (default) or "full".
+            limit / only_bvids / retry_failed_only / dry_run: see
+                :meth:`ProcessingCommand.process_uid`.
+
+        Returns:
+            ``(status, candidates)``. ``candidates`` is the bvid list that
+            entered (or *would have entered* on dry-run) the audio worker
+            after all CLI-level filters. Outside dry-run callers can ignore
+            it; ``ProcessingCommand`` only surfaces it on dry-run.
         """
         if mode not in ("incremental", "full"):
             raise ValueError(f"unknown mode: {mode!r}")
 
         logger.info(
             "processing_start",
-            extra={"uid": uid, "mode": mode, "pipelines": [_AUDIO]},
+            extra={
+                "uid": uid, "mode": mode, "pipelines": [_AUDIO],
+                "limit": limit, "only_bvids": only_bvids,
+                "retry_failed_only": retry_failed_only, "dry_run": dry_run,
+            },
         )
 
         # Phase 0 — load / create task value
@@ -131,11 +151,18 @@ class ProcessingRunner(_AudioMixin):
         await self._save_task(tv)
 
         # Phase 1 — audio pipeline
-        await self._run_audio(uid, tv, mode)
+        candidates = await self._run_audio(
+            uid, tv, mode,
+            limit=limit,
+            only_bvids=only_bvids,
+            retry_failed_only=retry_failed_only,
+            dry_run=dry_run,
+        )
 
         # Phase 2 — finalise
         tv = await self._reload_task(uid) or tv
         tv.status = self._derive_task_status(tv)
+        tv.failed_item_ids = await self._collect_failed_item_ids(uid)
         await self._save_task(tv)
 
         # Phase 2 — cleanup temp
@@ -145,7 +172,7 @@ class ProcessingRunner(_AudioMixin):
             "processing_completed",
             extra={"uid": uid, "status": tv.status.value},
         )
-        return tv.status
+        return tv.status, candidates
 
     # -- helpers -----------------------------------------------------------
 
@@ -195,6 +222,26 @@ class ProcessingRunner(_AudioMixin):
 
     async def _save_task(self, tv: ProcessingTaskValue) -> None:
         await self._data.put(_task_key(tv.uid), tv.to_dict())
+
+    async def _collect_failed_item_ids(self, uid: int) -> list[str]:
+        """Aggregate ``failed_item_ids`` from the processing error store.
+
+        Entries are encoded as ``"pipeline:item_type:item_id"``; missing
+        components fall back to ``"unknown"`` so a malformed record never
+        crashes task finalisation. Order is sorted for stability.
+        """
+        try:
+            errors = await self._error.list_by_uid(uid)
+        except Exception:  # noqa: BLE001 — never fail task save on error-log read
+            return []
+        ids: set[str] = set()
+        for err in errors:
+            if err.item_id is None:
+                continue
+            pipeline = err.pipeline or "unknown"
+            item_type = err.item_type or "unknown"
+            ids.add(f"{pipeline}:{item_type}:{err.item_id}")
+        return sorted(ids)
 
     async def _write_progress(
         self,

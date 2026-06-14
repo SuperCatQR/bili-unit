@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +61,7 @@ class _AudioMixin:
     _data: Any
     _error: Any
     _fetch_qry: Any
+    _parse_qry: Any
     _settings: BiliSettings
     _temp_dir: Path
     _asr_backend: ASRBackend | None
@@ -89,8 +91,18 @@ class _AudioMixin:
         uid: int,
         tv: ProcessingTaskValue,
         mode: str,
-    ) -> None:
-        """Phase-1 audio: discover → enqueue → workers → rollup."""
+        *,
+        limit: int | None = None,
+        only_bvids: list[str] | None = None,
+        retry_failed_only: bool = False,
+        dry_run: bool = False,
+    ) -> list[str]:
+        """Phase-1 audio: discover → enqueue → workers → rollup.
+
+        Returns the bvid list that survived discovery + filtering (the
+        candidate set the worker pool processes, or *would* have processed
+        on dry-run). The list mirrors the order items are enqueued.
+        """
         entry = tv.pipelines.setdefault(_AUDIO, PipelineEntry())
         entry.status = ProcessingPipelineStatus.RUNNING
         await self._data.update_task_pipeline(
@@ -99,18 +111,26 @@ class _AudioMixin:
 
         # 1. discover audio work items (one per bvid)
         try:
-            audio_items, skipped = await self._discover_audio_items(uid, mode)
+            audio_items, skipped, subtitle_done = await self._discover_audio_items(
+                uid, mode,
+                only_bvids=only_bvids,
+                retry_failed_only=retry_failed_only,
+                limit=limit,
+                dry_run=dry_run,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "audio_discovery_failed",
                 extra={"uid": uid, "error": str(exc)},
             )
-            audio_items, skipped = [], 0
+            audio_items, skipped, subtitle_done = [], 0, 0
+
+        candidates = [it.item_id for it in audio_items]
 
         rollup: dict[str, dict[str, int]] = {
             "transcription": {
-                "total": len(audio_items) + skipped,
-                "completed": 0,
+                "total": len(audio_items) + skipped + subtitle_done,
+                "completed": subtitle_done,
                 "failed": 0,
                 "skipped": skipped,
             },
@@ -122,6 +142,30 @@ class _AudioMixin:
 
         # 2. write progress marker (initial)
         await self._write_progress(uid, _AUDIO, "transcription", rollup["transcription"], done=False)
+
+        if dry_run:
+            # Skip credential resolution / worker dispatch entirely. We
+            # zero the rollup so the pipeline status derives to SUCCESS
+            # (nothing to do == done) without lying that anything ran;
+            # the truth lives in ``candidates`` which the caller surfaces
+            # via ``ProcessingCommandResult.dry_run_candidates``.
+            logger.info(
+                "audio_dry_run",
+                extra={"uid": uid, "candidates": candidates, "skipped": skipped},
+            )
+            print(f"dry_run candidates: {candidates}")
+            rollup["transcription"] = {
+                "total": 0, "completed": 0, "failed": 0, "skipped": 0,
+            }
+            entry.items = rollup
+            entry.status = self._derive_pipeline_status(rollup)
+            await self._data.update_task_pipeline(
+                _task_key(uid), _AUDIO, entry.status.value, items=rollup,
+            )
+            await self._write_progress(
+                uid, _AUDIO, "transcription", rollup["transcription"], done=True,
+            )
+            return candidates
 
         # 3. resolve credential for CDN downloads
         credential = None
@@ -144,24 +188,52 @@ class _AudioMixin:
             _task_key(uid), _AUDIO, entry.status.value, items=rollup,
         )
         await self._write_progress(uid, _AUDIO, "transcription", rollup["transcription"], done=True)
+        return candidates
 
     async def _discover_audio_items(
         self: Any,
         uid: int,
         mode: str,
-    ) -> tuple[list[WorkItem], int]:
+        *,
+        only_bvids: list[str] | None = None,
+        retry_failed_only: bool = False,
+        limit: int | None = None,
+        dry_run: bool = False,
+    ) -> tuple[list[WorkItem], int, int]:
         """Discover audio work items from video_detail.
 
         Each bvid produces one WorkItem carrying its page list.
-        Returns (ready_items, skipped_count).
+
+        Filter ordering (each step narrows the previous one's output):
+            1. ``only_bvids``      — restrict to a caller-supplied bvid set.
+            2. ``_filter_audio_ready`` (incremental skip /
+               ``retry_failed_only`` selection).
+            3. subtitle short-circuit — bvids whose ``video_subtitle`` parsing
+               object exists and is complete have their result written
+               directly with ``transcription_source: "subtitle"`` and are
+               removed from the worker queue.
+            4. ``limit``            — cap to first N after the steps above.
+
+        Returns ``(ready_items, skipped_count, subtitle_done_count)``.
+        ``skipped_count`` is the number of bvids elided by the incremental
+        skip rule (so the rollup ``total`` still reflects the full discovery
+        set).  ``subtitle_done_count`` is the number of bvids fulfilled via
+        the subtitle short-circuit; their persisted records carry
+        ``transcription_source: "subtitle"`` so the audio worker is bypassed.
         """
         vd_pairs = await self._fetch_qry.list_video_details(uid)
         if not vd_pairs:
-            return [], 0
+            return [], 0, 0
+
+        only_set: set[str] | None = (
+            set(only_bvids) if only_bvids is not None else None
+        )
 
         items: list[WorkItem] = []
         for bvid, status in vd_pairs:
             if status != EndpointStatus.SUCCESS:
+                continue
+            if only_set is not None and bvid not in only_set:
                 continue
             dto = await self._fetch_qry.get_video_detail(uid, bvid)
             if dto is None or dto.raw_payload is None:
@@ -188,18 +260,209 @@ class _AudioMixin:
                 item_data={"bvid": bvid, "pages": page_list},
             ))
 
-        return await self._filter_audio_ready(uid, items, mode)
+        ready, skipped = await self._filter_audio_ready(
+            uid, items, mode, retry_failed_only=retry_failed_only,
+        )
+
+        # Subtitle short-circuit: prune ``ready`` to drop bvids whose
+        # parsed video_subtitle is already complete; write their result
+        # directly so the audio worker pool is bypassed.
+        ready, subtitle_done = await self._apply_subtitle_shortcuts(
+            uid, ready, dry_run=dry_run,
+        )
+
+        if limit is not None and limit >= 0:
+            ready = ready[:limit]
+        return ready, skipped, subtitle_done
+
+    async def _apply_subtitle_shortcuts(
+        self: Any,
+        uid: int,
+        items: list[WorkItem],
+        *,
+        dry_run: bool,
+    ) -> tuple[list[WorkItem], int]:
+        """Remove bvids that have complete subtitles and persist their results.
+
+        For each item whose parsed ``video_subtitle`` exists and is complete
+        (every page has a selected language), build an audio-pipeline result
+        dict from the subtitle segments and write a SUCCESS row to the
+        processing data store.  Those items are removed from the returned
+        list so workers do not re-process them.
+
+        ``dry_run`` skips both the read and the persistence: short-circuit
+        candidates would still flow through the worker pool on a real run,
+        and we don't want dry-run to mutate processing storage.
+
+        Returns ``(remaining_items, subtitle_done_count)``.
+        """
+        if dry_run or self._parse_qry is None or not items:
+            return items, 0
+
+        remaining: list[WorkItem] = []
+        done_count = 0
+        for item in items:
+            bvid = item.item_id
+            try:
+                subtitle = await self._parse_qry.get_video_subtitle(uid, bvid)
+            except Exception:  # noqa: BLE001 — defensive: never block audio
+                logger.warning(
+                    "subtitle_lookup_failed",
+                    extra={"uid": uid, "bvid": bvid},
+                    exc_info=True,
+                )
+                remaining.append(item)
+                continue
+
+            result = self._build_subtitle_result(item, subtitle)
+            if result is None:
+                remaining.append(item)
+                continue
+
+            now = int(time.time() * 1000)
+            await self._data.put(_proc_key(uid, "audio", bvid), {
+                "uid": uid,
+                "pipeline": "audio",
+                "item_type": "transcription",
+                "item_id": bvid,
+                "status": ProcessingItemStatus.SUCCESS.value,
+                "result": result,
+                "source_endpoints": ["video_subtitle"],
+                "processed_at": now,
+            })
+            done_count += 1
+            logger.info(
+                "audio_subtitle_shortcut",
+                extra={"uid": uid, "bvid": bvid, "pages": len(result["pages"])},
+            )
+        return remaining, done_count
+
+    @staticmethod
+    def _build_subtitle_result(
+        item: WorkItem,
+        subtitle: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Return an audio-result dict synthesised from a subtitle dict.
+
+        Returns None when ``subtitle`` is missing or not complete (any page
+        without a resolved language).  The caller falls back to the ASR
+        pipeline in that case.
+        """
+        if not isinstance(subtitle, dict):
+            return None
+        pages = subtitle.get("pages")
+        if not isinstance(pages, list) or not pages:
+            return None
+
+        # A subtitle is "complete" iff every page has a selected lan. We
+        # validate the dict directly instead of round-tripping through the
+        # dataclass to keep the hot path cheap.
+        for p in pages:
+            if not isinstance(p, dict):
+                return None
+            if not p.get("lan"):
+                return None
+
+        # Map subtitle pages back to bvid pages by page_index so we can
+        # carry the original duration from video_detail.
+        bvid_pages = {
+            p["page_index"]: p for p in item.item_data.get("pages", [])
+            if isinstance(p, dict) and "page_index" in p
+        }
+
+        out_pages: list[dict[str, Any]] = []
+        total_duration = 0.0
+        total_chars = 0
+        for sp in pages:
+            page_index = int(sp.get("page_index", 0) or 0)
+            cid = int(sp.get("cid", 0) or 0)
+            lan = str(sp.get("lan", "") or "")
+            seg_dicts = sp.get("segments", []) or []
+            segments_out: list[dict[str, Any]] = []
+            text_parts: list[str] = []
+            for seg in seg_dicts:
+                if not isinstance(seg, dict):
+                    continue
+                start = float(seg.get("start", 0.0) or 0.0)
+                end = float(seg.get("end", 0.0) or 0.0)
+                content = str(seg.get("content", "") or "")
+                segments_out.append({
+                    "start_s": start,
+                    "end_s": end,
+                    "text": content,
+                    "duration": max(0.0, end - start),
+                    "model": "subtitle",
+                })
+                text_parts.append(content)
+            text = " ".join(text_parts)
+
+            duration_meta = bvid_pages.get(page_index, {}).get("duration")
+            try:
+                duration = (
+                    float(duration_meta) if duration_meta is not None else None
+                )
+            except (TypeError, ValueError):
+                duration = None
+            if duration is None and segments_out:
+                duration = segments_out[-1]["end_s"]
+
+            out_pages.append({
+                "page_index": page_index,
+                "cid": cid,
+                "duration": duration,
+                "text": text,
+                "language": lan,
+                "asr_model": "subtitle",
+                "segments": segments_out,
+            })
+            if duration is not None:
+                total_duration += float(duration)
+            total_chars += len(text)
+
+        return {
+            "bvid": item.item_id,
+            "pages": out_pages,
+            "total_duration": total_duration,
+            "total_chars": total_chars,
+            "transcription_source": "subtitle",
+            "cost": {
+                "audio_tokens": 0,
+                "seconds": 0,
+                "model": "subtitle",
+                "cache_hits": 0,
+                "fresh_segments": 0,
+            },
+        }
 
     async def _filter_audio_ready(
         self: Any,
         uid: int,
         items: list[WorkItem],
         mode: str,
+        *,
+        retry_failed_only: bool = False,
     ) -> tuple[list[WorkItem], int]:
-        """Apply incremental skip rule for audio items."""
+        """Apply incremental skip rule for audio items.
+
+        ``retry_failed_only`` overrides the normal incremental rule: only
+        items whose existing ``status`` is FAILED are kept; everything else
+        (no record yet, SUCCESS, anything other than FAILED) is dropped
+        without being counted as ``skipped`` so the rollup reflects
+        "considered for retry" rather than the full population.
+        """
+        if retry_failed_only:
+            ready: list[WorkItem] = []
+            for item in items:
+                existing = await self._data.get(_proc_key(uid, "audio", item.item_id))
+                if existing is None:
+                    continue
+                if existing.get("status") == ProcessingItemStatus.FAILED.value:
+                    ready.append(item)
+            return ready, 0
+
         if mode == "full":
             return items, 0
-        ready: list[WorkItem] = []
+        ready = []
         skipped = 0
         for item in items:
             existing = await self._data.get(_proc_key(uid, "audio", item.item_id))
@@ -317,6 +580,10 @@ class _AudioMixin:
             page_results = []
             total_duration: float = 0.0
             total_chars: int = 0
+            total_audio_tokens: int = 0
+            total_asr_seconds: float = 0.0
+            total_cache_hits: int = 0
+            total_fresh_segments: int = 0
 
             for page in pages:
                 page_index = page["page_index"]
@@ -377,17 +644,29 @@ class _AudioMixin:
                     "text": full_text,
                     "language": asr_language,
                     "asr_model": getattr(self._asr_backend, "model", ""),
-                    "segments": [],
+                    "segments": trans["segments"],
                 })
                 if page_duration is not None:
                     total_duration += float(page_duration)
                 total_chars += len(full_text)
+                total_audio_tokens += int(trans.get("audio_tokens_total", 0))
+                total_asr_seconds += float(trans.get("asr_seconds_total", 0.0))
+                total_cache_hits += int(trans.get("cache_hits", 0))
+                total_fresh_segments += int(trans.get("fresh_segment_count", 0))
 
             result = {
                 "bvid": bvid,
                 "pages": page_results,
                 "total_duration": total_duration,
                 "total_chars": total_chars,
+                "transcription_source": "asr",
+                "cost": {
+                    "audio_tokens": int(total_audio_tokens),
+                    "seconds": int(total_asr_seconds),
+                    "model": getattr(self._asr_backend, "model", ""),
+                    "cache_hits": int(total_cache_hits),
+                    "fresh_segments": int(total_fresh_segments),
+                },
             }
             # Bvid completed successfully — drop its resume cache.  We only
             # clear on the success path; partial-failure cache survives so

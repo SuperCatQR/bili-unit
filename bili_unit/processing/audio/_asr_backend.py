@@ -15,6 +15,7 @@ class ASRResult:
     segments: list[dict] = field(default_factory=list)
     duration: float | None = None
     model: str = ""
+    audio_tokens: int | None = None
     raw_response: dict[str, Any] = field(default_factory=dict)
 
 
@@ -57,6 +58,7 @@ class MockASRBackend:
             segments=[],
             duration=duration,
             model=self.model,
+            audio_tokens=0,
             raw_response={"mock": True, "bytes": len(audio_data)},
         )
 

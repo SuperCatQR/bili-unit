@@ -23,3 +23,16 @@ Keep all six. `ContentPost` is the contract processing and ingestion consume for
 - Three persistence paths run in parallel for content: `article_post/`, `opus_post/`, `dynamic_event/` (legacy) + `content_post/` (unified). Disk cost is negligible (JSON, deduplicated by key); the cost is conceptual — a reader must learn that ContentPost is the contract and the legacy three are sources.
 - Field-extraction bugs must be fixed in the legacy `from_raw` (the source), not in ContentPost derivation. The selectors package is the single place that maps legacy → ContentPost (post-`7ddf965`); a fix there propagates to all ContentPost consumers in one edit.
 - If ingestion ever stops needing the legacy fields (content_json / detail_images / forwarded), the legacy three could collapse into ContentPost. Not pursued — premature until ingestion's actual read pattern is known.
+
+## 2026-06-14 update: video kind merged into ContentPost
+
+Originally `ContentPost` only modelled three content identities (article / opus / dynamic) — `VideoDetail` lived strictly in `video_work/` because it was framed as a video-work shape rather than a "content post". This worked while `MAJOR_TYPE_ARCHIVE` dynamics were the only video reference inside the unified view (and they were filtered out of `dynamic_posts_from_parsed`, so videos simply did not appear in `content_post/`).
+
+Adding a `kind="video"` `ContentPost` candidate fixes the asymmetry:
+
+- **Why now.** "List all content authored by an UP" was a join across `content_post/` and `video_work/`. With video kind in ContentPost, `qry.parsing.list_items(uid, "content_post")` is a single read and downstream callers no longer need to know about the legacy split.
+- **`video_posts_from_parsed`.** Lives in `selectors/_common.py` and follows the same shape as the article/opus/dynamic siblings: consumes `VideoDetail.to_dict()`, emits `ContentPost(content_key=f"video:{bvid}", kind="video", source_refs=[SourceRef("video_detail", bvid)], cross_refs=CrossRefs(bvid=bvid))`. The legacy `video_work/` slot is unchanged — it remains the candidate source (same relationship Article has to its ContentPost candidate), so VideoDetail-only fields (`pages`, `cid`, `tags`, `owner`, ...) stay accessible to processing's audio runner.
+- **`bvid` priority in `content_key_for_refs`.** Bumped above `dynamic_id` (now `cvid > opus_id > bvid > dynamic_id`). A `MAJOR_TYPE_ARCHIVE` dynamic that previously keyed as `dynamic:{id}` now keys as `video:{bvid}`, which is the more stable identity and lets archive dynamics merge into the matching video post without a separate alias step. `dynamic_posts_from_parsed` already excluded these (video target refs are not a readable body), so no existing parsed entry's content_key changes; the rule shift only affects new merge candidates that explicitly carry both `bvid` and `dynamic_id`.
+- **Merge sort order.** `0=article, 1=opus, 2=video, 3=dynamic` (was `0=article, 1=opus, 2=dynamic`). The `_merge_into` kind-priority set now includes `"video"` alongside `"article"` and `"opus"` — when a dynamic and a video share a key, the merged post's kind is `video`, not `dynamic_*`.
+
+VideoSubtitle is intentionally not a ContentPost candidate: subtitles are a transcription input, not authored content.

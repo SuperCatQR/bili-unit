@@ -93,12 +93,19 @@ async def assemble(
     proc_cmd, proc_qry, _proc_data, _proc_error = await _processing_assemble(
         settings,
         fetching_query=fetch_qry,
+        parsing_query=parse_qry,
         asr_backend_override=asr_backend_override,
         credential_provider=credential_provider,
     )
 
-    cmd = BiliCommand(fetch_cmd, parsing=parse_cmd, processing=proc_cmd)
     qry = BiliQuery(fetch_qry, parsing=parse_qry, processing=proc_qry)
+    cmd = BiliCommand(
+        fetch_cmd,
+        parsing=parse_cmd,
+        processing=proc_cmd,
+        query=qry,
+        settings=settings,
+    )
     return cmd, qry
 
 
