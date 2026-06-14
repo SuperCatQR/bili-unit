@@ -280,6 +280,45 @@ async def fetch_user_channels(
     return {"channels": rows}
 
 
+async def fetch_user_media_list(
+    uid: int,
+    cred: Credential | None = None,
+    timeout: float = 30.0,
+    sort_field: int | user.MedialistOrder = user.MedialistOrder.PUBDATE,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Fetch one page of the user's "video sets" (media list).
+
+    The bilibili-api SDK's ``get_media_list`` accesses ``sort_field.value`` so
+    it must receive a :class:`bilibili_api.user.MedialistOrder` enum.  But the
+    runner persists ``request_params`` as JSON (for resume/progress) — and
+    enums aren't JSON-serialisable, which previously crashed the page-save
+    silently and stranded the endpoint in RUNNING.  This wrapper accepts the
+    int form (which round-trips through JSON cleanly) and re-casts it before
+    invoking the SDK.
+
+    The parameter is named ``cred`` to match the call convention in
+    :func:`fetch_endpoint` (``spec.callable(uid, cred=...)``); see
+    :func:`fetch_user_channels` for the rationale.
+    """
+    if isinstance(sort_field, int):
+        try:
+            sort_enum = user.MedialistOrder(sort_field)
+        except ValueError as exc:
+            raise RequestError(
+                f"media_list: invalid sort_field {sort_field!r}: {exc}",
+            ) from exc
+    else:
+        sort_enum = sort_field
+
+    u = user.User(uid, credential=cred)
+    async with _map_bilibili_errors("media_list"):
+        return await asyncio.wait_for(
+            u.get_media_list(sort_field=sort_enum, **kw),
+            timeout=timeout,
+        )
+
+
 def _extract_qa_ids_from_upower_qa(raw_payload: dict) -> list[str]:
     """Extract qa_ids from upower_qa pages."""
     ids: list[str] = []
