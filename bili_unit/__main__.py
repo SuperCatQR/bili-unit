@@ -10,6 +10,7 @@
 #   python -m bili_unit list-uids                    — list fetched uids
 #   python -m bili_unit delete-uid  <uid> [-y]       — delete all data for a uid
 #   python -m bili_unit video-full  <uid> <bvid>     — show full video result
+#   python -m bili_unit manifest    <uid> [--json]    — show per-uid manifest summary
 #
 # Internally goes through ``bili_unit.assemble()`` →
 # ``BiliCommand`` / ``BiliQuery`` (the unit-level entries). The legacy
@@ -121,6 +122,11 @@ async def _handle_fetch(args: argparse.Namespace) -> None:
             success_count = sum(1 for _, s in details if s == EndpointStatus.SUCCESS)
             print(f"  video_detail items: {success_count}/{len(details)} stored")
 
+        if task is not None and task.failed_item_ids:
+            preview = ", ".join(task.failed_item_ids[:5])
+            suffix = " ..." if len(task.failed_item_ids) > 5 else ""
+            print(f"  failed_items: {preview}{suffix}")
+
 
 async def _handle_parse(args: argparse.Namespace) -> None:
     """Run parsing via the unit-level BiliCommand / BiliQuery."""
@@ -149,6 +155,10 @@ async def _handle_parse(args: argparse.Namespace) -> None:
                         print(f"    failed_url: {url}")
                     if len(img.failed_urls) > 5:
                         print(f"    ... and {len(img.failed_urls) - 5} more")
+            if task.failed_item_ids:
+                preview = ", ".join(task.failed_item_ids[:5])
+                suffix = " ..." if len(task.failed_item_ids) > 5 else ""
+                print(f"  failed_items: {preview}{suffix}")
 
 
 async def _handle_query(args: argparse.Namespace) -> None:
@@ -164,6 +174,10 @@ async def _handle_query(args: argparse.Namespace) -> None:
         for ep_name, ep_dto in task.endpoints.items():
             status = ep_dto.status.value
             print(f"  {ep_name}: {status}")
+        if task.failed_item_ids:
+            preview = ", ".join(task.failed_item_ids[:5])
+            suffix = " ..." if len(task.failed_item_ids) > 5 else ""
+            print(f"  failed_items: {preview}{suffix}")
 
 
 async def _handle_login(_args: argparse.Namespace) -> None:
@@ -252,12 +266,123 @@ async def _handle_video_full(args: argparse.Namespace) -> None:
             print(f"  transcription: {tr.status.value}  chars={chars}")
 
 
+async def _handle_manifest(args: argparse.Namespace) -> None:
+    """Print the persisted per-uid manifest summary."""
+    import json as _json
+
+    from bili_unit._env import get_settings
+    from bili_unit._manifest import read_manifest
+
+    settings = get_settings()
+    manifest = read_manifest(args.uid, settings.bili_manifest_dir)
+    if manifest is None:
+        print(
+            f"uid={args.uid}  manifest: 未生成（先跑 fetch / parse / process 任一）",
+        )
+        return
+
+    if getattr(args, "json", False):
+        print(_json.dumps(manifest, ensure_ascii=False, indent=2))
+        return
+
+    # Human-readable summary.
+    print(f"uid={args.uid}  schema_version={manifest.get('schema_version')}")
+
+    fetching = manifest.get("fetching")
+    if fetching is None:
+        print("  fetching: (未运行)")
+    else:
+        print(
+            f"  fetching: {fetching.get('status')}  "
+            f"endpoints={fetching.get('endpoint_count', 0)}  "
+            f"success={fetching.get('success_count', 0)}  "
+            f"failed={fetching.get('failed_count', 0)}",
+        )
+
+    parsing = manifest.get("parsing")
+    if parsing is None:
+        print("  parsing: (未运行)")
+    else:
+        print(f"  parsing: {parsing.get('status')}")
+        for model_name, m in (parsing.get("models") or {}).items():
+            print(
+                f"    {model_name}: count={m.get('count', 0)}  "
+                f"complete={m.get('complete_count', 0)}  "
+                f"status={m.get('status')}",
+            )
+        images = parsing.get("images")
+        if images is not None:
+            print(
+                f"    images: total={images.get('total', 0)}  "
+                f"ok={images.get('ok', 0)}  failed={images.get('failed', 0)}",
+            )
+
+    processing = manifest.get("processing")
+    if processing is None:
+        print("  processing: (未运行)")
+    else:
+        print(f"  processing: {processing.get('status')}")
+        for pname, pdto in (processing.get("pipelines") or {}).items():
+            status = pdto.get("status") if isinstance(pdto, dict) else None
+            print(f"    pipeline {pname}: {status}")
+            if isinstance(pdto, dict):
+                for k, v in pdto.items():
+                    if k == "status":
+                        continue
+                    if isinstance(v, dict):
+                        rendered = ", ".join(f"{ik}={iv}" for ik, iv in v.items())
+                        print(f"      {k}: {rendered}")
+
+    cost = manifest.get("cost")
+    if cost is not None:
+        print(
+            f"  cost: tokens={cost.get('total_audio_tokens', 0)}  "
+            f"seconds={cost.get('total_seconds', 0)}  "
+            f"asr_calls={cost.get('asr_calls', 0)}  "
+            f"cache_hits={cost.get('cache_hits', 0)}  "
+            f"subtitle={cost.get('subtitle_count', 0)}",
+        )
+
+    completeness = manifest.get("completeness")
+    if completeness:
+        parts = ", ".join(
+            f"{k}={v:.2f}" for k, v in completeness.items()
+        )
+        print(f"  completeness: {parts}")
+
+
 async def _handle_process(args: argparse.Namespace) -> None:
     """Run processing via the unit-level BiliCommand / BiliQuery."""
     from bili_unit import session
 
+    # --retry-failed-only implies incremental; reject conflict with --mode full.
+    if args.retry_failed_only and args.mode == "full":
+        raise SystemExit(
+            "--retry-failed-only conflicts with --mode full "
+            "(it can only re-process FAILED items, which requires incremental mode).",
+        )
+    effective_mode = "incremental" if args.retry_failed_only else args.mode
+
     async with session(asr_backend_override=getattr(args, "asr_backend", None)) as (cmd, qry):
-        result = await cmd.process(args.uid, mode=args.mode)
+        result = await cmd.process(
+            args.uid,
+            mode=effective_mode,
+            limit=args.limit,
+            only_bvids=args.only_bvids,
+            retry_failed_only=args.retry_failed_only,
+            dry_run=args.dry_run,
+        )
+
+        if args.dry_run:
+            candidates = result.dry_run_candidates or []
+            print(
+                f"uid={args.uid}  status={result.status.value}  "
+                f"(dry_run, {len(candidates)} candidates)",
+            )
+            if candidates:
+                print(f"  candidates: {', '.join(candidates)}")
+            return
+
         print(f"uid={args.uid}  status={result.status.value}")
         task = await qry.processing.get_task(args.uid)
         if task is not None:
@@ -272,6 +397,10 @@ async def _handle_process(args: argparse.Namespace) -> None:
                         f"    {it}: {completed}/{total} done, "
                         f"{failed} failed, {skipped} skipped",
                     )
+            if task.failed_item_ids:
+                preview = ", ".join(task.failed_item_ids[:5])
+                suffix = " ..." if len(task.failed_item_ids) > 5 else ""
+                print(f"  failed_items: {preview}{suffix}")
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +501,28 @@ def _build_parser() -> argparse.ArgumentParser:
             "(e.g. -b mock to skip MiMo without editing .env)."
         ),
     )
+    p_proc.add_argument(
+        "--limit", type=int, default=None, metavar="N",
+        help="Process only the first N discovered bvids (after other filters).",
+    )
+    p_proc.add_argument(
+        "--only-bvids", nargs="+", default=None, metavar="BVID",
+        help="Process only the given bvid(s); combinable with --limit.",
+    )
+    p_proc.add_argument(
+        "--retry-failed-only", action="store_true",
+        help=(
+            "Only process bvids whose previous processing status is FAILED. "
+            "Implies --mode incremental; conflicts with --mode full."
+        ),
+    )
+    p_proc.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Discover candidates and print them without dispatching workers. "
+            "Task / progress are still written; status is SUCCESS."
+        ),
+    )
 
     # --- query ---
     p_query = sub.add_parser("query", help="Query results for a uid")
@@ -402,6 +553,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_vf.add_argument("uid", type=int, help="Target Bilibili user uid")
     p_vf.add_argument("bvid", help="Video bvid")
 
+    # --- manifest ---
+    p_man = sub.add_parser(
+        "manifest",
+        help="Show the persisted per-uid manifest summary (read-only).",
+    )
+    p_man.add_argument("uid", type=int, help="Target Bilibili user uid")
+    p_man.add_argument(
+        "--json", action="store_true",
+        help="Print the full manifest as indented JSON.",
+    )
+
     return parser
 
 
@@ -425,6 +587,7 @@ def main() -> None:
         "list-uids": _handle_list_uids,
         "delete-uid": _handle_delete_uid,
         "video-full": _handle_video_full,
+        "manifest": _handle_manifest,
     }
 
     handler = handlers[args.command]

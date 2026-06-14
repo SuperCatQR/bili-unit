@@ -38,6 +38,12 @@ class BiliSettings(BaseSettings):
     # fetching config (engineering doc §14)
     bili_fetching_data_dir: str = "data/bili/fetching/data"
     bili_fetching_error_dir: str = "data/bili/fetching/error"
+
+    # === manifest (cross-stage aggregate) ===
+    # Per-uid summary blob written by BiliCommand after each stage run; CLI
+    # ``manifest <uid>`` reads it back. Lives outside any single stage so it
+    # can survive when individual stage stores are wiped.
+    bili_manifest_dir: str = "data/bili/manifest"
     bili_fetching_http_backend: str = "aiohttp"
     bili_fetching_impersonate: str = "chrome131"
     bili_fetching_global_qps: float = 1.0  # was 0.5 (issue #2)

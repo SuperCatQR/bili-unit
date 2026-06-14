@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "context_length_exceeded",
+    "message": "Input audio exceeds maximum context length of 8192 tokens",
+    "type": "invalid_request_error"
+  }
+}

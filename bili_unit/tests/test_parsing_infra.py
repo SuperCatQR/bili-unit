@@ -25,6 +25,7 @@ def test_parsing_specs_register_existing_models():
     assert MODEL_ORDER == (
         "user_profile",
         "video_work",
+        "video_subtitle",
         "article_post",
         "opus_post",
         "dynamic_event",
@@ -35,6 +36,7 @@ def test_parsing_specs_register_existing_models():
     assert set(handlers) == set(MODEL_ORDER)
     assert handlers["user_profile"] == "_parse_user_profile"
     assert handlers["content_post"] == "_parse_content_posts"
+    assert handlers["video_subtitle"] == "_parse_video_subtitle"
     assert all(handler.startswith("_parse_") for handler in handlers.values())
     assert get_spec("user_profile").singleton is True
     assert isinstance(get_spec("video_work").parser_cls().__name__, str)

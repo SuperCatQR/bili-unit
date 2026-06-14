@@ -134,12 +134,18 @@ class ProcessingTaskDTO:
     pipelines: dict[str, ProcessingPipelineDTO] = field(default_factory=dict)
     created_at: int | None = None
     updated_at: int | None = None
+    failed_item_ids: list[str] = field(default_factory=list)
+    """Aggregated identifiers of failed work units; entries encoded as
+    ``"pipeline:item_type:item_id"`` (e.g. ``"audio:transcription:BV1abc"``)."""
 
 
 @dataclass
 class ProcessingCommandResult:
     uid: int
     status: ProcessingTaskStatus
+    dry_run_candidates: list[str] | None = None
+    """When dry_run was requested, the bvid list that *would* have been
+    dispatched to the audio pipeline. ``None`` outside dry-run mode."""
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +156,7 @@ async def assemble(
     settings,
     *,
     fetching_query,
+    parsing_query=None,
     asr_backend_override: str | None = None,
     credential_provider=None,
 ):
@@ -158,6 +165,9 @@ async def assemble(
     Args:
         settings: ``BiliSettings`` already loaded by the caller.
         fetching_query: a :class:`FetchingReadView`-shaped object.
+        parsing_query: optional :class:`ParsingQuery` — when provided, audio
+            pipeline can short-circuit ASR for bvids whose ``video_subtitle``
+            is already complete in parsing storage.
         asr_backend_override: takes precedence over BILI_PROCESSING_ASR_BACKEND.
         credential_provider: async callable returning a ``Credential | None``;
             defaults to ``bili_unit.fetching.auth.get_credential`` when None.
@@ -187,6 +197,7 @@ async def assemble(
         error=error,
         temp_dir=settings.bili_processing_temp_dir,
         fetching_query=fetching_query,
+        parsing_query=parsing_query,
         settings=settings,
         asr_backend=asr_backend,
         credential_provider=credential_provider,

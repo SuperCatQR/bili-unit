@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bili_unit.parsing.models.content_post import SourceRef
+from bili_unit.parsing.models.content_post import ContentPost, CrossRefs, SourceRef
 
 
 def str_or_empty(value: Any) -> str:
@@ -129,3 +129,57 @@ def detail_text_from_content_json(value: Any) -> str:
 
     visit(value)
     return "\n".join(parts)
+
+
+def video_posts_from_parsed(items: list[dict]) -> list[ContentPost]:
+    """Convert stored VideoDetail dicts → ContentPost candidates.
+
+    Mirrors :func:`article_posts_from_parsed` / :func:`opus_posts_from_parsed`:
+    consumes ``VideoDetail.to_dict()`` output and emits a ``ContentPost`` with
+    ``kind="video"`` and ``content_key=f"video:{bvid}"``. The video desc maps to
+    both summary and text since the legacy ``VideoDetail`` does not carry a
+    separate textual body.
+    """
+    out: list[ContentPost] = []
+    for v in items:
+        if not isinstance(v, dict):
+            continue
+        bvid = str_or_empty(v.get("bvid"))
+        if not bvid:
+            continue
+
+        cross_refs = CrossRefs.from_dict(v.get("_cross_refs") or v.get("cross_refs"))
+        if not cross_refs.bvid:
+            cross_refs.bvid = bvid
+
+        existing_refs = [
+            SourceRef.from_dict(ref)
+            for ref in (v.get("_source_refs") or v.get("source_refs") or [])
+            if isinstance(ref, SourceRef | dict)
+        ]
+        source_refs = dedup_source_refs(
+            [SourceRef("video_detail", bvid), *existing_refs]
+        )
+
+        desc = str_or_empty(v.get("desc"))
+        pic = str_or_empty(v.get("pic"))
+        pub_time = v.get("pubdate")
+        if pub_time is None:
+            pub_time = v.get("ctime")
+
+        out.append(
+            ContentPost(
+                content_key=f"video:{bvid}",
+                kind="video",
+                title=str_or_empty(v.get("title")),
+                summary=desc,
+                text=desc,
+                markdown="",
+                images=[pic] if pic else [],
+                pub_time=pub_time,
+                stats=stats_dict(v.get("stat", {}) or {}),
+                source_refs=source_refs,
+                cross_refs=cross_refs,
+            ),
+        )
+    return out

@@ -162,3 +162,21 @@ DI 落地后这条收益变小（runner 不再需要为测试 mock 而把 mixin 
 3. `bili_unit/query/__init__.py` —— 读侧入口
 4. `bili_unit/fetching/protocols.py` —— 跨 stage 契约
 5. `bili_unit/_env.py` —— 配置真相源
+
+## 2026-06-14 follow-up — output quality 补全
+
+review 第一轮收尾后用户反馈"看起来缺了点什么"，开了第二轮专门补输出质量的洞。详见 `PLAN.md`。落地的主题：
+
+| 波次 | 主题 | 关键改动 |
+|---|---|---|
+| W1.1 | subtitle 不只拉索引 | `fetch_video_subtitle_item` 并发拉每条 lan 的 JSON，raw_payload 升级为 `{pages, subtitle:[{..., content:[{lan, lan_doc, body:[...]}]}]}` |
+| W1.2 | segments 实化 | `audio_transcribe_page` 维护 `segments_out` 列表，cache 命中也填，最终落到 `page_results[*].segments` |
+| W1.3 | process CLI 过滤 + fixtures 扩展 | `--limit / --only-bvids / --retry-failed-only / --dry-run`；6 份新 fixtures |
+| W2.1 | subtitle 优先 | 新模型 `video_subtitle` + parsing spec；audio runner 注入 `parsing.query`，subtitle 完整时跳 ASR、`transcription_source: "subtitle"` |
+| W2.2 | 视频进 ContentPost | `video_posts_from_parsed`；ContentPost.kind 增加 `video`；canonical key `bvid > dynamic_id` |
+| W3.1 | is_complete + cost | 5 个 typed dataclass + ContentPost + VideoSubtitle 都加 `is_complete` 计算属性；audio result 新增 `cost: {audio_tokens, seconds, model, cache_hits, fresh_segments}` |
+| W3.2 | task ↔ error join | 三 stage TaskValue/DTO 加 `failed_item_ids`；CLI 直接打印 |
+| W4 | 顶层 manifest.json | 新 `bili_unit/_manifest.py` + `BILI_MANIFEST_DIR`；`BiliCommand.fetch/parse/process/delete_uid` 自动维护 `data/bili/manifest/{uid}.json`；CLI `manifest <uid> [--json]` 只读打印 |
+
+测试基线：545 → 555（+10）；ruff 0 错。文档同步更新：`docs/feature/{fetching,parsing,processing,manifest}.md`、`docs/structure/fetching-contract.md`、`docs/structure/bili.md` §6、`docs/api.md`、`docs/adr/0004-...`、`README.md`。
+

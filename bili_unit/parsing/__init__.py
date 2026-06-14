@@ -80,6 +80,12 @@ class ParsingTaskDTO:
     images: ParsingImageDTO | None = None
     created_at: int | None = None
     updated_at: int | None = None
+    failed_item_ids: list[str] = field(default_factory=list)
+    """Names of models that ended in ``ParsingModelStatus.FAILED``.
+
+    Parsing has no ErrorStore so the granularity is per-model rather than
+    per-item; entries are bare model names (e.g. ``"article_post"``).
+    """
 
 
 @dataclass
@@ -100,6 +106,12 @@ class ParsingTaskValue:
     images: dict[str, Any] | None = None
     created_at: int | None = None
     updated_at: int | None = None
+    failed_item_ids: list[str] = field(default_factory=list)
+    """Names of models that ended in ``FAILED``; aggregated at task finalisation.
+
+    Empty in mid-flight ``ParsingTaskValue`` instances — the command writes the
+    final list when ``parse_uid`` finalises the task.
+    """
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -116,6 +128,7 @@ class ParsingTaskValue:
             d["images"] = self.images
         d["created_at"] = self.created_at
         d["updated_at"] = self.updated_at
+        d["failed_item_ids"] = list(self.failed_item_ids)
         return d
 
     @classmethod
@@ -130,6 +143,7 @@ class ParsingTaskValue:
             images=d.get("images"),
             created_at=d.get("created_at"),
             updated_at=d.get("updated_at"),
+            failed_item_ids=list(d.get("failed_item_ids", [])),
         )
 
 

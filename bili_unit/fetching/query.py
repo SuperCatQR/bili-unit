@@ -39,12 +39,21 @@ class Query:
             if ep_dto is not None:
                 endpoint_dtos[ep_name] = ep_dto
 
+        # Prefer the persisted ``failed_item_ids`` (runner writes it on
+        # finalisation). Fall back to a live recomputation when the field is
+        # missing — keeps query consistent with stale-on-disk task values that
+        # predate the field.
+        failed_item_ids = list(tv.failed_item_ids)
+        if not failed_item_ids:
+            failed_item_ids = await self._derive_failed_item_ids(uid, tv)
+
         return TaskDTO(
             uid=tv.uid,
             status=tv.status,
             endpoints=endpoint_dtos,
             created_at=tv.created_at,
             updated_at=tv.updated_at,
+            failed_item_ids=failed_item_ids,
         )
 
     async def list_tasks(self) -> list[dict]:
@@ -250,3 +259,49 @@ class Query:
     ) -> list[tuple[str, EndpointStatus]]:
         """Return all stored article_list_detail rlids with their status."""
         return await self.list_items(uid, "article_list_detail")
+
+    # -- internal helpers ---------------------------------------------------
+
+    async def _derive_failed_item_ids(
+        self, uid: int, tv: TaskValue,
+    ) -> list[str]:
+        """Compute ``failed_item_ids`` from the error store + task entries.
+
+        Mirrors :meth:`Runner._collect_failed_item_ids`; lives here as a fallback
+        for tasks whose persisted form predates the field. See ``TaskDTO``
+        docstring for the encoding.
+        """
+        ids: set[str] = set()
+        try:
+            errors = await self._error.list_by_uid(uid)
+        except Exception:  # noqa: BLE001
+            errors = []
+
+        item_level_eps = {
+            name for name, entry in tv.endpoints.items()
+            if entry.item_progress is not None
+        }
+
+        for err in errors:
+            ep = err.endpoint
+            if not ep:
+                continue
+            detail = err.detail or {}
+            item_id = detail.get("item_id") if isinstance(detail, dict) else None
+            if item_id:
+                ids.add(f"{ep}:{item_id}")
+            else:
+                ids.add(ep)
+
+        for name, entry in tv.endpoints.items():
+            if entry.last_error_id is None:
+                continue
+            if entry.status in (
+                EndpointStatus.SUCCESS,
+                EndpointStatus.PARTIAL_ITEM,
+            ):
+                continue
+            if name not in item_level_eps:
+                ids.add(name)
+
+        return sorted(ids)

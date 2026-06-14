@@ -96,6 +96,9 @@ class TaskDTO:
     endpoints: dict[str, EndpointDTO] = field(default_factory=dict)
     created_at: int | None = None
     updated_at: int | None = None
+    failed_item_ids: list[str] = field(default_factory=list)
+    """Aggregated identifiers of failed work units (``"endpoint"`` or
+    ``"endpoint:item_id"``). Empty when nothing failed."""
 
 
 @dataclass

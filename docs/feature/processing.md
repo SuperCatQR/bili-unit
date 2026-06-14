@@ -180,9 +180,12 @@ processing 与 fetching 的 task key 同名（`uid:{uid}:task`），但因为 st
     }
   },
   "created_at": 1718000000000,
-  "updated_at": 1718000001000
+  "updated_at": 1718000001000,
+  "failed_item_ids": []
 }
 ```
+
+`failed_item_ids` 在 runner 收尾时由 ErrorStore 聚合：每条编码为 `"pipeline:item_type:item_id"`（如 `"audio:transcription:BV1xxxxxxxxxx"`），消费方不必再 join 错误日志。所有 item 都成功时为空列表。
 
 **audio 处理结果**（`uid:{uid}:proc:audio:{bvid}`）：
 ```json
@@ -206,12 +209,43 @@ processing 与 fetching 的 task key 同名（`uid:{uid}:task`），但因为 st
       }
     ],
     "total_duration": 300.0,
-    "total_chars": 5000
+    "total_chars": 5000,
+    "transcription_source": "asr",
+    "cost": {
+      "audio_tokens": 1875,
+      "seconds": 300,
+      "model": "mimo-v2.5-asr",
+      "cache_hits": 0,
+      "fresh_segments": 2
+    }
   },
   "source_endpoints": ["video_detail"],
   "processed_at": 1718000002000
 }
 ```
+
+`cost` 字段记录本 bvid 实际花费（按 page 累加）：
+
+| 字段 | 含义 |
+|----|----|
+| `audio_tokens` | MiMo `usage.prompt_tokens_details.audio_tokens` 之和；缓存命中段也计入（首次 ASR 时已写入 cache，重跑读 cache 后照常累加，所以 bvid-level cost 在 retry 之间稳定） |
+| `seconds` | ASR 实际计费的秒数（`usage.seconds` 之和） |
+| `model` | 当前后端 `model`（mimo-v2.5-asr / mock-asr-v0 / 字幕短路记 `subtitle`） |
+| `cache_hits` | 本次跑通过 cache 命中的段数 |
+| `fresh_segments` | 本次跑实际打到 ASR 后端的段数（即新发生的费用） |
+
+字幕短路写出的 result 里 `cost = {audio_tokens: 0, seconds: 0, model: "subtitle", cache_hits: 0, fresh_segments: 0}`，标记本次"零成本完成"。
+
+`transcription_source` 标记本次结果的产生路径：
+
+| 值 | 含义 | 来源 |
+|----|------|------|
+| `"asr"` | 走完整音频流水线（CDN 下载 → ffmpeg → ASR） | `video_detail`（CDN URL） |
+| `"subtitle"` | 字幕短路：从 parsing 的 `video_subtitle` 直接拼出文本，跳过 ASR | `video_subtitle`（parsed） |
+
+字幕短路触发条件：当 audio pipeline 在 discovery 阶段对一个 bvid 调 `parsing.query.get_video_subtitle(uid, bvid)` 拿到的对象 `is_complete == True`（每个 page 都至少有一种 lang 命中 body），runner 直接构造 audio result 写入 `proc/audio/{bvid}` 并把该 item 从 worker 队列移除（`source_endpoints: ["video_subtitle"]`）。其他情况（无字幕 / 部分 page 缺字幕）走 ASR 路径。
+
+> dry-run 跳过字幕短路 — 不写盘也不影响 candidate 列表。
 
 ## 状态枚举
 

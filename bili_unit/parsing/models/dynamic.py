@@ -317,6 +317,15 @@ class DynamicPost:
     def item_id(self) -> str:
         return self.dynamic_id or self.id_str
 
+    @property
+    def is_complete(self) -> bool:
+        """True iff an ``id_str`` was extracted.
+
+        Dynamics have no detail endpoint — the listing payload is the
+        full body — so the only completeness signal is having an id.
+        """
+        return bool(self.id_str)
+
     # -- raw construction ----------------------------------------------------
 
     @classmethod
@@ -400,6 +409,7 @@ class DynamicPost:
             "forwarded": self.forwarded.to_dict() if self.forwarded else None,
             "image_urls": list(self.image_urls),
             "image_locals": list(self.image_locals),
+            "is_complete": self.is_complete,
             "_source_refs": [ref.to_dict() for ref in self.source_refs],
             "_cross_refs": self.cross_refs.to_dict(),
         }

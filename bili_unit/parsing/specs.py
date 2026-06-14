@@ -51,6 +51,14 @@ PARSING_SPECS: tuple[ParsingSpec, ...] = (
         priority=20,
     ),
     ParsingSpec(
+        name="video_subtitle",
+        model="video_subtitle",
+        materializer_handler="_parse_video_subtitle",
+        source_endpoints=("video_subtitle",),
+        required_endpoints=("video_subtitle",),
+        priority=25,
+    ),
+    ParsingSpec(
         name="article_post",
         model="article_post",
         materializer_handler="_parse_article_posts",

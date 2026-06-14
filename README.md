@@ -43,6 +43,7 @@ uv run python -m bili_unit query <uid>             # 抓取任务 / 端点状态
 uv run python -m bili_unit list-uids               # 列出所有抓过的 uid
 uv run python -m bili_unit delete-uid <uid> -y     # 删除某 uid 全部数据（不可逆）
 uv run python -m bili_unit video-full <uid> <bvid> # 单视频联合视图（metadata + transcription）
+uv run python -m bili_unit manifest <uid>          # 跨阶段聚合摘要（每跑一阶段自动刷新）
 ```
 
 各命令的完整参数（mode 切换、端点过滤、ASR 后端选择等）见对应 feature 文档。
@@ -104,6 +105,7 @@ async with session(credential_provider=my_provider) as (cmd, qry):
 data/bili/fetching/        # 抓取 raw_payload + task / progress
 data/bili/parsing/         # 解析 typed objects + images（可选）
 data/bili/processing/      # 结构化 result + ASR 缓存 + temp（自动清理）
+data/bili/manifest/        # 每个 uid 一份跨阶段聚合摘要
 error/bili/                # 失败请求与可重试状态
 ```
 
@@ -130,6 +132,7 @@ uv run ruff check                                  # lint
 | fetching 现状 | [docs/feature/fetching.md](docs/feature/fetching.md) | 端点注册表、限流、模式、CLI |
 | parsing 现状 | [docs/feature/parsing.md](docs/feature/parsing.md) | model 字段映射、图片下载、CLI |
 | processing 现状 | [docs/feature/processing.md](docs/feature/processing.md) | audio pipeline、ASR 后端、CLI |
+| manifest 摘要 | [docs/feature/manifest.md](docs/feature/manifest.md) | 跨阶段聚合 JSON、字段、刷新触发 |
 | 接口参考 | [docs/bili-api-info/](docs/bili-api-info/) | bilibili-api-python 速查（外部资料镜像） |
 
 ## 许可与依赖

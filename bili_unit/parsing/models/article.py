@@ -159,6 +159,16 @@ class Article:
     def item_id(self) -> str:
         return self.id
 
+    @property
+    def is_complete(self) -> bool:
+        """True iff the ``article_detail`` endpoint contributed.
+
+        The list endpoint alone (``articles``) only has summary metadata,
+        not the full markdown body — so an Article without ``article_detail``
+        is considered incomplete.
+        """
+        return any(ref.endpoint == "article_detail" for ref in self.source_refs)
+
     # -- raw construction ----------------------------------------------------
 
     @classmethod
@@ -248,6 +258,7 @@ class Article:
             "markdown": self.markdown,
             "content_json": self.content_json,
             "image_locals": list(self.image_locals),
+            "is_complete": self.is_complete,
             "_source_refs": [ref.to_dict() for ref in self.source_refs],
             "_cross_refs": self.cross_refs.to_dict(),
         }

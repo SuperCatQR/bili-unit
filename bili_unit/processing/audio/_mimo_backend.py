@@ -196,6 +196,7 @@ class MimoASRBackend:
         Key fields (confirmed by real probe):
           - ``choices[0].message.content`` — full transcription text
           - ``usage.seconds`` — audio duration (integer, rounded up)
+          - ``usage.prompt_tokens_details.audio_tokens`` — billable audio tokens
         """
         try:
             text = body["choices"][0]["message"]["content"]
@@ -204,11 +205,22 @@ class MimoASRBackend:
                 f"unexpected MiMo response shape: {exc}"
             ) from exc
 
-        usage = body.get("usage", {})
+        usage = body.get("usage", {}) if isinstance(body.get("usage"), dict) else {}
         duration_raw = usage.get("seconds")
         duration: float | None = (
             float(duration_raw) if duration_raw is not None else None
         )
+
+        prompt_details = usage.get("prompt_tokens_details", {})
+        if not isinstance(prompt_details, dict):
+            prompt_details = {}
+        audio_tokens_raw = prompt_details.get("audio_tokens")
+        try:
+            audio_tokens: int | None = (
+                int(audio_tokens_raw) if audio_tokens_raw is not None else None
+            )
+        except (TypeError, ValueError):
+            audio_tokens = None
 
         return ASRResult(
             text=text,
@@ -216,6 +228,7 @@ class MimoASRBackend:
             segments=[],  # MiMo does not return segments / timestamps
             duration=duration,
             model=body.get("model", "mimo-v2.5-asr"),
+            audio_tokens=audio_tokens,
             raw_response=body,
         )
 

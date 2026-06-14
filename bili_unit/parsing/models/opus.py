@@ -176,6 +176,15 @@ class OpusPost:
     def item_id(self) -> str:
         return self.id
 
+    @property
+    def is_complete(self) -> bool:
+        """True iff the ``opus_detail`` endpoint contributed.
+
+        The opus listing alone lacks the full markdown body; without the
+        detail endpoint the post is considered incomplete.
+        """
+        return any(ref.endpoint == "opus_detail" for ref in self.source_refs)
+
     # -- raw construction ----------------------------------------------------
 
     @classmethod
@@ -276,6 +285,7 @@ class OpusPost:
             "detail_images": [dict(d) for d in self.detail_images],
             "cover_local": self.cover_local,
             "image_locals": list(self.image_locals),
+            "is_complete": self.is_complete,
             "_source_refs": [ref.to_dict() for ref in self.source_refs],
             "_cross_refs": self.cross_refs.to_dict(),
         }

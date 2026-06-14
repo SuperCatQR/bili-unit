@@ -289,6 +289,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
             return TaskResult(uid=uid, status=TaskStatus.FAILED_PERMANENT)
         tv.status = self._derive_status(tv)
         tv.updated_at = int(time.time() * 1000)
+        tv.failed_item_ids = await self._collect_failed_item_ids(uid, tv)
         await self._save_task(tv)
         return TaskResult(
             uid=uid, status=tv.status,
@@ -367,3 +368,56 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         if has_retryable:
             return TaskStatus.FAILED_RETRYABLE
         return TaskStatus.PARTIAL
+
+    async def _collect_failed_item_ids(
+        self, uid: int, tv: TaskValue,
+    ) -> list[str]:
+        """Aggregate ``failed_item_ids`` from the error store and endpoint entries.
+
+        Encoding:
+          * uid-level endpoint failure → ``"endpoint"``.
+          * item-level fan-out failure → ``"endpoint:item_id"``.
+
+        The error store carries the authoritative ``(endpoint, item_id)`` pairs
+        for FAILED items; uid-level endpoints contribute the bare endpoint name
+        whenever their entry has a ``last_error_id``. Order is deterministic
+        (stable sort on the joined string) so callers get a predictable diff.
+        """
+        ids: set[str] = set()
+        try:
+            errors = await self._error.list_by_uid(uid)
+        except Exception:  # noqa: BLE001 — never fail task save on error-log read
+            errors = []
+
+        item_level_eps = {
+            name for name, entry in tv.endpoints.items()
+            if entry.item_progress is not None
+        }
+
+        for err in errors:
+            ep = err.endpoint
+            if not ep:
+                continue
+            detail = err.detail or {}
+            item_id = detail.get("item_id") if isinstance(detail, dict) else None
+            if item_id:
+                ids.add(f"{ep}:{item_id}")
+            elif ep in item_level_eps:
+                # Item-level endpoint with no item_id detail — treat as
+                # endpoint-level (e.g. fan-out source dependency failed).
+                ids.add(ep)
+            else:
+                ids.add(ep)
+
+        for name, entry in tv.endpoints.items():
+            if entry.last_error_id is None:
+                continue
+            if entry.status in (
+                EndpointStatus.SUCCESS,
+                EndpointStatus.PARTIAL_ITEM,
+            ):
+                continue
+            if name not in item_level_eps:
+                ids.add(name)
+
+        return sorted(ids)

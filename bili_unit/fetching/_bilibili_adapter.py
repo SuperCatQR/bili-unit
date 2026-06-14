@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+import aiohttp
 from bilibili_api import Credential, request_settings, select_client, user
 from bilibili_api.article import Article, ArticleList
 from bilibili_api.channel_series import ChannelOrder
@@ -405,9 +406,6 @@ fetch_video_relation_item = _video_item_method("get_relation", result_key="relat
 fetch_video_special_dms_item = _video_item_method(
     "get_special_dms", per_page=True, page_arg="both", result_key="special_dms",
 )
-fetch_video_subtitle_item = _video_item_method(
-    "get_subtitle", per_page=True, page_arg="cid", result_key="subtitle",
-)
 fetch_video_up_mid_item = _video_item_method("get_up_mid", result_key="up_mid")
 fetch_video_snapshot_item = _video_item_method(
     "get_video_snapshot",
@@ -424,6 +422,154 @@ fetch_video_is_forbid_note_item = _video_item_method(
     "is_forbid_note", result_key="is_forbid_note",
 )
 fetch_video_chargers_item = _video_item_method("get_chargers", result_key="chargers")
+
+
+# ---------------------------------------------------------------------------
+# Item-level fan-out helpers — video_subtitle (per-page subtitle index + body)
+# ---------------------------------------------------------------------------
+#
+# B 站字幕端点的两段抓取语义 (cf. PLAN.md W1.1):
+#   1. ``Video.get_subtitle(cid)`` 返回每个 page 的字幕索引；其中
+#      ``subtitles[*]`` 的每条记录里有 ``subtitle_url``、``lan``、``lan_doc``
+#      等元数据 —— url 通常是缺 scheme 的协议相对地址 (``//i0.hdslb.com/...``)。
+#   2. 索引拿到后还要再去 CDN 拉每个 url 的 JSON 正文，里面的 ``body`` 字段
+#      才是 ``[{from, to, content}, ...]`` 的真正字幕段。
+#
+# 失败处理：单条 lang 拉失败 (timeout / network / JSON parse) 不阻塞整个端点 ——
+# 只在该 lang 项里写 ``_fetch_error`` 字段，``content`` 不带 ``body``。
+# 整页无字幕时 ``content`` 是 ``[]``。
+
+_SUBTITLE_FETCH_TIMEOUT = 10.0
+
+
+def _normalise_subtitle_url(url: str) -> str:
+    """Make a B 站 subtitle URL absolute (B 站常返回 ``//host/...`` 缺 scheme)."""
+    if not url.startswith(("http://", "https://")):
+        return "https:" + url
+    return url
+
+
+async def _fetch_subtitle_body(
+    session: aiohttp.ClientSession,
+    url: str,
+) -> dict[str, Any]:
+    """Fetch one subtitle JSON URL. Returns ``{"body": [...]}`` or
+    ``{"_fetch_error": "<reason>"}`` — never raises."""
+    try:
+        normalised = _normalise_subtitle_url(url)
+        async with session.get(normalised) as resp:
+            if resp.status != 200:
+                return {"_fetch_error": f"http {resp.status}"}
+            data = await resp.json(content_type=None)
+    except TimeoutError:
+        return {"_fetch_error": "timeout"}
+    except aiohttp.ClientError as exc:
+        return {"_fetch_error": f"client error: {exc}"}
+    except (ValueError, TypeError) as exc:
+        return {"_fetch_error": f"json parse: {exc}"}
+
+    if not isinstance(data, dict):
+        return {"_fetch_error": "unexpected shape: not a dict"}
+    body = data.get("body")
+    if not isinstance(body, list):
+        return {"_fetch_error": "unexpected shape: missing body"}
+    return {"body": body}
+
+
+async def fetch_video_subtitle_item(
+    bvid: str,
+    credential: Credential | None,
+    timeout: float = 30.0,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """Fetch subtitle index + body content for every page of a bvid.
+
+    Per-page step 1 calls ``Video.get_subtitle(cid)`` (the index, with
+    ``subtitles[*].subtitle_url / lan / lan_doc``); step 2 then GETs every
+    URL and stuffs the parsed JSON ``body`` into a sibling ``content`` list.
+    A single ``aiohttp.ClientSession`` is reused across all pages; ``content``
+    items for the same page are fetched concurrently via ``asyncio.gather``,
+    while different pages are walked sequentially to keep the connection
+    fan-out small.
+
+    Returned shape::
+
+        {
+          "pages": [...],
+          "subtitle": [
+            {
+              "page_index": 0, "cid": ..., "part": "...",
+              "result": {...},                      # raw get_subtitle output
+              "content": [
+                {"lan": "zh-CN", "lan_doc": "中文",
+                 "body": [{"from": 0.0, "to": 3.5, "content": "..."}]},
+                ...
+              ]
+            }, ...
+          ]
+        }
+
+    A single lang URL failing (HTTP / parse / timeout) is recorded in-place
+    on that lang entry as ``"_fetch_error": "<reason>"`` (without ``body``),
+    leaving sibling langs and other pages unaffected.  An entirely-missing
+    subtitle index for a page yields ``content: []``.
+    """
+    v = Video(bvid, credential=credential)
+    pages = await _video_pages(v, bvid, timeout)
+
+    rows: list[dict[str, Any]] = []
+    client_timeout = aiohttp.ClientTimeout(total=_SUBTITLE_FETCH_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=client_timeout) as session:
+        for idx, page in enumerate(pages):
+            cid = page.get("cid") if isinstance(page, dict) else None
+            part = page.get("part", "") if isinstance(page, dict) else ""
+
+            async with _map_bilibili_errors(f"video_subtitle[{bvid}][{idx}]"):
+                index = await asyncio.wait_for(
+                    v.get_subtitle(cid=cid),
+                    timeout=timeout,
+                )
+            index_safe = _json_safe(index)
+
+            subtitles = []
+            if isinstance(index_safe, dict):
+                raw_subs = index_safe.get("subtitles")
+                if isinstance(raw_subs, list):
+                    subtitles = raw_subs
+
+            if subtitles:
+                tasks = [
+                    _fetch_subtitle_body(session, sub.get("subtitle_url", ""))
+                    if isinstance(sub, dict) and sub.get("subtitle_url")
+                    else _missing_url_error()
+                    for sub in subtitles
+                ]
+                fetched = await asyncio.gather(*tasks)
+                content: list[dict[str, Any]] = []
+                for sub, fetch_result in zip(subtitles, fetched, strict=False):
+                    entry: dict[str, Any] = {
+                        "lan": sub.get("lan") if isinstance(sub, dict) else None,
+                        "lan_doc": sub.get("lan_doc") if isinstance(sub, dict) else None,
+                    }
+                    entry.update(fetch_result)
+                    content.append(entry)
+            else:
+                content = []
+
+            rows.append({
+                "page_index": idx,
+                "cid": cid,
+                "part": part,
+                "result": index_safe,
+                "content": content,
+            })
+
+    return {"pages": pages, "subtitle": rows}
+
+
+async def _missing_url_error() -> dict[str, Any]:
+    """Awaitable stub returned when a subtitles entry has no ``subtitle_url``."""
+    return {"_fetch_error": "missing subtitle_url"}
 
 
 async def fetch_video_public_notes_item(

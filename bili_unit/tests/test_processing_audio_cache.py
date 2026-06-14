@@ -2,8 +2,16 @@
 
 import json
 
-from bili_unit.processing.audio import ASRCacheStore, CachedSegment
+import pytest
+
+from bili_unit.processing.audio import (
+    ASRCacheStore,
+    ASRResult,
+    CachedSegment,
+    Mp3Segment,
+)
 from bili_unit.processing.audio._asr_cache import CACHE_VERSION, MATCH_TOLERANCE_S
+from bili_unit.processing.runner._audio_work import audio_transcribe_page
 
 
 def test_load_page_cold_returns_empty(tmp_path):
@@ -141,3 +149,149 @@ def test_load_page_drops_version_mismatch(tmp_path):
     cache = ASRCacheStore(tmp_path)
     page = cache.load_page(1, "BV1", 0)
     assert page.segments == []
+
+
+# ---------- audio_transcribe_page returns segments list ---------------------
+
+
+class _StubASRBackend:
+    """Minimal ASR backend stub: pops a queue of ASRResult per call."""
+
+    model = "stub-asr-v1"
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls = 0
+
+    async def transcribe(self, audio_data, mime_type="audio/mp3", language="auto"):
+        self.calls += 1
+        return self._results.pop(0)
+
+    async def close(self):
+        return None
+
+
+def _make_seg(tmp_path, name, start_s, end_s):
+    p = tmp_path / name
+    p.write_bytes(b"x")
+    return Mp3Segment(p, start_s, end_s)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_page_returns_segments_list(tmp_path):
+    """A page with 3 mp3 segments returns 3 segments dicts in order."""
+    cache = ASRCacheStore(tmp_path / "cache")
+    seg_files = [
+        _make_seg(tmp_path, "s0.mp3", 0.0, 300.0),
+        _make_seg(tmp_path, "s1.mp3", 300.0, 600.0),
+        _make_seg(tmp_path, "s2.mp3", 600.0, 900.0),
+    ]
+    backend = _StubASRBackend([
+        ASRResult(text="alpha", duration=300.0, model="stub-asr-v1"),
+        ASRResult(text="beta",  duration=300.0, model="stub-asr-v1"),
+        ASRResult(text="gamma", duration=300.0, model="stub-asr-v1"),
+    ])
+
+    trans = await audio_transcribe_page(
+        backend, cache, uid=1, bvid="BVseg", page_index=0,
+        segments=seg_files, asr_language="zh",
+    )
+
+    segs = trans["segments"]
+    assert len(segs) == 3
+    assert backend.calls == 3
+
+    # Order matches input order; per-entry fields fully populated.
+    assert [s["start_s"] for s in segs] == [0.0, 300.0, 600.0]
+    assert [s["end_s"] for s in segs] == [300.0, 600.0, 900.0]
+    assert [s["text"] for s in segs] == ["alpha", "beta", "gamma"]
+    for s in segs:
+        assert s["duration"] == 300.0
+        assert s["model"] == "stub-asr-v1"
+        assert set(s.keys()) == {"start_s", "end_s", "text", "duration", "model"}
+
+    # Stitched text + cache-hits accounting still untouched.
+    assert trans["cache_hits"] == 0
+    assert "alpha" in trans["text"] and "gamma" in trans["text"]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_page_segments_filled_from_cache(tmp_path):
+    """Second pass: every segment hits cache, segments still come back filled."""
+    cache = ASRCacheStore(tmp_path / "cache")
+    seg_files = [
+        _make_seg(tmp_path, "s0.mp3", 0.0, 300.0),
+        _make_seg(tmp_path, "s1.mp3", 300.0, 600.0),
+        _make_seg(tmp_path, "s2.mp3", 600.0, 900.0),
+    ]
+
+    backend1 = _StubASRBackend([
+        ASRResult(text="A", duration=300.0, model="stub-asr-v1"),
+        ASRResult(text="B", duration=300.0, model="stub-asr-v1"),
+        ASRResult(text="C", duration=300.0, model="stub-asr-v1"),
+    ])
+    first = await audio_transcribe_page(
+        backend1, cache, uid=2, bvid="BVcacheFill", page_index=0,
+        segments=seg_files, asr_language="zh",
+    )
+    assert backend1.calls == 3
+    assert first["cache_hits"] == 0
+
+    # Second run with empty backend queue — all hits must come from cache.
+    backend2 = _StubASRBackend([])
+    second = await audio_transcribe_page(
+        backend2, cache, uid=2, bvid="BVcacheFill", page_index=0,
+        segments=seg_files, asr_language="zh",
+    )
+
+    assert backend2.calls == 0
+    assert second["cache_hits"] == 3
+    segs = second["segments"]
+    assert len(segs) == 3
+    assert [s["text"] for s in segs] == ["A", "B", "C"]
+    assert [s["start_s"] for s in segs] == [0.0, 300.0, 600.0]
+    assert [s["end_s"] for s in segs] == [300.0, 600.0, 900.0]
+    for s in segs:
+        assert s["duration"] == 300.0
+        assert s["model"] == "stub-asr-v1"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_page_segments_mixed_cache_and_fresh(tmp_path):
+    """Two cache hits + one fresh ASR call still yields ordered 3-entry list."""
+    cache = ASRCacheStore(tmp_path / "cache")
+    page = cache.load_page(3, "BVmix", 0)
+    cache.upsert(page, CachedSegment(
+        start_s=0.0, end_s=300.0, text="cached-1",
+        language="zh", duration=300.0, model="stub-asr-v1",
+    ))
+    cache.upsert(page, CachedSegment(
+        start_s=300.0, end_s=600.0, text="cached-2",
+        language="zh", duration=300.0, model="stub-asr-v1",
+    ))
+
+    seg_files = [
+        _make_seg(tmp_path, "s0.mp3", 0.0, 300.0),
+        _make_seg(tmp_path, "s1.mp3", 300.0, 600.0),
+        _make_seg(tmp_path, "s2.mp3", 600.0, 900.0),
+    ]
+    backend = _StubASRBackend([
+        ASRResult(text="fresh-3", duration=300.0, model="stub-asr-v1"),
+    ])
+
+    trans = await audio_transcribe_page(
+        backend, cache, uid=3, bvid="BVmix", page_index=0,
+        segments=seg_files, asr_language="zh",
+    )
+
+    assert backend.calls == 1
+    assert trans["cache_hits"] == 2
+    segs = trans["segments"]
+    assert len(segs) == 3
+    # Order is the input order, not cache order.
+    assert [s["text"] for s in segs] == ["cached-1", "cached-2", "fresh-3"]
+    assert [s["start_s"] for s in segs] == [0.0, 300.0, 600.0]
+    assert [s["end_s"] for s in segs] == [300.0, 600.0, 900.0]
+    for s in segs:
+        assert s["model"] == "stub-asr-v1"
+        assert s["duration"] == 300.0

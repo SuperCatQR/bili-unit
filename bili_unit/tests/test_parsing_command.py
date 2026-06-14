@@ -22,6 +22,7 @@ from bili_unit.parsing.query import ParsingQuery
 EXPECTED_MODEL_ORDER = (
     "user_profile",
     "video_work",
+    "video_subtitle",
     "article_post",
     "opus_post",
     "dynamic_event",
@@ -69,6 +70,7 @@ async def test_parse_uid_creates_task(parsing_command, parsing_store):
         return {
             "user_profile": 1,
             "video_work": 5,
+            "video_subtitle": 5,
             "article_post": 3,
             "opus_post": 2,
             "dynamic_event": 4,
@@ -104,6 +106,7 @@ async def test_parse_uid_partial_status(parsing_command, parsing_store):
         return {
             "user_profile": 1,
             "video_work": 0,
+            "video_subtitle": 0,
             "article_post": 2,
             "opus_post": 0,
             "dynamic_event": 3,
@@ -140,6 +143,7 @@ async def test_parse_uid_model_failure(parsing_command, parsing_store):
         return {
             "user_profile": 1,
             "video_work": 2,
+            "video_subtitle": 2,
             "opus_post": 1,
             "dynamic_event": 1,
             "content_post": 2,

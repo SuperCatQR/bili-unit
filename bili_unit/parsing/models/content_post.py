@@ -79,6 +79,8 @@ def content_key_for_refs(cross_refs: CrossRefs, fallback: str = "") -> str:
         return f"article:{cross_refs.cvid}"
     if cross_refs.opus_id:
         return f"opus:{cross_refs.opus_id}"
+    if cross_refs.bvid:
+        return f"video:{cross_refs.bvid}"
     if cross_refs.dynamic_id:
         return f"dynamic:{cross_refs.dynamic_id}"
     return fallback
@@ -102,6 +104,21 @@ class ContentPost:
     def item_id(self) -> str:
         return content_post_item_id(self.content_key)
 
+    @property
+    def is_complete(self) -> bool:
+        """True when the post carries enough body to render to a reader.
+
+        Per kind:
+        * ``article`` / ``opus`` — body markdown must be populated.
+        * ``video`` — must have a title and a bvid cross-ref.
+        * ``dynamic*`` — text or images suffice.
+        """
+        if self.kind in {"article", "opus"}:
+            return bool(self.markdown)
+        if self.kind == "video":
+            return bool(self.title and self.cross_refs.bvid)
+        return bool(self.text or self.images)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "_model_name": "content_post",
@@ -115,6 +132,7 @@ class ContentPost:
             "images": list(self.images),
             "pub_time": self.pub_time,
             "stats": dict(self.stats),
+            "is_complete": self.is_complete,
             "_source_refs": [ref.to_dict() for ref in self.source_refs],
             "_cross_refs": self.cross_refs.to_dict(),
         }

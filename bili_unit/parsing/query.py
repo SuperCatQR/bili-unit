@@ -62,6 +62,15 @@ class ParsingQuery:
             images=images,
             created_at=tv.created_at,
             updated_at=tv.updated_at,
+            failed_item_ids=(
+                list(tv.failed_item_ids)
+                if tv.failed_item_ids
+                else sorted(
+                    name
+                    for name, dto in model_dtos.items()
+                    if dto.status == ParsingModelStatus.FAILED
+                )
+            ),
         )
 
     async def list_tasks(self) -> list[dict[str, Any]]:
@@ -111,6 +120,13 @@ class ParsingQuery:
 
     async def get_video_detail(self, uid: int, bvid: str) -> dict[str, Any] | None:
         return await self.get_item(uid, "video_work", bvid)
+
+    async def list_video_subtitles(self, uid: int) -> list[dict[str, Any]]:
+        """Return all VideoSubtitle typed objects for a uid."""
+        return await self.list_items(uid, "video_subtitle")
+
+    async def get_video_subtitle(self, uid: int, bvid: str) -> dict[str, Any] | None:
+        return await self.get_item(uid, "video_subtitle", bvid)
 
     async def list_articles(self, uid: int) -> list[dict[str, Any]]:
         return await self.list_items(uid, "article_post")
