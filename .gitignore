@@ -30,3 +30,10 @@ error/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Agent tool metadata (per-tool dotdirs created by Claude / Codex agents)
+.claude/
+.codex/
+
+# Pytest tmp_path artifacts (created when tests fail to clean up)
+.pytest-tmp/
