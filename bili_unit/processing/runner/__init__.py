@@ -67,7 +67,7 @@ class ProcessingRunner(_AudioMixin):
         self,
         data: ProcessingDataStore,
         error: ProcessingErrorStore,
-        temp_dir: str,
+        temp_dir: str | Path,
         fetching_query: FetchingReadView,
         settings: BiliSettings,
         asr_backend: ASRBackend | None = None,
@@ -77,7 +77,7 @@ class ProcessingRunner(_AudioMixin):
     ) -> None:
         self._data = data
         self._error = error
-        self._temp_dir = temp_dir
+        self._temp_dir = Path(temp_dir)
         self._fetch_qry = fetching_query
         self._settings = settings
         self._asr_backend = asr_backend
@@ -222,7 +222,7 @@ class ProcessingRunner(_AudioMixin):
 
     async def _cleanup_temp(self, uid: int) -> None:
         """Remove residual temp files for a uid after processing."""
-        temp_uid_dir = Path(self._temp_dir) / str(uid)
+        temp_uid_dir = self._temp_dir / str(uid)
         if temp_uid_dir.exists():
             shutil.rmtree(str(temp_uid_dir), ignore_errors=True)
             logger.debug("temp_cleaned", extra={"uid": uid})
@@ -288,5 +288,3 @@ __all__ = [
     "audio_download_page",
     "audio_transcribe_page",
 ]
-
-_ = Any  # pragma: no cover

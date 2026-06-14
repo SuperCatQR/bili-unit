@@ -61,7 +61,7 @@ class _AudioMixin:
     _error: Any
     _fetch_qry: Any
     _settings: BiliSettings
-    _temp_dir: str
+    _temp_dir: Path
     _asr_backend: ASRBackend | None
     _credential_provider: CredentialProvider | None
     _downloader_factory: Any
@@ -307,7 +307,7 @@ class _AudioMixin:
         bvid = item.item_id
         pages = item.item_data.get("pages", [])
 
-        temp_base = Path(self._temp_dir) / str(uid) / "audio" / bvid
+        temp_base = self._temp_dir / str(uid) / "audio" / bvid
         temp_base.mkdir(parents=True, exist_ok=True)
 
         asr_language = self._settings.bili_processing_asr_language

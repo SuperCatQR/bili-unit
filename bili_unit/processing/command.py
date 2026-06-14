@@ -36,7 +36,7 @@ class ProcessingCommand:
         self,
         data: ProcessingDataStore,
         error: ProcessingErrorStore,
-        temp_dir: str,
+        temp_dir: str | Path,
         fetching_query: FetchingReadView,
         settings: BiliSettings,
         asr_backend: ASRBackend | None = None,
@@ -47,12 +47,12 @@ class ProcessingCommand:
         self._data = data
         self._error = error
         self._asr_backend = asr_backend
-        self._temp_dir = temp_dir
+        self._temp_dir = Path(temp_dir)
         self._settings = settings
         self._runner = ProcessingRunner(
             data=data,
             error=error,
-            temp_dir=temp_dir,
+            temp_dir=self._temp_dir,
             fetching_query=fetching_query,
             settings=settings,
             asr_backend=asr_backend,
@@ -83,7 +83,7 @@ class ProcessingCommand:
         data_count = await self._data.delete_by_uid_prefix(uid)
         error_count = await self._error.delete_by_uid(uid)
         # Remove temp directory for this uid
-        temp_uid_dir = Path(self._temp_dir) / str(uid)
+        temp_uid_dir = self._temp_dir / str(uid)
         temp_existed = temp_uid_dir.exists()
         if temp_existed:
             shutil.rmtree(temp_uid_dir, ignore_errors=True)

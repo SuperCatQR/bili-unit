@@ -59,7 +59,7 @@ class TaskValue:
             )
         return cls(
             uid=d["uid"],
-            status=TaskStatus(d["status"]),
+            status=TaskStatus(d.get("status", "PENDING")),
             endpoints=endpoints,
             created_at=d.get("created_at"),
             updated_at=d.get("updated_at"),

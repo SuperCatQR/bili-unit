@@ -84,12 +84,26 @@ class ProcessingQuery:
         d = await self._data.get(_proc_key(uid, item_type, item_id))
         if d is None:
             return None
-        return self._to_item_dto(d)
+        errors = await self._error.list_errors(uid=uid)
+        item_errors = [
+            e for e in errors
+            if e.item_type == item_type and e.item_id == item_id
+        ]
+        return self._to_item_dto(d, errors=item_errors)
 
     async def list_items(self, uid: int, item_type: str) -> list[ProcessingItemDTO]:
         prefix = f"uid:{uid}:proc:{item_type}:"
         rows = await self._data.list_prefix(prefix)
-        return [self._to_item_dto(v) for _, v in rows]
+        errors = await self._error.list_errors(uid=uid)
+        by_item_id: dict[str, list[ProcessingErrorDTO]] = {}
+        for e in errors:
+            if e.item_type != item_type or e.item_id is None:
+                continue
+            by_item_id.setdefault(e.item_id, []).append(e)
+        return [
+            self._to_item_dto(v, errors=by_item_id.get(v.get("item_id", ""), []))
+            for _, v in rows
+        ]
 
     # -- errors -----------------------------------------------------------
 
@@ -99,7 +113,9 @@ class ProcessingQuery:
     # -- helpers ----------------------------------------------------------
 
     @staticmethod
-    def _to_item_dto(d: dict) -> ProcessingItemDTO:
+    def _to_item_dto(
+        d: dict, errors: list[ProcessingErrorDTO] | None = None,
+    ) -> ProcessingItemDTO:
         try:
             status = ProcessingItemStatus(d.get("status", "PENDING"))
         except ValueError:
@@ -112,5 +128,5 @@ class ProcessingQuery:
             status=status,
             result=d.get("result"),
             processed_at=d.get("processed_at"),
-            errors=[],
+            errors=errors or [],
         )
