@@ -25,7 +25,7 @@ from .keys import _proc_key, _task_key
 from .task import ProcessingTaskValue
 
 if TYPE_CHECKING:
-    from ..parsing.query import ParsingQuery
+    from ..parsing.protocols import ParsingReadView
     from .data import ProcessingDataStore
     from .error import ProcessingErrorStore
 
@@ -39,7 +39,7 @@ class ProcessingQuery:
         self,
         data: ProcessingDataStore,
         error: ProcessingErrorStore,
-        parsing_query: ParsingQuery | None = None,
+        parsing_query: ParsingReadView | None = None,
     ) -> None:
         self._data = data
         self._error = error
