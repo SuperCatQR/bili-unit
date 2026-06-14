@@ -9,6 +9,8 @@
 # Stage sub-packages (`fetching/`, `processing/`) live behind the
 # command/query facade and should not be reached from outside the bili unit.
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from importlib.metadata import version as _pkg_version
 
 from ._env import BiliSettings, get_settings, reload_settings  # noqa: F401
@@ -130,6 +132,43 @@ async def assemble(
     return cmd, qry
 
 
+@asynccontextmanager
+async def session(
+    settings: BiliSettings | None = None,
+    *,
+    asr_backend_override: str | None = None,
+    credential_provider=None,
+) -> AsyncIterator[tuple[BiliCommand, BiliQuery]]:
+    """SDK-recommended entry: assemble + auto cleanup via async context manager.
+
+    Equivalent to::
+
+        cmd, qry = await assemble(settings, ...)
+        try:
+            yield cmd, qry
+        finally:
+            await cmd.close()
+
+    The arguments are forwarded verbatim to :func:`assemble`; see that function's
+    docstring for parameter semantics.
+
+    Example::
+
+        async with bili_unit.session() as (cmd, qry):
+            await cmd.fetch(uid=123)
+            task = await qry.fetching.get_task(uid=123)
+    """
+    cmd, qry = await assemble(
+        settings,
+        asr_backend_override=asr_backend_override,
+        credential_provider=credential_provider,
+    )
+    try:
+        yield cmd, qry
+    finally:
+        await cmd.close()
+
+
 __all__ = [
     "AudioError",
     "BiliCommand",
@@ -164,4 +203,5 @@ __all__ = [
     "assemble",
     "get_settings",
     "reload_settings",
+    "session",
 ]
