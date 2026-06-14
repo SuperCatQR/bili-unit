@@ -12,7 +12,9 @@ def _task_key(uid: int) -> str:
 def _item_key(uid: int, model: str, item_id: str) -> str:
     """Single-item typed object key.
 
-    model ∈ {"user_profile", "video_detail", "article", "opus", "dynamic"}.
+    model is the canonical parsing model name
+    (``user_profile`` / ``video_work`` / ``article_post`` / ``opus_post`` /
+    ``dynamic_event`` / ``content_post``).
     item_id is a stable string (uid / bvid / cvid / opus_id / dynamic_id).
     """
     return f"uid:{uid}:parse:{model}:{item_id}"

@@ -1,37 +1,23 @@
-# env — read-only .env loader for parsing settings (pydantic-settings).
+# env — parsing stage settings.
+#
+# Settings 全部住在 :mod:`bili_unit._env`；本文件保留做向后兼容的 stage-level
+# 入口（docs/structure/bili.md §4 把 env 列为 stage 内模块）。
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from .._env import BiliSettings as _BiliSettings
+from .._env import get_settings as _get_settings
+from .._env import reload_settings as _reload_settings
 
-
-class ParsingEnv(BaseSettings):
-    """Bilibili parsing settings, loaded lazily from .env."""
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
-
-    # Storage path
-    bili_parsing_data_dir: str = "data/bili/parsing"
-
-    # Image downloading
-    bili_parsing_image_concurrency: int = 8
-    bili_parsing_image_timeout: float = 30.0
+ParsingEnv = _BiliSettings
 
 
-_settings: ParsingEnv | None = None
-
-
-def get_parsing_settings() -> ParsingEnv:
-    """Return the cached parsing settings, loading .env on first call."""
-    global _settings
-    if _settings is None:
-        _settings = ParsingEnv()
-    return _settings
+def get_parsing_settings() -> _BiliSettings:
+    """Backward-compat entry: returns the same singleton as ``bili_unit._env.get_settings``."""
+    return _get_settings()
 
 
 def reload_parsing_settings() -> None:
-    """Force reload from .env."""
-    global _settings
-    _settings = ParsingEnv()
+    """Backward-compat entry: same as ``bili_unit._env.reload_settings``."""
+    _reload_settings()
+
+
+__all__ = ["ParsingEnv", "get_parsing_settings", "reload_parsing_settings"]

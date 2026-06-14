@@ -75,6 +75,28 @@ class BiliCommand:
             raise RuntimeError("processing command was not assembled")
         return await self._processing.process_uid(uid, mode=mode)
 
+    # -- delete uid (cross-stage) ------------------------------------------
+
+    async def delete_uid(self, uid: int) -> dict[str, dict[str, int]]:
+        """Delete all state for a uid across every assembled stage.
+
+        Executes in pipeline order (fetching → parsing → processing) so that
+        if a later stage fails, the earlier (upstream) data is already cleared
+        and any stale downstream state is harmless.
+        """
+        if self._parsing is None:
+            raise RuntimeError("parsing command was not assembled")
+        if self._processing is None:
+            raise RuntimeError("processing command was not assembled")
+        fetching_stats = await self._fetching.delete_uid(uid)
+        parsing_stats = await self._parsing.delete_uid(uid)
+        processing_stats = await self._processing.delete_uid(uid)
+        return {
+            "fetching": fetching_stats,
+            "parsing": parsing_stats,
+            "processing": processing_stats,
+        }
+
     # -- lifecycle ---------------------------------------------------------
 
     async def close(self) -> None:

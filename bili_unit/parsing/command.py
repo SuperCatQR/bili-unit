@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +22,7 @@ from .materializer import ParsingMaterializer
 from .specs import MODEL_ORDER
 
 if TYPE_CHECKING:
-    from ..fetching.query import Query as FetchingQuery
+    from ..fetching.protocols import FetchingReadView
 
 logger = logging.getLogger("bili.parsing.command")
 
@@ -34,7 +35,7 @@ class ParsingCommand:
     def __init__(
         self,
         data: ParsingDataStore,
-        fetching_query: FetchingQuery,
+        fetching_query: FetchingReadView,
     ) -> None:
         self._data = data
         self._fetch_qry = fetching_query
@@ -129,6 +130,20 @@ class ParsingCommand:
         prefix = f"uid:{uid}:parse:{model_name}:"
         rows = await self._data.list_prefix(prefix)
         return [v for _, v in rows]
+
+    async def delete_uid(self, uid: int) -> dict[str, int]:
+        """Delete all parsing state for a uid. Returns counts."""
+        rows = await self._data.list_prefix(f"uid:{uid}:")
+        data_count = 0
+        for key, _ in rows:
+            await self._data.delete(key)
+            data_count += 1
+        # Remove downloaded images directory
+        images_dir = self._data.base / str(uid) / "images"
+        images_existed = images_dir.exists()
+        if images_existed:
+            shutil.rmtree(images_dir, ignore_errors=True)
+        return {"data": data_count, "images_dir_removed": int(images_existed)}
 
     async def close(self) -> None:
         """Close underlying stores."""

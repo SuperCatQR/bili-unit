@@ -6,13 +6,14 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from .. import (
     ProcessingItemStatus,
     ProcessingPipelineStatus,
 )
 from ..keys import _proc_key, _task_key
+from ...fetching import EndpointStatus
 from ..task import PipelineEntry, ProcessingTaskValue
 from ._audio_work import (
     audio_convert_page,
@@ -28,9 +29,15 @@ from ._pipeline_executor import (
 )
 
 if TYPE_CHECKING:
+    from bilibili_api import Credential
     from ..audio._asr_backend import ASRBackend
     from ..audio._asr_cache import ASRCacheStore
-    from ..env import ProcessingEnv
+    from ..._env import BiliSettings
+
+# Boundaries (docs/structure/bili.md §8): processing runner must not import
+# fetching.auth directly.  The caller (assemble / ProcessingCommand) injects
+# a provider callable so this mixin stays decoupled from the fetching stage.
+CredentialProvider = Callable[[], Awaitable["Credential | None"]]
 
 logger = logging.getLogger("bili.processing.runner")
 
@@ -42,17 +49,21 @@ class _AudioMixin:
     """Mixin providing audio pipeline methods for :class:`ProcessingRunner`.
 
     Accesses runner state (``self._data``, ``self._error``, ``self._fetch_qry``,
-    ``self._settings``, ``self._temp_dir``, ``self._asr_backend``) and helpers
-    (``_get_asr_cache``, ``_write_progress``, ``_derive_pipeline_status``,
-    ``_is_retryable``) via the combined MRO at runtime.
+    ``self._settings``, ``self._temp_dir``, ``self._asr_backend``,
+    ``self._credential_provider``) and helpers (``_get_asr_cache``,
+    ``_write_progress``, ``_derive_pipeline_status``, ``_is_retryable``) via
+    the combined MRO at runtime.
     """
 
     _data: Any
     _error: Any
     _fetch_qry: Any
-    _settings: ProcessingEnv
+    _settings: BiliSettings
     _temp_dir: str
     _asr_backend: ASRBackend | None
+    _credential_provider: CredentialProvider | None
+    _downloader_factory: Any
+    _convert_fn: Any
 
     def _get_asr_cache(self) -> ASRCacheStore | None: ...  # pragma: no cover
 
@@ -112,10 +123,9 @@ class _AudioMixin:
 
         # 3. resolve credential for CDN downloads
         credential = None
-        if audio_items:
+        if audio_items and self._credential_provider is not None:
             try:
-                from ...fetching.auth import get_credential
-                credential = await get_credential()
+                credential = await self._credential_provider()
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "audio_credential_unavailable",
@@ -143,15 +153,13 @@ class _AudioMixin:
         Each bvid produces one WorkItem carrying its page list.
         Returns (ready_items, skipped_count).
         """
-        from ...fetching import EndpointStatus as _EpStatus
-
         vd_pairs = await self._fetch_qry.list_video_details(uid)
         if not vd_pairs:
             return [], 0
 
         items: list[WorkItem] = []
         for bvid, status in vd_pairs:
-            if status != _EpStatus.SUCCESS:
+            if status != EndpointStatus.SUCCESS:
                 continue
             dto = await self._fetch_qry.get_video_detail(uid, bvid)
             if dto is None or dto.raw_payload is None:
@@ -276,7 +284,7 @@ class _AudioMixin:
             do_work=_do_work,
             is_retryable=self._is_retryable,
             max_attempts=self._settings.bili_processing_max_retries + 1,
-            delays=self._settings.get_retry_delays(),
+            delays=self._settings.get_processing_retry_delays(),
             logger=logger,
         )
 
@@ -294,10 +302,6 @@ class _AudioMixin:
 
         Raises on any error; temp files are always cleaned up in ``finally``.
         """
-        # Late import: tests patch ``bili_unit.processing.runner.AudioDownloader``
-        # and we want each call to honour the current binding.
-        from . import AudioDownloader
-
         bvid = item.item_id
         pages = item.item_data.get("pages", [])
 
@@ -307,7 +311,7 @@ class _AudioMixin:
         asr_language = self._settings.bili_processing_asr_language
 
         try:
-            downloader = AudioDownloader(credential=credential)
+            downloader = self._downloader_factory(credential=credential)
             page_results = []
             total_duration: float = 0.0
             total_chars: int = 0
@@ -337,6 +341,7 @@ class _AudioMixin:
                 mp3_files = await audio_convert_page(
                     m4s_path, temp_base / f"mp3_{page_index}",
                     page_duration_for_split, self._settings,
+                    convert_fn=self._convert_fn,
                 )
 
                 # 3. ASR per segment — with resume cache.

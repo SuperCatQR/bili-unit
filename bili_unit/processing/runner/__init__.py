@@ -14,18 +14,16 @@
 #
 # This module retains: orchestration (run), helpers, and the runner class.
 #
-# Tests patch ``bili_unit.processing.runner.AudioDownloader``,
-# ``bili_unit.processing.runner.convert_single``, and
-# ``bili_unit.processing.runner.asyncio``.  Those symbols must therefore
-# remain reachable at this package's namespace — see the explicit re-exports
-# below.
+# AudioDownloader / convert_single are injected via ProcessingRunner
+# constructor (downloader_factory= / convert_fn=) so tests can substitute
+# without module-level patching.
 
 from __future__ import annotations
 
-import asyncio  # noqa: F401 — re-exported so tests can patch asyncio.sleep
 import logging
 import shutil
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -35,19 +33,22 @@ from .. import (
     ProcessingTaskStatus,
 )
 from ..audio._asr_cache import ASRCacheStore
-from ..audio._converter import convert_single  # noqa: F401 — patch target
-from ..audio._downloader import AudioDownloader  # noqa: F401 — patch target
+from ..audio._converter import convert_single as _real_convert_single
+from ..audio._downloader import AudioDownloader as _real_audio_downloader_cls
 from ..keys import _progress_key, _task_key
 from ..task import PipelineEntry, ProcessingTaskValue
-from ._audio import _AudioMixin
+from ._audio import CredentialProvider, _AudioMixin
 from ._audio_work import (
+    ConvertFn,
     audio_convert_page,
     audio_download_page,
     audio_transcribe_page,
 )
 
+DownloaderFactory = Callable[..., Any]  # AudioDownloader constructor, compatible with AudioDownloader.__init__
+
 if TYPE_CHECKING:
-    from ...fetching.query import Query as FetchingQuery
+    from ...fetching.protocols import FetchingReadView
     from ..audio._asr_backend import ASRBackend
     from ..data import ProcessingDataStore
     from ..env import ProcessingEnv
@@ -67,9 +68,12 @@ class ProcessingRunner(_AudioMixin):
         data: ProcessingDataStore,
         error: ProcessingErrorStore,
         temp_dir: str,
-        fetching_query: FetchingQuery,
+        fetching_query: FetchingReadView,
         settings: ProcessingEnv,
         asr_backend: ASRBackend | None = None,
+        credential_provider: CredentialProvider | None = None,
+        downloader_factory: DownloaderFactory | None = None,
+        convert_fn: ConvertFn | None = None,
     ) -> None:
         self._data = data
         self._error = error
@@ -77,6 +81,13 @@ class ProcessingRunner(_AudioMixin):
         self._fetch_qry = fetching_query
         self._settings = settings
         self._asr_backend = asr_backend
+        self._credential_provider = credential_provider
+        self._downloader_factory = (
+            downloader_factory if downloader_factory is not None else _real_audio_downloader_cls
+        )
+        self._convert_fn = (
+            convert_fn if convert_fn is not None else _real_convert_single
+        )
         self._asr_cache: ASRCacheStore | None = None
 
     def _get_asr_cache(self) -> ASRCacheStore | None:
@@ -270,12 +281,12 @@ class ProcessingRunner(_AudioMixin):
 # ---------------------------------------------------------------------------
 
 __all__ = [
-    "AudioDownloader",
+    "ConvertFn",
+    "DownloaderFactory",
     "ProcessingRunner",
     "audio_convert_page",
     "audio_download_page",
     "audio_transcribe_page",
-    "convert_single",
 ]
 
 _ = Any  # pragma: no cover

@@ -19,13 +19,11 @@ from .conftest import _fake_page
 # ======================================================================
 
 @pytest.mark.asyncio
-async def test_query_no_store_key_leak(command: Command, query: Query):
+async def test_query_no_store_key_leak(stores, rl_ctl, query: Query):
     """Query must return DTOs, never expose store keys."""
-    with patch(
-        "bili_unit.fetching.runner.fetch_endpoint",
-        new=AsyncMock(return_value=_fake_page(30, {"ok": True})),
-    ):
-        await command.fetch_uid(30, endpoints=["user_info"])
+    ds, es = stores
+    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(return_value=_fake_page(30, {"ok": True})))
+    await cmd.fetch_uid(30, endpoints=["user_info"])
 
     task = await query.get_task(30)
     assert task is not None
@@ -40,16 +38,16 @@ async def test_query_no_store_key_leak(command: Command, query: Query):
 
 
 @pytest.mark.asyncio
-async def test_query_available_only_on_success(command: Command, query: Query):
+async def test_query_available_only_on_success(stores, rl_ctl, query: Query):
     """available=False when endpoint hasn't succeeded."""
+    ds, es = stores
+
     async def fake_fetch(uid, spec, credential, request_params, **kw):
         raise Http412Error("412")
 
-    with patch(
-        "bili_unit.fetching.runner.fetch_endpoint",
-        new=AsyncMock(side_effect=fake_fetch),
-    ), patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
-        await command.fetch_uid(40, endpoints=["user_info"])
+    cmd = Command(ds, es, rl_ctl, fetch_fn=AsyncMock(side_effect=fake_fetch))
+    with patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
+        await cmd.fetch_uid(40, endpoints=["user_info"])
 
     ep = await query.get_endpoint(40, "user_info")
     assert ep is not None

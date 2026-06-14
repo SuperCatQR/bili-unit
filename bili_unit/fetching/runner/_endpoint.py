@@ -56,6 +56,7 @@ class _EndpointMixin:
 
     _data: Any
     _error: Any
+    _fetch_fn: Any
     _rl: Any
 
     async def _load_progress(self, uid: int, endpoint: str) -> dict | None: ...  # pragma: no cover
@@ -71,10 +72,6 @@ class _EndpointMixin:
         credential: Any,
         mode: str = "incremental",
     ) -> None:
-        # Import via package to preserve mock-patch target compatibility.
-        # Tests patch ``bili_unit.fetching.runner.fetch_endpoint``.
-        from . import fetch_endpoint
-
         # init
         await self._update_endpoint_status(uid, ep_name, EndpointStatus.RUNNING, retry_count=0)
 
@@ -115,7 +112,7 @@ class _EndpointMixin:
 
         settings = get_settings()
         max_retries = settings.bili_fetching_max_retries
-        retry_delays = settings.get_retry_delays()
+        retry_delays = settings.get_fetching_retry_delays()
 
         # ``retry_count`` here is observable to the test harness (via the task
         # entry's retry_count field) and represents the number of failed
@@ -128,7 +125,7 @@ class _EndpointMixin:
 
         async def _fetch_one_page(params: dict[str, Any]):
             await self._rl.acquire(spec.rate_limit_key)
-            return await fetch_endpoint(
+            return await self._fetch_fn(
                 uid, spec, credential, params,
                 timeout=settings.bili_fetching_request_timeout,
             )

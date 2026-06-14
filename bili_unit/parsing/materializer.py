@@ -14,7 +14,7 @@ from .keys import _item_key, _item_prefix
 from .specs import MODEL_ORDER, get_spec
 
 if TYPE_CHECKING:
-    from ..fetching.query import Query as FetchingQuery
+    from ..fetching.protocols import FetchingReadView
     from .data import ParsingDataStore
 
 logger = logging.getLogger("bili.parsing.materializer")
@@ -26,7 +26,7 @@ class ParsingMaterializer:
     def __init__(
         self,
         data: ParsingDataStore,
-        fetching_query: FetchingQuery,
+        fetching_query: FetchingReadView,
     ) -> None:
         self._data = data
         self._fetch_qry = fetching_query
@@ -200,9 +200,6 @@ class ParsingMaterializer:
         logger.info("video works parsed", extra={"uid": uid, "count": count})
         return count
 
-    async def _parse_video_detail(self, uid: int, mode: str) -> int:
-        return await self._parse_video_work(uid, mode)
-
     async def _parse_article_posts(self, uid: int, mode: str) -> int:
         from .models.article import Article, _build_cvid_to_lists
 
@@ -268,9 +265,6 @@ class ParsingMaterializer:
         logger.info("article posts parsed", extra={"uid": uid, "count": count})
         return count
 
-    async def _parse_articles(self, uid: int, mode: str) -> int:
-        return await self._parse_article_posts(uid, mode)
-
     async def _parse_opus_posts(self, uid: int, mode: str) -> int:
         from .models.opus import OpusPost, _str_or_empty
 
@@ -318,9 +312,6 @@ class ParsingMaterializer:
         logger.info("opus posts parsed", extra={"uid": uid, "count": count})
         return count
 
-    async def _parse_opus(self, uid: int, mode: str) -> int:
-        return await self._parse_opus_posts(uid, mode)
-
     async def _parse_dynamic_events(self, uid: int, mode: str) -> int:
         from .models.dynamic import DynamicPost, _str_or_empty
 
@@ -357,9 +348,6 @@ class ParsingMaterializer:
 
         logger.info("dynamic events parsed", extra={"uid": uid, "count": count})
         return count
-
-    async def _parse_dynamics(self, uid: int, mode: str) -> int:
-        return await self._parse_dynamic_events(uid, mode)
 
     async def _parse_content_posts(self, uid: int, mode: str) -> int:
         from .models.content_post import ContentPost
