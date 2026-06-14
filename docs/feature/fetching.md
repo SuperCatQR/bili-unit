@@ -51,9 +51,7 @@ data/error → _storage (JsonKVStore + KeyMapper)
 
 ## 端点注册表
 
-实际注册 51 个端点（uid-level + item-level），其中 parsing 层目前消费 11 个；其余端点抓取后落盘但暂无消费方，可通过 CLI `--profile parsing` 跳过以缩短运行时间（issue #2）。
-
-64 个端点分为两类：uid-level（直接按 uid 抓取）和 item-level（从源端点提取 items 后逐个抓取）。
+实际注册 64 个端点（34 uid-level + 30 item-level），其中 parsing 层目前消费 11 个；其余端点抓取后落盘但暂无消费方，可通过 CLI `--profile parsing` 跳过以缩短运行时间（issue #2）。
 
 ### 扩展后端点总览（当前真相）
 
@@ -81,9 +79,9 @@ credential_required
   upower_qa_detail
 ```
 
-历史实测表仍保留当时 T1/T2 扩展的真实运行结果；新增扩展端点目前以 mock 测试锁定注册、分页和 fan-out 行为，真实站点可用性取决于 B站权限、风控和 bilibili-api-python 对应接口状态。
+新增扩展端点目前以 mock 测试锁定注册、分页和 fan-out 行为，真实站点可用性取决于 B 站权限、风控和 bilibili-api-python 对应接口状态。
 
-每个端点的分页策略、限流 key、`item_id_path`、是否需要凭据、raw_payload schema 见 [docs/structure/fetching-contract.md](../structure/fetching-contract.md)。
+每个端点的分页策略、限流 key、`item_id_path`、是否需要凭据、raw_payload schema 见 [docs/structure/fetching-contract.md](../structure/fetching-contract.md)（部分端点 schema 待补，见该文 §7）。
 
 ## 抓取范围（Profile）
 
@@ -91,7 +89,7 @@ CLI `--profile {all,parsing,minimal}` 控制本次抓取的端点子集（issue 
 
 | Profile | 端点数 | 典型耗时 (中等账号) | 用途 |
 |---------|--------|----------------------|------|
-| all (默认) | 51 | ~17 分钟 | 完整存档，向后兼容 |
+| all (默认) | 64 | ~17 分钟 | 完整存档 |
 | parsing | 11 | ~2-3 分钟 | parsing 层实际消费的端点；推荐 |
 | minimal | 5 | <1 分钟 | smoke / CI / 调试 |
 
