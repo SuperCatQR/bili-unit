@@ -55,3 +55,35 @@ class KvDataStore:
 
     async def list_prefix(self, prefix: str) -> list[tuple[str, dict[str, Any]]]:
         return await self._kv.list_prefix(prefix)
+
+    # -- shared higher-level helpers ---------------------------------------
+
+    async def delete_by_uid_prefix(self, uid: int) -> int:
+        """Delete every key under ``uid:{uid}:`` and return the count."""
+        rows = await self._kv.list_prefix(f"uid:{uid}:")
+        count = 0
+        for key, _ in rows:
+            await self._kv.delete(key)
+            count += 1
+        return count
+
+    async def list_task_rows(self) -> list[tuple[int, dict[str, Any]]]:
+        """Return every ``uid:{uid}:task`` row's (uid, raw_value) pair, sorted by uid.
+
+        Stage queries project the dict into their own task-summary shape on top.
+        """
+        all_rows = await self._kv.list_prefix("uid:")
+        out: list[tuple[int, dict[str, Any]]] = []
+        for key, value in all_rows:
+            if not key.endswith(":task"):
+                continue
+            parts = key.split(":")
+            if len(parts) != 3:
+                continue
+            try:
+                uid = int(parts[1])
+            except ValueError:
+                continue
+            out.append((uid, value))
+        out.sort(key=lambda r: r[0])
+        return out

@@ -66,18 +66,9 @@ class ParsingQuery:
 
     async def list_tasks(self) -> list[dict[str, Any]]:
         """Return a lightweight summary of all parsing tasks."""
-        all_rows = await self._data.list_prefix("uid:")
+        rows = await self._data.list_task_rows()
         results: list[dict[str, Any]] = []
-        for key, value in all_rows:
-            if not key.endswith(":task"):
-                continue
-            parts = key.split(":")
-            if len(parts) != 3:
-                continue
-            try:
-                uid = int(parts[1])
-            except ValueError:
-                continue
+        for uid, value in rows:
             try:
                 status = ParsingTaskStatus(value.get("status", "PENDING"))
             except ValueError:
@@ -89,7 +80,6 @@ class ParsingQuery:
                 "model_count": model_count,
                 "updated_at": value.get("updated_at"),
             })
-        results.sort(key=lambda r: r["uid"])
         return results
 
     # -- typed object accessors --------------------------------------------

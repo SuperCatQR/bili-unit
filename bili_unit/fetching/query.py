@@ -53,20 +53,9 @@ class Query:
         Each entry contains: uid, status, updated_at, endpoint_count,
         and video_detail item counts (if applicable).
         """
-        all_rows = await self._data.list_prefix("uid:")
+        rows = await self._data.list_task_rows()
         results: list[dict] = []
-        for key, value in all_rows:
-            if not key.endswith(":task"):
-                continue
-            # key format: uid:{uid}:task
-            parts = key.split(":")
-            if len(parts) != 3:
-                continue
-            try:
-                uid = int(parts[1])
-            except ValueError:
-                continue
-
+        for uid, value in rows:
             try:
                 status = TaskStatus(value.get("status", "PENDING"))
             except ValueError:
@@ -90,7 +79,6 @@ class Query:
                 "video_detail_items": vd_items,
             })
 
-        results.sort(key=lambda x: x["uid"])
         return results
 
     async def get_endpoint(self, uid: int, endpoint: str) -> EndpointDTO | None:

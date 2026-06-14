@@ -55,11 +55,7 @@ class Command:
 
     async def delete_uid(self, uid: int) -> dict[str, int]:
         """Delete all fetching state for a uid. Returns counts."""
-        rows = await self._data.list_prefix(f"uid:{uid}:")
-        data_count = 0
-        for key, _ in rows:
-            await self._data.delete(key)
-            data_count += 1
+        data_count = await self._data.delete_by_uid_prefix(uid)
         error_count = await self._error.delete_by_uid(uid)
         return {"data": data_count, "errors": error_count}
 

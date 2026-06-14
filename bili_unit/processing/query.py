@@ -68,18 +68,9 @@ class ProcessingQuery:
         )
 
     async def list_tasks(self) -> list[dict]:
-        all_rows = await self._data.list_prefix("uid:")
+        rows = await self._data.list_task_rows()
         results: list[dict] = []
-        for key, value in all_rows:
-            if not key.endswith(":task"):
-                continue
-            parts = key.split(":")
-            if len(parts) != 3:
-                continue
-            try:
-                uid = int(parts[1])
-            except ValueError:
-                continue
+        for uid, value in rows:
             try:
                 status = ProcessingTaskStatus(value.get("status", "PENDING"))
             except ValueError:
@@ -91,7 +82,6 @@ class ProcessingQuery:
                 "pipeline_count": pipeline_count,
                 "updated_at": value.get("updated_at"),
             })
-        results.sort(key=lambda r: r["uid"])
         return results
 
     async def get_item(

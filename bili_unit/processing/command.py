@@ -80,11 +80,7 @@ class ProcessingCommand:
 
     async def delete_uid(self, uid: int) -> dict[str, int]:
         """Delete all processing state for a uid. Returns counts."""
-        rows = await self._data.list_prefix(f"uid:{uid}:")
-        data_count = 0
-        for key, _ in rows:
-            await self._data.delete(key)
-            data_count += 1
+        data_count = await self._data.delete_by_uid_prefix(uid)
         error_count = await self._error.delete_by_uid(uid)
         # Remove temp directory for this uid
         temp_uid_dir = Path(self._temp_dir) / str(uid)
