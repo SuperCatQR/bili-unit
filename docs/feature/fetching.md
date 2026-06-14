@@ -51,7 +51,9 @@ data/error → _storage (JsonKVStore + KeyMapper)
 
 ## 端点注册表
 
-实际注册 64 个端点（34 uid-level + 30 item-level），其中 parsing 层目前消费 11 个；其余端点抓取后落盘但暂无消费方，可通过 CLI `--profile parsing` 跳过以缩短运行时间（issue #2）。
+实际注册 64 个端点（34 uid-level + 30 item-level），其中 parsing 层目前消费 12 个；其余端点抓取后落盘但暂无消费方，可通过 CLI `--profile parsing` 跳过以缩短运行时间（issue #2）。
+
+64 个端点分为两类：uid-level（直接按 uid 抓取）和 item-level（从源端点提取 items 后逐个抓取）。
 
 ### 扩展后端点总览（当前真相）
 
@@ -81,7 +83,143 @@ credential_required
 
 新增扩展端点目前以 mock 测试锁定注册、分页和 fan-out 行为，真实站点可用性取决于 B 站权限、风控和 bilibili-api-python 对应接口状态。
 
-每个端点的分页策略、限流 key、`item_id_path`、是否需要凭据、raw_payload schema 见 [docs/structure/fetching-contract.md](../structure/fetching-contract.md)（部分端点 schema 待补，见该文 §7）。
+### uid-level 端点（34 个）
+
+真相源：`bili_unit/fetching/_endpoint_catalog.py`。
+
+| 端点 | 分页策略 | 限流 key | item_id_path | 需凭据 |
+|------|---------|----------|-------------|------|
+| access_id | none | access_id | — | |
+| album | page (page_num/page_size) | album | — | |
+| all_followings | none | all_followings | — | ✓ |
+| article_list | none | article_list | — | |
+| articles | page (pn/ps) | articles | articles[*].id | |
+| audios | page (pn/ps) | audios | data[*].id | |
+| channel_list | page (pn/ps) | channel_list | items_lists.seasons_list[*].meta.season_id, items_lists.series_list[*].meta.series_id | |
+| channels | none | channels | — | |
+| cheese | none | cheese | — | |
+| dynamics | cursor (offset) | dynamics | items[*].id_str | |
+| dynamics_legacy | legacy_offset | dynamics_legacy | cards[*].desc.dynamic_id | |
+| elec_monthly | none | elec_monthly | — | ✓ |
+| followers | page (pn/ps) | followers | list[*].mid | |
+| followings | page (pn/ps) | followings | list[*].mid | |
+| live_info | none | live_info | — | |
+| masterpiece | none | masterpiece | — | |
+| media_list | oid | media_list | media_list[*].bvid, list[*].bvid, items[*].bvid | |
+| opus | cursor (offset) | opus | items[*].opus_id | |
+| overview_stat | none | overview_stat | — | |
+| relation_info | none | relation_info | — | |
+| reservation | none | reservation | — | |
+| same_followers | page (pn/ps) | same_followers | list[*].mid | ✓ |
+| space_notice | none | space_notice | — | |
+| subscribed_bangumi | page (pn/ps) | subscribed_bangumi | list[*].season_id | |
+| top_followers | none | top_followers | — | ✓ |
+| top_videos | none | top_videos | — | |
+| up_stat | none | up_stat | — | |
+| uplikeimg | none | uplikeimg | — | |
+| upower_qa | anchor | upower_qa | list[*].qa_id | ✓ |
+| user_fav_tag | page (pn/ps) | user_fav_tag | — | |
+| user_info | none | user_info | — | |
+| user_medal | none | user_medal | — | ✓ |
+| user_relation | none | user_relation | — | ✓ |
+| videos | page (pn/ps) | videos | list.vlist[*].bvid | |
+
+> 已知 library quirk：`album` 使用 `page_num`/`page_size` 参数名（client 层从 `pn`/`ps` 映射）；`masterpiece` 原始响应是 list，经 `_wrap_list_result` 包装为 `{"list": [...]}`；`user_fav_tag` 在 bilibili-api-python 内 `pn`/`ps` 被注释，实际只返回第一页。
+
+### item-level 端点（30 个）
+
+真相源：`bili_unit/fetching/_endpoint_catalog.py`。所有 item-level 端点 `pagination_strategy="none"`，分页/总量逻辑在 callable 内部完成。
+
+| 端点 | 源端点 | 限流 key | extract_items | 需凭据 |
+|------|--------|---------|-------------|------|
+| article_detail | articles | article_detail | _extract_cvids_from_articles | |
+| article_list_detail | article_list | article_list_detail | _extract_rlids_from_article_list | |
+| channel_videos_season | channel_list | channel_videos_season | _extract_season_ids | |
+| channel_videos_series | channel_list | channel_videos_series | _extract_series_ids | |
+| opus_detail | opus | opus_detail | _extract_opus_ids_from_opus | |
+| upower_qa_detail | upower_qa | upower_qa_detail | _extract_qa_ids_from_upower_qa | ✓ |
+| video_ai_conclusion | videos | video_ai_conclusion | _extract_bvids_from_videos | |
+| video_chargers | videos | video_chargers | _extract_bvids_from_videos | |
+| video_danmaku_snapshot | videos | video_danmaku_snapshot | _extract_bvids_from_videos | |
+| video_danmaku_view | videos | video_danmaku_view | _extract_bvids_from_videos | |
+| video_danmaku_xml | videos | video_danmaku_xml | _extract_bvids_from_videos | |
+| video_danmakus | videos | video_danmakus | _extract_bvids_from_videos | |
+| video_detail | videos | video_detail | _extract_bvids_from_videos | |
+| video_detail_full | videos | video_detail_full | _extract_bvids_from_videos | |
+| video_download_url | videos | video_download_url | _extract_bvids_from_videos | |
+| video_is_episode | videos | video_is_episode | _extract_bvids_from_videos | |
+| video_is_forbid_note | videos | video_is_forbid_note | _extract_bvids_from_videos | |
+| video_online | videos | video_online | _extract_bvids_from_videos | |
+| video_pages | videos | video_pages | _extract_bvids_from_videos | |
+| video_pay_coins | videos | video_pay_coins | _extract_bvids_from_videos | ✓ |
+| video_pbp | videos | video_pbp | _extract_bvids_from_videos | |
+| video_player_info | videos | video_player_info | _extract_bvids_from_videos | |
+| video_private_notes | videos | video_private_notes | _extract_bvids_from_videos | ✓ |
+| video_public_notes | videos | video_public_notes | _extract_bvids_from_videos | |
+| video_related | videos | video_related | _extract_bvids_from_videos | |
+| video_relation | videos | video_relation | _extract_bvids_from_videos | ✓ |
+| video_snapshot | videos | video_snapshot | _extract_bvids_from_videos | |
+| video_special_dms | videos | video_special_dms | _extract_bvids_from_videos | |
+| video_subtitle | videos | video_subtitle | _extract_bvids_from_videos | |
+| video_up_mid | videos | video_up_mid | _extract_bvids_from_videos | |
+
+item-level 端点共享独立的低 QPS（默认 0.5，即 2 秒间隔），避免逐项 fan-out 烧光全局配额触发 B站 412。除 `video_detail`（get_info + get_tags）/ `article_detail`（get_info + fetch_content + markdown + json）/ `opus_detail`（get_info + markdown + get_images_raw_info）/ `article_list_detail`（get_content）/ `channel_videos_{season,series}`（内部游标分页合并）/ `upower_qa_detail`（get_upower_qa_detail）有专门 callable 外，其余 23 个 video_* 端点由 `_video_item_method(name, per_page, page_arg, result_key)` 工厂统一构造。
+
+### MVP 范围与实测状态
+
+```text
+MVP endpoint（已实测）
+  user_info         none 分页
+  videos            page(pn/ps) 分页
+
+已扩展 endpoint（已实测）
+  relation_info     none
+  up_stat           none
+  dynamics          cursor(offset)
+  audios            page(pn/ps)
+  channel_list      page(pn/ps, max 20)
+
+T1 endpoint（已注册，已实测）
+  overview_stat     none ✓
+  articles          page(pn/ps) ✓  — 响应结构 Shape 4（顶层 count）
+  opus              cursor(offset) ✓  — 64 items, 4 pages
+  subscribed_bangumi  page(pn/ps, ps=15) — 隐私受限时返回 53013
+
+item-level fan-out endpoint（已实现，已实测）
+  video_detail         kind=item, source=videos（77 bvids, 76/76 SUCCESS）
+  article_detail       kind=item, source=articles
+  opus_detail          kind=item, source=opus
+  article_list_detail  kind=item, source=article_list（文集 → cvid 清单）
+
+T2 endpoint（已注册，已实测）
+  user_medal        none ✓（credential_required）
+  space_notice      none ✓
+  all_followings    none ✓（credential_required）
+  top_videos        none ✓
+  masterpiece       none ✓（返回 list，包装为 dict）
+  article_list      none ✓
+  cheese            none ✓
+  elec_monthly      none — FAILED_EXHAUSTED 88214（充电未开通）
+  user_fav_tag      page(pn/ps) — FAILED_EXHAUSTED 53013（隐私受限）；library bug：pn/ps 被注释
+  album             page(pn/ps→page_num/page_size) ✓ — Shape 5（total_count）
+  channel_videos_season  kind=item, source=channel_list ✓
+  channel_videos_series  kind=item, source=channel_list ✓
+  upower_qa         anchor ✓（credential_required，1 页）
+```
+
+```text
+暂不实现
+  写接口（modify_relation / set_space_notice / 点赞投币收藏等副作用操作）
+  当前登录账号 self 全局数据接口（get_self_history / get_toview_list 等，不属于目标 uid 空间采集）
+  视频历史弹幕按日期全量回溯（当前只抓实时/当前可读弹幕相关接口）
+```
+
+```text
+MVP 约束
+  uid-level endpoint 只调用 bilibili_api.user.User(uid) 读取接口。
+  item-level endpoint 调用 bilibili_api.video.Video(bvid) 读取接口。
+  不调用写接口。
+```
 
 ## 抓取范围（Profile）
 
@@ -89,8 +227,8 @@ CLI `--profile {all,parsing,minimal}` 控制本次抓取的端点子集（issue 
 
 | Profile | 端点数 | 典型耗时 (中等账号) | 用途 |
 |---------|--------|----------------------|------|
-| all (默认) | 64 | ~17 分钟 | 完整存档 |
-| parsing | 11 | ~2-3 分钟 | parsing 层实际消费的端点；推荐 |
+| all (默认) | 64 | ~17 分钟 | 完整存档，向后兼容 |
+| parsing | 12 | ~2-3 分钟 | parsing 层实际消费的端点；推荐 |
 | minimal | 5 | <1 分钟 | smoke / CI / 调试 |
 
 `parsing` 集合：`user_info` `relation_info` `up_stat` `overview_stat` `articles` `article_detail` `article_list_detail` `opus` `opus_detail` `dynamics` `videos` `video_detail`。
