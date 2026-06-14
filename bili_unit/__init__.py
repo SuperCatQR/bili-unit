@@ -47,6 +47,7 @@ from .processing import (  # noqa: F401 – public re-exports
     VideoFullDTO,
     VideoSummaryDTO,
 )
+from .processing.runner._audio import CredentialProvider  # noqa: F401
 from .query import BiliQuery
 
 __version__ = _pkg_version("bili-unit")
@@ -56,7 +57,7 @@ async def assemble(
     settings: BiliSettings | None = None,
     *,
     asr_backend_override: str | None = None,
-    credential_provider=None,  # CredentialProvider | None
+    credential_provider: CredentialProvider | None = None,
 ) -> tuple[BiliCommand, BiliQuery]:
     """Unified assembly for the whole bili unit.
 
@@ -137,7 +138,7 @@ async def session(
     settings: BiliSettings | None = None,
     *,
     asr_backend_override: str | None = None,
-    credential_provider=None,
+    credential_provider: CredentialProvider | None = None,
 ) -> AsyncIterator[tuple[BiliCommand, BiliQuery]]:
     """SDK-recommended entry: assemble + auto cleanup via async context manager.
 
@@ -175,6 +176,7 @@ __all__ = [
     "BiliQuery",
     "BiliSettings",
     "CommandResult",
+    "CredentialProvider",
     "EndpointDTO",
     "EndpointStatus",
     "ErrorDTO",
