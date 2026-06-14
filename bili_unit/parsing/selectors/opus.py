@@ -146,3 +146,58 @@ def select_opus_posts(
         )
 
     return posts
+
+
+def opus_posts_from_parsed(parsed_opus: list[dict[str, Any]]) -> list[ContentPost]:
+    """Derive ContentPost from already-parsed OpusPost dicts (legacy model output).
+
+    Single source of truth for opus→ContentPost mapping when reading from the
+    parsing store.  Mirrors :func:`select_opus_posts` but consumes
+    ``OpusPost.to_dict()`` output instead of raw fetching payloads.
+    """
+    posts: list[ContentPost] = []
+    for opus in parsed_opus:
+        if not isinstance(opus, dict):
+            continue
+        opus_id = str_or_empty(opus.get("id") or opus.get("opus_id"))
+        if not opus_id:
+            continue
+
+        refs = CrossRefs.from_dict(opus.get("_cross_refs") or opus.get("cross_refs"))
+        if not refs.opus_id:
+            refs.opus_id = opus_id
+
+        images: list[str] = []
+        for image in opus.get("detail_images", []) or []:
+            if isinstance(image, dict) and image.get("url"):
+                images.append(str(image["url"]))
+        images.extend(str(url) for url in opus.get("list_images", []) or [] if url)
+        if opus.get("cover"):
+            images.append(str(opus["cover"]))
+        images = dedup_strings(*images)
+
+        source_refs = dedup_source_refs(
+            [SourceRef("opus", opus_id)]
+            + [
+                SourceRef.from_dict(ref)
+                for ref in (opus.get("_source_refs") or opus.get("source_refs") or [])
+                if isinstance(ref, SourceRef | dict)
+            ]
+        )
+
+        posts.append(
+            ContentPost(
+                content_key=content_key_for_refs(refs),
+                kind="opus",
+                title=str_or_empty(opus.get("title", "")),
+                summary=str_or_empty(opus.get("summary", "")),
+                text=str_or_empty(opus.get("markdown") or opus.get("summary") or ""),
+                markdown=str_or_empty(opus.get("markdown", "")),
+                images=images,
+                pub_time=opus.get("pub_time") if opus.get("pub_time") is not None else opus.get("ctime"),
+                stats=stats_dict(opus.get("stats", {}) or {}),
+                source_refs=source_refs,
+                cross_refs=refs,
+            ),
+        )
+    return posts

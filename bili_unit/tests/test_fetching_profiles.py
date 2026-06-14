@@ -2,7 +2,7 @@
 
 import pytest
 
-from bili_unit.fetching.client import ENDPOINTS, PROFILES, resolve_profile
+from bili_unit.fetching._endpoint_catalog import ENDPOINTS, PROFILES, resolve_profile
 
 ALL_REGISTERED = {ep.name for ep in ENDPOINTS}
 

@@ -5,12 +5,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from bili_unit.fetching import EndpointStatus
-from bili_unit.fetching.client import (
-    ENDPOINTS,
+from bili_unit.fetching._bilibili_adapter import (
     FetchPageResult,
     fetch_endpoint,
-    get_endpoint,
 )
+from bili_unit.fetching._endpoint_catalog import ENDPOINTS, get_endpoint
 from bili_unit.fetching.keys import _item_fetch_key
 from bili_unit.fetching.query import Query
 from bili_unit.fetching.runner import Runner

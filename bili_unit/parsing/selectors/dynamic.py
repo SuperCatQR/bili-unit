@@ -386,3 +386,66 @@ def select_dynamic_content(raw_dynamics_payload: dict[str, Any] | None) -> list[
 
 def select_dynamic_posts(raw_dynamics_payload: dict[str, Any] | None) -> list[ContentPost]:
     return select_dynamic_content(raw_dynamics_payload)
+
+
+def dynamic_posts_from_parsed(parsed_dynamics: list[dict[str, Any]]) -> list[ContentPost]:
+    """Derive ContentPost from already-parsed DynamicPost dicts (legacy model output).
+
+    Single source of truth for dynamic→ContentPost mapping when reading from the
+    parsing store.  Mirrors :func:`select_dynamic_content`'s filtering (video
+    dynamics excluded; forwarded dynamics kept) but consumes
+    ``DynamicPost.to_dict()`` output instead of raw fetching payloads.
+    """
+    posts: list[ContentPost] = []
+    for event in parsed_dynamics:
+        if not isinstance(event, dict):
+            continue
+        dynamic_id = str_or_empty(event.get("dynamic_id") or event.get("id_str"))
+        if not dynamic_id:
+            continue
+
+        refs = CrossRefs.from_dict(event.get("_cross_refs") or event.get("cross_refs"))
+        if not refs.dynamic_id:
+            refs.dynamic_id = dynamic_id
+
+        # Video dynamics remain DynamicEvent target refs; not a readable body.
+        if refs.bvid and not (refs.cvid or refs.opus_id):
+            continue
+
+        major_type = str_or_empty(event.get("major_type"))
+        if refs.cvid:
+            kind = "article"
+        elif refs.opus_id:
+            kind = "opus"
+        elif event.get("forwarded_ref") or event.get("type") == "DYNAMIC_TYPE_FORWARD":
+            kind = "forward"
+        elif major_type == "MAJOR_TYPE_DRAW":
+            kind = "dynamic_draw"
+        else:
+            kind = "dynamic_draw"
+
+        source_refs = dedup_source_refs(
+            [
+                SourceRef.from_dict(ref)
+                for ref in (event.get("_source_refs") or event.get("source_refs") or [])
+                if isinstance(ref, SourceRef | dict)
+            ]
+            or [SourceRef("dynamics", dynamic_id)]
+        )
+
+        posts.append(
+            ContentPost(
+                content_key=content_key_for_refs(refs),
+                kind=kind,
+                title="",
+                summary=str_or_empty(event.get("text", "")),
+                text=str_or_empty(event.get("text", "")),
+                markdown="",
+                images=list(event.get("image_urls", []) or []),
+                pub_time=event.get("pub_time") if event.get("pub_time") is not None else event.get("timestamp"),
+                stats={},
+                source_refs=source_refs,
+                cross_refs=refs,
+            ),
+        )
+    return posts

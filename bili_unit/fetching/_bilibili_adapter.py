@@ -28,7 +28,7 @@ from . import (
 )
 from ._endpoint_spec import EndpointSpec
 
-logger = logging.getLogger("bili.fetching.client")
+logger = logging.getLogger("bili.fetching.adapter")
 
 
 # ---------------------------------------------------------------------------

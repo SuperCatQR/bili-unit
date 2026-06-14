@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 from bilibili_api import Credential
 
-from bili_unit.fetching.client import FetchPageResult
+from bili_unit.fetching._bilibili_adapter import FetchPageResult
 from bili_unit.fetching.command import Command
 from bili_unit.fetching.data import DataStore
 from bili_unit.fetching.error import ErrorStore

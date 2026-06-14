@@ -385,63 +385,26 @@ class ParsingMaterializer:
         return count
 
     async def _content_candidates_from_parsed(self, uid: int) -> list[Any]:
-        from .models.content_post import ContentPost, CrossRefs, SourceRef, content_key_for_refs
+        from .selectors import (
+            article_posts_from_parsed,
+            dynamic_posts_from_parsed,
+            opus_posts_from_parsed,
+        )
 
         candidates: list[Any] = []
-
-        for article in await self._load_typed_objects(uid, "article_post"):
-            cvid = str(article.get("id") or article.get("cvid") or "")
-            if not cvid:
-                continue
-            refs = CrossRefs.from_dict(article.get("_cross_refs") or article.get("cross_refs"))
-            if not refs.cvid:
-                refs.cvid = cvid
-            candidates.append(ContentPost(
-                content_key=content_key_for_refs(refs),
-                kind="article",
-                title=str(article.get("title", "") or ""),
-                summary=str(article.get("summary", "") or ""),
-                text=self._text_from_article(article),
-                markdown=str(article.get("markdown", "") or ""),
-                images=list(article.get("image_urls", []) or []),
-                pub_time=article.get("pub_time") if article.get("pub_time") is not None else article.get("ctime"),
-                stats=dict(article.get("stats", {}) or {}),
-                source_refs=self._source_refs_from(article, [SourceRef("articles", cvid)]),
-                cross_refs=refs,
-            ))
-
-        for opus in await self._load_typed_objects(uid, "opus_post"):
-            opus_id = str(opus.get("id") or opus.get("opus_id") or "")
-            if not opus_id:
-                continue
-            refs = CrossRefs.from_dict(opus.get("_cross_refs") or opus.get("cross_refs"))
-            if not refs.opus_id:
-                refs.opus_id = opus_id
-            images: list[str] = []
-            for image in opus.get("detail_images", []) or []:
-                if isinstance(image, dict) and image.get("url"):
-                    images.append(str(image["url"]))
-            images.extend(str(url) for url in opus.get("list_images", []) or [] if url)
-            if opus.get("cover"):
-                images.append(str(opus["cover"]))
-            candidates.append(ContentPost(
-                content_key=content_key_for_refs(refs),
-                kind="opus",
-                title=str(opus.get("title", "") or ""),
-                summary=str(opus.get("summary", "") or ""),
-                text=str(opus.get("markdown") or opus.get("summary") or ""),
-                markdown=str(opus.get("markdown", "") or ""),
-                images=self._dedup(images),
-                pub_time=opus.get("pub_time") if opus.get("pub_time") is not None else opus.get("ctime"),
-                stats=dict(opus.get("stats", {}) or {}),
-                source_refs=self._source_refs_from(opus, [SourceRef("opus", opus_id)]),
-                cross_refs=refs,
-            ))
-
-        for event in await self._load_typed_objects(uid, "dynamic_event"):
-            event_candidates = self._content_candidates_from_dynamic_event(event)
-            candidates.extend(event_candidates)
-
+        candidates.extend(
+            article_posts_from_parsed(
+                await self._load_typed_objects(uid, "article_post")
+            )
+        )
+        candidates.extend(
+            opus_posts_from_parsed(await self._load_typed_objects(uid, "opus_post"))
+        )
+        candidates.extend(
+            dynamic_posts_from_parsed(
+                await self._load_typed_objects(uid, "dynamic_event")
+            )
+        )
         return candidates
 
     async def _content_candidates_from_raw(self, uid: int) -> list[Any]:
@@ -471,74 +434,6 @@ class ParsingMaterializer:
             *select_opus_posts(opus_payload, opus_details),
             *select_dynamic_content(dynamics_payload),
         ]
-
-    @staticmethod
-    def _source_refs_from(value: dict[str, Any], fallback: list[Any]) -> list[Any]:
-        from .models.content_post import SourceRef
-
-        raw_refs = value.get("_source_refs") or value.get("source_refs") or []
-        refs = [
-            SourceRef.from_dict(ref)
-            for ref in raw_refs
-            if isinstance(ref, SourceRef | dict)
-        ]
-        return refs or fallback
-
-    @staticmethod
-    def _text_from_article(article: dict[str, Any]) -> str:
-        from .selectors._common import detail_text_from_content_json
-
-        return detail_text_from_content_json(article.get("content_json")) or str(article.get("summary", "") or "")
-
-    @staticmethod
-    def _dedup(values: list[str]) -> list[str]:
-        seen: set[str] = set()
-        result: list[str] = []
-        for value in values:
-            if value and value not in seen:
-                seen.add(value)
-                result.append(value)
-        return result
-
-    def _content_candidates_from_dynamic_event(self, event: dict[str, Any]) -> list[Any]:
-        from .models.content_post import ContentPost, CrossRefs, content_key_for_refs
-
-        dynamic_id = str(event.get("dynamic_id") or event.get("id_str") or "")
-        if not dynamic_id:
-            return []
-        major_type = str(event.get("major_type") or "")
-        refs = CrossRefs.from_dict(event.get("_cross_refs") or event.get("cross_refs"))
-        if not refs.dynamic_id:
-            refs.dynamic_id = dynamic_id
-
-        # Video dynamics remain DynamicEvent target refs; they are not a readable
-        # ContentPost body.
-        if refs.bvid and not (refs.cvid or refs.opus_id):
-            return []
-
-        kind = "dynamic_draw"
-        if refs.cvid:
-            kind = "article"
-        elif refs.opus_id:
-            kind = "opus"
-        elif event.get("forwarded_ref") or event.get("type") == "DYNAMIC_TYPE_FORWARD":
-            kind = "forward"
-        elif major_type == "MAJOR_TYPE_DRAW":
-            kind = "dynamic_draw"
-
-        return [ContentPost(
-            content_key=content_key_for_refs(refs),
-            kind=kind,
-            title="",
-            summary=str(event.get("text", "") or ""),
-            text=str(event.get("text", "") or ""),
-            markdown="",
-            images=list(event.get("image_urls", []) or []),
-            pub_time=event.get("pub_time") if event.get("pub_time") is not None else event.get("timestamp"),
-            stats={},
-            source_refs=self._source_refs_from(event, []),
-            cross_refs=refs,
-        )]
 
     async def _safe_fanout_payloads(self, uid: int, endpoint: str) -> dict[str, dict]:
         try:

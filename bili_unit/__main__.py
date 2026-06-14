@@ -81,7 +81,7 @@ def _resolve_subset(
 async def _handle_fetch(args: argparse.Namespace) -> None:
     """Run fetching via the unit-level BiliCommand / BiliQuery."""
     from bili_unit import EndpointStatus, assemble
-    from bili_unit.fetching.client import ENDPOINTS, resolve_profile
+    from bili_unit.fetching._endpoint_catalog import ENDPOINTS, resolve_profile
 
     all_endpoints = [ep.name for ep in ENDPOINTS]
 

@@ -119,3 +119,51 @@ def select_article_posts(
         )
 
     return posts
+
+
+def article_posts_from_parsed(parsed_articles: list[dict[str, Any]]) -> list[ContentPost]:
+    """Derive ContentPost from already-parsed Article dicts (legacy model output).
+
+    Single source of truth for article→ContentPost mapping when reading from the
+    parsing store.  Mirrors :func:`select_article_posts` but consumes
+    ``Article.to_dict()`` output instead of raw fetching payloads.
+    """
+    posts: list[ContentPost] = []
+    for article in parsed_articles:
+        if not isinstance(article, dict):
+            continue
+        cvid = str_or_empty(article.get("id") or article.get("cvid"))
+        if not cvid:
+            continue
+
+        refs = CrossRefs.from_dict(article.get("_cross_refs") or article.get("cross_refs"))
+        if not refs.cvid:
+            refs.cvid = cvid
+
+        text = detail_text_from_content_json(article.get("content_json")) or str_or_empty(
+            article.get("summary", "")
+        )
+
+        posts.append(
+            ContentPost(
+                content_key=content_key_for_refs(refs),
+                kind="article",
+                title=str_or_empty(article.get("title", "")),
+                summary=str_or_empty(article.get("summary", "")),
+                text=text,
+                markdown=str_or_empty(article.get("markdown", "")),
+                images=list(article.get("image_urls", []) or []),
+                pub_time=article.get("pub_time") if article.get("pub_time") is not None else article.get("ctime"),
+                stats=stats_dict(article.get("stats", {}) or {}),
+                source_refs=dedup_source_refs(
+                    [SourceRef("articles", cvid)]
+                    + [
+                        SourceRef.from_dict(ref)
+                        for ref in (article.get("_source_refs") or article.get("source_refs") or [])
+                        if isinstance(ref, SourceRef | dict)
+                    ]
+                ),
+                cross_refs=refs,
+            ),
+        )
+    return posts
