@@ -11,10 +11,10 @@ from . import (
 
 @dataclass
 class PipelineEntry:
-    """One pipeline (transform / audio) inside a processing task value.
+    """One pipeline (audio, and future subtitle/OCR) inside a processing task value.
 
     items: per-item-type rollup, e.g.
-        {"video_metadata": {"total": 77, "completed": 77, "failed": 0, "skipped": 0}}
+        {"transcription": {"total": 77, "completed": 77, "failed": 0, "skipped": 0}}
     """
 
     status: ProcessingPipelineStatus = ProcessingPipelineStatus.PENDING

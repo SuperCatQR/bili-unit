@@ -1,17 +1,21 @@
 # runner._pipeline_executor -- shared execution mechanics for processing.
 #
-# Pipeline-specific discovery stays in the transform / audio mixins.  This
-# module owns the parts both pipelines do identically:
+# Pipeline-specific discovery lives in the audio mixin (and future pipelines
+# such as subtitle/OCR, see docs/feature/processing-shrink-plan.md).  This
+# module owns the parts every pipeline does identically:
 #
 #   * queue fan-out, progress display, locked rollup updates
 #     (``run_item_workers`` + ``WorkerOutcome``)
 #   * per-item retry + error recording + status persistence
 #     (``run_item_with_retry`` + ``ItemRetryContext``)
 #
-# The transform and audio mixins each supply only what differs — the do-work
-# body, the retryable classifier, the record identity, and the log event
-# names — via a thin adapter, so the retry/record/persist skeleton lives in
-# exactly one place.
+# Each pipeline supplies only what differs — the do-work body, the retryable
+# classifier, the record identity, and the log event names — via a thin
+# adapter, so the retry/record/persist skeleton lives in exactly one place.
+#
+# TODO: when the second pipeline (subtitle/OCR) lands, this seam gains its
+# second adapter. Until then audio is the sole consumer; keep the abstraction
+# honest by not pre-splitting on hypothetical variation.
 
 from __future__ import annotations
 
@@ -73,8 +77,9 @@ class ItemRetryContext:
     item_id: str
     source_endpoints: tuple[str, ...]
     key: str
-    # Logging — transform keys its log lines on ``item_id``, audio on ``bvid``;
-    # ``failed_event`` is None for transform (it logs nothing on final failure).
+    # Logging — pipelines key log lines on their preferred id field
+    # (audio uses ``bvid``).  ``failed_event`` may be None when a pipeline
+    # logs nothing on final failure.
     retry_event: str
     log_id_field: str
     log_id_value: str
@@ -94,15 +99,14 @@ async def run_item_with_retry(
 ) -> bool:
     """Process one work item: retry → record errors → persist status.
 
-    This is the deepened seam shared by the transform and audio pipelines.
+    Shared retry/record/persist skeleton for every processing pipeline.
     On every failed attempt the matching error is recorded and a FAILED
     status row is written; on success a SUCCESS row carrying ``result`` is
     written.  Returns True on success, False once retries are exhausted or a
     PERMANENT error is hit (final state is already persisted either way).
 
-    ``do_work`` may be sync-wrapped-in-async (transform's ``handler.transform``)
-    or genuinely async (audio's ``_do_audio_work``) — the driver only awaits
-    it, so both work unchanged.
+    ``do_work`` may be sync-wrapped-in-async or genuinely async — the driver
+    only awaits it, so both work unchanged.
     """
 
     def _record(status: str, result: Any, processed_at: int,
