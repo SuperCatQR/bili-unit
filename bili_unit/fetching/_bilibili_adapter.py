@@ -39,15 +39,22 @@ logger = logging.getLogger("bili.fetching.adapter")
 # same response — so the runner should mark the endpoint / item permanently
 # failed without consuming the retry budget.
 #
-#   53013 — 用户隐私设置未公开 (privacy: list withheld)
-#   88214 — up未开通充电        (charging not enabled)
+#   53013 — 用户隐私设置未公开 (privacy: list withheld; subscribed_bangumi)
+#   88214 — up未开通充电        (charging not enabled; elec_monthly)
+#   22115 — 用户设置隐私        (privacy: opt-out; followings, same_followers)
+#   22118 — 用户隐私设置        (privacy: follower list withheld; followers)
+#   53016 — 没有置顶视频        (no pinned video; top_videos — empty, not error)
+#    -400 — 请求错误            (resource genuinely absent for this uid; uplikeimg)
 #
 # Add new codes here only after confirming they are terminal: the user has
-# opted out, the resource is gated behind a permission, or the feature is
-# disabled.  Transient codes (rate limit / auth / server) must NOT live here.
+# opted out, the resource is gated behind a permission, the resource simply
+# does not exist for this uid, or the feature is disabled.  Transient codes
+# (rate limit / auth / server) must NOT live here.
 # ---------------------------------------------------------------------------
 
-_PERMANENT_BUSINESS_CODES: frozenset[int] = frozenset({53013, 88214})
+_PERMANENT_BUSINESS_CODES: frozenset[int] = frozenset({
+    -400, 22115, 22118, 53013, 53016, 88214,
+})
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +93,17 @@ async def _map_bilibili_errors(
             ) from exc
         raise RequestError(f"{label}: code={exc.code}: {exc.msg}") from exc
     except NetworkException as exc:
+        # Split by HTTP status: 4xx is permanent (route gone / bad request),
+        # 5xx is retryable (transient server / network).  Without this split,
+        # a dead route like dynamics_legacy (404 HTML) would burn the full
+        # retry budget on Http5xxError before failing.
+        status = getattr(exc, "status", 0) or 0
+        if status == 404:
+            raise ResourceUnavailableError(
+                f"{label}: HTTP 404 (route gone): {exc}",
+            ) from exc
+        if 400 <= status < 500:
+            raise RequestError(f"{label}: HTTP {status}: {exc}") from exc
         raise Http5xxError(f"{label}: network error {exc}") from exc
     except passthrough:
         # Site-specific exception types that the caller wants to handle in an
@@ -226,12 +244,22 @@ async def _wrap_list_result(coro: Awaitable) -> dict:
 
 async def fetch_user_channels(
     uid: int,
-    credential: Credential | None,
+    cred: Credential | None = None,
     timeout: float = 30.0,
     **_kw: Any,
 ) -> dict[str, Any]:
-    """Fetch all ChannelSeries objects and serialise their metadata."""
-    u = user.User(uid, credential=credential)
+    """Fetch all ChannelSeries objects and serialise their metadata.
+
+    The parameter is named ``cred`` (not ``credential``) to match the call
+    convention in :func:`fetch_endpoint` (``spec.callable(uid, cred=...)``)
+    and the helper-generated signatures from :func:`_user_method`.  Using
+    ``credential`` here would silently route the value into ``**_kw`` and
+    leave the required argument unbound — every call would then raise a
+    misleading ``RequestError: missing 1 required positional argument``
+    that the runner mistakes for a transient failure and burns the full
+    retry budget on.
+    """
+    u = user.User(uid, credential=cred)
     async with _map_bilibili_errors("channels"):
         channels = await asyncio.wait_for(u.get_channels(), timeout=timeout)
 
