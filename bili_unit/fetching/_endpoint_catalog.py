@@ -21,6 +21,7 @@ from ._bilibili_adapter import (
     fetch_opus_detail_item,
     fetch_upower_qa_detail_item,
     fetch_user_channels,
+    fetch_user_media_list,
     fetch_video_ai_conclusion_item,
     fetch_video_chargers_item,
     fetch_video_danmaku_snapshot_item,
@@ -191,24 +192,22 @@ def _build_endpoints() -> list[EndpointSpec]:
             rate_limit_key="channels",
         ),
         EndpointSpec(
+            # ``sort_field`` is the int form of ``user.MedialistOrder`` so the
+            # value is JSON-safe in ``params_strategy`` (the runner persists it
+            # as progress).  ``fetch_user_media_list`` re-casts it to the enum
+            # before invoking the SDK (``get_media_list`` calls ``.value`` on
+            # it).  Embedding the enum directly here would crash progress
+            # serialisation with ``TypeError: not JSON serializable`` and
+            # silently leave the endpoint stuck in RUNNING.
             name="media_list",
-            callable=_user_method(
-                "get_media_list",
-                oid=None,
-                ps=100,
-                direction=True,
-                desc=True,
-                sort_field=user.MedialistOrder.PUBDATE,
-                tid=0,
-                with_current=False,
-            ),
+            callable=fetch_user_media_list,
             credential_required=False,
             params_strategy={
                 "oid": None,
                 "ps": 100,
                 "direction": True,
                 "desc": True,
-                "sort_field": user.MedialistOrder.PUBDATE,
+                "sort_field": int(user.MedialistOrder.PUBDATE.value),
                 "tid": 0,
                 "with_current": False,
             },

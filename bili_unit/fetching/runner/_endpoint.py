@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -65,6 +66,48 @@ class _EndpointMixin:
     # -- single endpoint ---------------------------------------------------
 
     async def _run_endpoint(
+        self: Any,
+        uid: int,
+        spec: EndpointSpec,
+        ep_name: str,
+        credential: Any,
+        mode: str = "incremental",
+    ) -> None:
+        """Run a uid-level endpoint with a safety net for unexpected errors.
+
+        Errors classified by the retry driver (FetchingError subclasses) are
+        handled inside :meth:`_run_endpoint_inner` and write their own final
+        endpoint status.  Anything else that escapes — JSON-serialisation
+        failures, programmer errors, OS errors during persistence — would
+        previously bubble through the per-coro shim in
+        :meth:`_gather_with_progress` and silently strand the endpoint in
+        RUNNING (no error record, no terminal state).  Wrap the body so an
+        unexpected exception always produces a FAILED_PERMANENT entry plus an
+        error record, never an indefinite RUNNING.
+        """
+        try:
+            await self._run_endpoint_inner(uid, spec, ep_name, credential, mode)
+        except Exception as exc:  # noqa: BLE001 — defensive catch-all
+            logger.exception(
+                "endpoint_unexpected_error",
+                extra={"uid": uid, "endpoint": ep_name, "error_type": type(exc).__name__},
+            )
+            wrapped = FetchingError(
+                f"unexpected: {type(exc).__name__}: {exc}",
+            )
+            try:
+                err_id = await self._error.record(
+                    wrapped, uid=uid, endpoint=ep_name, retryable=False,
+                )
+            except Exception:  # noqa: BLE001 — must not mask the original failure
+                err_id = None
+            with contextlib.suppress(Exception):
+                await self._update_endpoint_status(
+                    uid, ep_name, EndpointStatus.FAILED_PERMANENT,
+                    last_error_id=err_id,
+                )
+
+    async def _run_endpoint_inner(
         self: Any,
         uid: int,
         spec: EndpointSpec,
