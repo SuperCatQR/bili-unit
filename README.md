@@ -125,18 +125,16 @@ uv run ruff check                                  # lint
 
 ## 文档
 
-> 注意：下表所列各 stage 的 feature / structure 文档当前仍描述旧的 JSON-KV 实现，与 SQLite 重构后的代码已不一致；后续会单独清理（公开的 follow-up task）。
-
 | 类别 | 路径 | 性质 |
 | --- | --- | --- |
 | **数据契约** | [docs/schema.md](docs/schema.md) | SQLite DDL、表/视图、5 个常用查询 |
 | 领域语言 | [CONTEXT.md](CONTEXT.md) | 项目术语表（unit / stage / raw_payload 等） |
 | 决策记录 | [docs/adr/](docs/adr/) | ADR：难逆转 + 需背景的架构决策 |
-| 模块边界 | [docs/structure/bili.md](docs/structure/bili.md) | 各层职责约束（must-be，待更新） |
+| 模块边界 | [docs/structure/bili.md](docs/structure/bili.md) | 各层职责约束（must-be） |
 | 端点契约 | [docs/structure/fetching-contract.md](docs/structure/fetching-contract.md) | 64 个端点的 raw_payload schema |
-| fetching 现状 | [docs/feature/fetching.md](docs/feature/fetching.md) | 端点注册表、限流、模式、CLI（待更新） |
-| parsing 现状 | [docs/feature/parsing.md](docs/feature/parsing.md) | model 字段映射、图片下载、CLI（待更新） |
-| processing 现状 | [docs/feature/processing.md](docs/feature/processing.md) | audio pipeline、ASR 后端、CLI（待更新） |
+| fetching 现状 | [docs/feature/fetching.md](docs/feature/fetching.md) | 端点注册表、限流、模式、CLI |
+| parsing 现状 | [docs/feature/parsing.md](docs/feature/parsing.md) | model 字段映射、图片下载、CLI |
+| processing 现状 | [docs/feature/processing.md](docs/feature/processing.md) | audio pipeline、ASR 后端、CLI |
 | 接口参考 | [docs/bili-api-info/](docs/bili-api-info/) | bilibili-api-python 速查（外部资料镜像） |
 
 ## 许可与依赖
