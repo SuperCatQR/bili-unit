@@ -34,6 +34,15 @@ class BiliSettings(BaseSettings):
     bili_dedeuserid: str = ""
     bili_ac_time_value: str = ""
 
+    # === storage root (SQLite layout) ===
+    # Replaces the per-stage data_dir / error_dir / manifest_dir trio. One uid
+    # maps to three locations under this root:
+    #   {bili_db_dir}/{uid}.db        ← consumer contract  (parsing + processing tables, task state, errors)
+    #   {bili_db_dir}/{uid}.raw.db    ← producer-private   (raw fetching payloads + cursor)
+    #   {bili_db_dir}/{uid}/          ← workdir            (downloaded images, audio caches; DB stores rel paths)
+    # See docs/refactor-plan-sqlite.md for the full layout rationale.
+    bili_db_dir: str = "data/bili"
+
     # === fetching stage ===
     # fetching config (engineering doc §14)
     bili_fetching_data_dir: str = "data/bili/fetching/data"
