@@ -31,7 +31,6 @@ collect_ignore_glob = [
     "test_sdk_session.py",
     "test_sdk_public_surface.py",
     "test_task_failed_item_ids.py",
-    "test_cli_subset.py",
     # Phase 6 — runner / command tests (rewrite against new SQLite stores):
     "test_fetching_runner.py",
     "test_fetching_video_detail.py",
