@@ -225,29 +225,3 @@ class RateLimitController:
     @property
     def paused_until(self) -> float | None:
         return self._paused_until
-
-    def to_state(self, endpoint: str | None = None) -> dict[str, Any]:
-        """Serialise current rate-limit state for storage."""
-        if endpoint is None:
-            qps = self._global_qps
-        elif endpoint == "video_detail":
-            qps = self._video_detail_qps
-        else:
-            qps = self._endpoint_qps
-
-        state: dict[str, Any] = {
-            "scope": "global" if endpoint is None else endpoint,
-            "endpoint": endpoint,
-            "qps": qps,
-            "paused_until": self._paused_until,
-            "last_412_at": self._last_412_at,
-            "updated_at": int(time.time() * 1000),
-        }
-        # Include original values for monitoring / debugging.
-        if endpoint is None:
-            state["original_global_qps"] = self._orig_global_qps
-        elif endpoint == "video_detail":
-            state["original_endpoint_qps"] = self._orig_video_detail_qps
-        else:
-            state["original_endpoint_qps"] = self._orig_endpoint_qps
-        return state

@@ -2,10 +2,10 @@
 
 import logging
 
+from .._db import UidContext
 from .._env import BiliSettings
 from . import CommandResult
-from .data import DataStore
-from .error import ErrorStore
+from ._store import FetchingStore
 from .rate_limit import RateLimitController
 from .runner import FetchEndpointFn, Runner
 
@@ -15,51 +15,54 @@ logger = logging.getLogger("bili.fetching.command")
 class Command:
     """External write-side entry.
 
-    Does NOT provide data/error read access.
-    Does NOT call client directly.
+    Phase 3 contract:
+      * Holds only cross-request services (settings, rate limit). The store
+        layer is request-scoped — every ``fetch_uid`` opens its own
+        ``UidContext`` + ``FetchingStore``, then closes it on exit.
+      * ``delete_uid`` is a no-op; the unit-level ``BiliCommand.delete_uid``
+        deletes on-disk files directly.
     """
 
     def __init__(
         self,
-        data: DataStore,
-        error: ErrorStore,
-        rate_limit: RateLimitController,
         settings: BiliSettings,
+        rate_limit: RateLimitController,
+        *,
         stale_running_threshold_ms: int = 15 * 60 * 1000,
         fetch_fn: FetchEndpointFn | None = None,
     ) -> None:
-        self._data = data
-        self._error = error
-        self._rl = rate_limit
         self._settings = settings
-        self._runner = Runner(
-            data, error, rate_limit, settings,
-            stale_running_threshold_ms=stale_running_threshold_ms,
-            fetch_fn=fetch_fn,
-        )
+        self._rl = rate_limit
+        self._stale_running_threshold_ms = stale_running_threshold_ms
+        self._fetch_fn = fetch_fn
 
     async def fetch_uid(
-        self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental"
+        self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental",
     ) -> CommandResult:
         """Trigger fetching for a uid.
 
-        Delegates idempotency to runner.run_or_resume().
-
-        Args:
-            mode: "incremental" (default) scans for new content;
-                  "full" re-fetches everything from scratch.
+        Opens a per-uid ``UidContext`` for the duration of the run and closes
+        it before returning.
         """
         logger.info("command_received", extra={"uid": uid, "mode": mode})
-        result = await self._runner.run_or_resume(uid, endpoints, mode=mode)
+        ctx = UidContext(uid, self._settings.bili_db_dir)
+        await ctx.open()
+        try:
+            store = FetchingStore(ctx)
+            runner = Runner(
+                store, self._rl, self._settings,
+                stale_running_threshold_ms=self._stale_running_threshold_ms,
+                fetch_fn=self._fetch_fn,
+            )
+            result = await runner.run_or_resume(uid, endpoints, mode=mode)
+        finally:
+            await ctx.close()
         return CommandResult(uid=uid, status=result.status)
 
     async def delete_uid(self, uid: int) -> dict[str, int]:
-        """Delete all fetching state for a uid. Returns counts."""
-        data_count = await self._data.delete_by_uid_prefix(uid)
-        error_count = await self._error.delete_by_uid(uid)
-        return {"data": data_count, "errors": error_count}
+        """No-op: the unit-level ``BiliCommand.delete_uid`` does file IO directly."""
+        return {}
 
     async def close(self) -> None:
-        """Close underlying stores."""
-        await self._data.close()
-        await self._error.close()
+        """No-op: no per-stage stores to close any more."""
+        return None

@@ -1,83 +1,91 @@
 # bili_unit — Bilibili unit top-level entry.
 #
-# Per docs/structure/bili.md §10, the bili unit exposes:
-#   __init__.py    — DTO、异常、assemble() 装配
-#   __main__.py    — 统一 CLI 入口
-#   command/       — 写侧统一入口 (BiliCommand)
-#   query/         — 只读统一入口 (BiliQuery)
+# Per docs/refactor-plan-sqlite.md, the unit is being repositioned as a
+# passive persistent data store: producer SDK (write side) on the inside,
+# SQLite databases on the outside. Consumers query the DBs directly via
+# ``sqlite3.connect(bili_unit.db_path(uid))`` — no Python query facade.
 #
-# Stage sub-packages (`fetching/`, `processing/`) live behind the
-# command/query facade and should not be reached from outside the bili unit.
+# Public surface:
+#   __init__.py    — session()/assemble() write entry, db_path() helpers
+#   __main__.py    — unified CLI (fetch / parse / process / delete-uid)
+#   command/       — BiliCommand (write-side facade)
+#
+# Stage sub-packages (`fetching/`, `parsing/`, `processing/`) are internal.
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import version as _pkg_version
+from pathlib import Path
 
-from ._aggregates import VideoFullDTO, VideoSummaryDTO  # noqa: F401
+from ._db import UidContext, list_uids  # noqa: F401 — re-exported helpers
+from ._db.paths import resolve as _resolve_paths
 from ._env import BiliSettings, get_settings, reload_settings  # noqa: F401
 from ._types import CredentialProvider  # noqa: F401
 from .command import BiliCommand
-from .fetching import (  # noqa: F401 – public re-exports
+from .fetching import (  # noqa: F401 — public re-exports (write-side DTO + errors)
     CommandResult,
-    EndpointDTO,
-    EndpointStatus,
     FetchingError,
-    FetchingErrorDTO,
-    TaskDTO,
     TaskResult,
     TaskStatus,
 )
-from .parsing import (  # noqa: F401 – public re-exports
+from .parsing import (  # noqa: F401
     ParsingCommandResult,
     ParsingError,
-    ParsingImageDTO,
-    ParsingModelDTO,
-    ParsingModelStatus,
-    ParsingTaskDTO,
-    ParsingTaskStatus,
 )
-from .processing import (  # noqa: F401 – public re-exports
+from .processing import (  # noqa: F401
     AudioError,
     ProcessingCommandResult,
     ProcessingError,
-    ProcessingErrorDTO,
-    ProcessingItemDTO,
-    ProcessingItemStatus,
-    ProcessingPipelineDTO,
-    ProcessingPipelineStatus,
-    ProcessingTaskDTO,
-    ProcessingTaskStatus,
 )
-from .query import BiliQuery
 
 __version__ = _pkg_version("bili-unit")
 
+
+# ---------------------------------------------------------------------------
+# Path helpers — consumer-facing
+# ---------------------------------------------------------------------------
+
+def db_path(uid: int, settings: BiliSettings | None = None) -> Path:
+    """Return the main SQLite DB path for ``uid`` — the consumer contract.
+
+    Open with::
+
+        import sqlite3, bili_unit
+        conn = sqlite3.connect(bili_unit.db_path(uid))
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute("SELECT * FROM video"):
+            ...
+
+    The file may not yet exist if no fetch/parse run has touched this uid.
+    """
+    s = settings if settings is not None else get_settings()
+    return _resolve_paths(uid, s.bili_db_dir).main_db
+
+
+def raw_db_path(uid: int, settings: BiliSettings | None = None) -> Path:
+    """Return the raw-payload DB path for ``uid``.
+
+    Producer-private — most consumers do NOT need to open this. Use only when
+    re-parsing raw B站 responses without re-fetching.
+    """
+    s = settings if settings is not None else get_settings()
+    return _resolve_paths(uid, s.bili_db_dir).raw_db
+
+
+# ---------------------------------------------------------------------------
+# Assembly + session lifecycle
+# ---------------------------------------------------------------------------
 
 async def assemble(
     settings: BiliSettings | None = None,
     *,
     asr_backend_override: str | None = None,
     credential_provider: CredentialProvider | None = None,
-) -> tuple[BiliCommand, BiliQuery]:
-    """Unified assembly for the whole bili unit.
+) -> BiliCommand:
+    """Wire every stage's command behind a unified BiliCommand.
 
-    Wires every stage's stores + components, then groups them behind the
-    bili-unit-level :class:`BiliCommand` / :class:`BiliQuery` facades.
-
-    Args:
-        settings: pre-built :class:`BiliSettings` to use across all stages.
-            ``None`` (default) lazy-loads from .env via :func:`get_settings` — this
-            is the historical CLI path.
-        asr_backend_override: when set, takes precedence over
-            ``BILI_PROCESSING_ASR_BACKEND``. Lets the CLI pick ``mock`` for a run
-            without editing .env, e.g. when only running transform.
-        credential_provider: async callable returning a B站 ``Credential``.
-            ``None`` (default) uses :func:`bili_unit.fetching.auth.get_credential`,
-            which reads credentials from settings/env. Pass an explicit provider
-            when embedding (e.g. credentials managed by the host application).
-
-    Returns ``(cmd, qry)``. Call ``await cmd.close()`` on shutdown to release
-    all stage resources in the correct order (processing → parsing → fetching).
+    Phase 3+ contract: returns a single ``BiliCommand``. The legacy
+    ``(cmd, qry)`` tuple is gone — read side is consumer's SQL.
     """
     from .fetching import assemble as _fetching_assemble
     from .parsing import assemble as _parsing_assemble
@@ -86,27 +94,20 @@ async def assemble(
     if settings is None:
         settings = get_settings()
 
-    fetch_cmd, fetch_qry, _fetch_data, _fetch_error = await _fetching_assemble(settings)
-    parse_cmd, parse_qry, _parse_data = await _parsing_assemble(
-        settings, fetching_query=fetch_qry,
-    )
-    proc_cmd, proc_qry, _proc_data, _proc_error = await _processing_assemble(
+    fetch_cmd = await _fetching_assemble(settings)
+    parse_cmd = await _parsing_assemble(settings)
+    proc_cmd = await _processing_assemble(
         settings,
-        fetching_query=fetch_qry,
-        parsing_query=parse_qry,
         asr_backend_override=asr_backend_override,
         credential_provider=credential_provider,
     )
 
-    qry = BiliQuery(fetch_qry, parsing=parse_qry, processing=proc_qry)
-    cmd = BiliCommand(
+    return BiliCommand(
         fetch_cmd,
         parsing=parse_cmd,
         processing=proc_cmd,
-        query=qry,
         settings=settings,
     )
-    return cmd, qry
 
 
 @asynccontextmanager
@@ -115,33 +116,25 @@ async def session(
     *,
     asr_backend_override: str | None = None,
     credential_provider: CredentialProvider | None = None,
-) -> AsyncIterator[tuple[BiliCommand, BiliQuery]]:
+) -> AsyncIterator[BiliCommand]:
     """SDK-recommended entry: assemble + auto cleanup via async context manager.
 
-    Equivalent to::
+    Phase 3+ contract: yields a single ``BiliCommand``::
 
-        cmd, qry = await assemble(settings, ...)
-        try:
-            yield cmd, qry
-        finally:
-            await cmd.close()
+        async with bili_unit.session() as cmd:
+            await cmd.fetch(uid)
+            await cmd.parse(uid)
 
-    The arguments are forwarded verbatim to :func:`assemble`; see that function's
-    docstring for parameter semantics.
-
-    Example::
-
-        async with bili_unit.session() as (cmd, qry):
-            await cmd.fetch(uid=123)
-            task = await qry.fetching.get_task(uid=123)
+    Read side is on the database file — open it directly with
+    :func:`db_path` / :func:`sqlite3.connect`.
     """
-    cmd, qry = await assemble(
+    cmd = await assemble(
         settings,
         asr_backend_override=asr_backend_override,
         credential_provider=credential_provider,
     )
     try:
-        yield cmd, qry
+        yield cmd
     finally:
         await cmd.close()
 
@@ -149,38 +142,23 @@ async def session(
 __all__ = [
     "AudioError",
     "BiliCommand",
-    "BiliQuery",
     "BiliSettings",
     "CommandResult",
     "CredentialProvider",
-    "EndpointDTO",
-    "EndpointStatus",
     "FetchingError",
-    "FetchingErrorDTO",
     "ParsingCommandResult",
     "ParsingError",
-    "ParsingImageDTO",
-    "ParsingModelDTO",
-    "ParsingModelStatus",
-    "ParsingTaskDTO",
-    "ParsingTaskStatus",
     "ProcessingCommandResult",
     "ProcessingError",
-    "ProcessingErrorDTO",
-    "ProcessingItemDTO",
-    "ProcessingItemStatus",
-    "ProcessingPipelineDTO",
-    "ProcessingPipelineStatus",
-    "ProcessingTaskDTO",
-    "ProcessingTaskStatus",
-    "TaskDTO",
     "TaskResult",
     "TaskStatus",
-    "VideoFullDTO",
-    "VideoSummaryDTO",
+    "UidContext",
     "__version__",
     "assemble",
+    "db_path",
     "get_settings",
+    "list_uids",
+    "raw_db_path",
     "reload_settings",
     "session",
 ]

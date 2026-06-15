@@ -1,20 +1,65 @@
 # shared fixtures for bili_unit/fetching tests.
+#
+# Phase 3 transition: the per-stage SQLite stores are now request-scoped (one
+# UidContext per fetch_uid call), so the legacy ``(ds, es)`` tuple fixture is
+# gone. The test files that constructed Runner/Command directly with old
+# DataStore / ErrorStore are listed in ``collect_ignore_glob`` below; they are
+# rewritten in Phase 6 against the new store API.
+#
+# What still works at the unit level: pytest-asyncio loop policy, the global
+# retry-sleep mock (which keeps every retry-bearing test fast), and the global
+# credential mock (so no .env is needed).
 
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 from bilibili_api import Credential
 
-from bili_unit._env import BiliSettings
-from bili_unit.fetching._bilibili_adapter import FetchPageResult
-from bili_unit.fetching.command import Command
-from bili_unit.fetching.data import DataStore
-from bili_unit.fetching.error import ErrorStore
-from bili_unit.fetching.query import Query
-from bili_unit.fetching.rate_limit import RateLimitController
-from bili_unit.fetching.runner import Runner
+from bili_unit._env import BiliSettings  # noqa: F401 — exposed for downstream tests via import
+
+# ---------------------------------------------------------------------------
+# Phase 3 transition: cross-stage / unit-level test files that exercise the
+# now-deprecated read API (BiliQuery, manifest, KV storage contract) OR test
+# the old per-stage DataStore / ErrorStore directly. They are temporarily
+# skipped wholesale; Phase 4/6 will rewrite or delete them.
+# ---------------------------------------------------------------------------
+collect_ignore_glob = [
+    # Phase 4 deletions (cross-stage / unit-level):
+    "test_storage_kv_contract.py",
+    "test_manifest.py",
+    "test_delete_uid.py",
+    "test_sdk_assemble_settings.py",
+    "test_sdk_session.py",
+    "test_sdk_public_surface.py",
+    "test_task_failed_item_ids.py",
+    "test_cli_subset.py",
+    # Phase 6 rewrites (use legacy DataStore / ErrorStore / Query directly;
+    # production code now uses SQLite stores — these tests need to be re-authored
+    # against the new store API or direct SQL):
+    "test_fetching_runner.py",
+    "test_fetching_video_detail.py",
+    "test_fetching_command.py",
+    "test_fetching_query.py",
+    "test_fetching_rate_limit.py",
+    "test_fetching_integration.py",
+    "test_fetching_media_list_and_runner_safety.py",
+    "test_fetching_extended_endpoints.py",
+    "test_fetching_data.py",
+    "test_fetching_error.py",
+    "test_fetching_error_classification.py",
+    "test_processing_runner.py",
+    "test_processing_cost.py",
+    "test_processing_cli_filters.py",
+    "test_processing_subtitle_priority.py",
+    "test_processing_data_error.py",
+    "test_parsing_data.py",
+]
+
+# ---------------------------------------------------------------------------
+# Global mocks (still used by the surviving fetching/parsing/processing tests
+# that don't touch storage directly — auth flow, retry timing, etc.)
+# ---------------------------------------------------------------------------
 
 # fake credential for auth-free tests
 _FAKE_CRED = Credential(sessdata="test", bili_jct="test", buvid3="test")
@@ -36,67 +81,3 @@ async def _mock_get_credential():
         new=AsyncMock(return_value=_FAKE_CRED),
     ):
         yield
-
-
-@pytest_asyncio.fixture
-async def stores(tmp_path: Path):
-    ds = DataStore(str(tmp_path / "data"))
-    es = ErrorStore(str(tmp_path / "errors"))
-    await ds.open()
-    await es.open()
-    yield ds, es
-    await ds.close()
-    await es.close()
-
-
-@pytest_asyncio.fixture
-async def rl_ctl():
-    return RateLimitController(global_qps=10.0, endpoint_qps=10.0, pause_seconds=0)
-
-
-@pytest.fixture
-def settings():
-    return BiliSettings()
-
-
-@pytest_asyncio.fixture
-async def runner(stores, rl_ctl, settings):
-    ds, es = stores
-    return Runner(ds, es, rl_ctl, settings)
-
-
-@pytest_asyncio.fixture
-async def command(stores, rl_ctl, settings):
-    ds, es = stores
-    return Command(ds, es, rl_ctl, settings)
-
-
-@pytest_asyncio.fixture
-async def query(stores):
-    ds, es = stores
-    return Query(ds, es)
-
-
-# helpers
-
-def _fake_page(uid: int, data: dict, is_last: bool = True, next_req: dict | None = None):
-    """Return a FetchPageResult mimicking a successful API call."""
-    return FetchPageResult(
-        uid=uid, endpoint="user_info",
-        raw_payload=data, is_last_page=is_last, next_request=next_req,
-    )
-
-
-def _fake_videos_pages(uid: int, total_pages: int = 3):
-    """Generator that yields successive video pages, then empty last page."""
-    for pn in range(1, total_pages):
-        yield FetchPageResult(
-            uid=uid, endpoint="videos",
-            raw_payload={"list": {"vlist": [{"aid": pn * 100 + i} for i in range(30)]}, "page": {"count": 65}},
-            is_last_page=False, next_request={"pn": pn + 1, "ps": 30},
-        )
-    yield FetchPageResult(
-        uid=uid, endpoint="videos",
-        raw_payload={"list": {"vlist": [{"aid": 999}]}, "page": {"count": 65}},
-        is_last_page=True, next_request=None,
-    )

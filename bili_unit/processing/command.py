@@ -4,28 +4,32 @@
 # — failed work items are retried by re-invoking process_uid() in
 # incremental mode.
 #
-# Boundaries (docs/structure/bili.md §8):
-#   - command 不直接调用 audio
-#   - command 不写 raw / temp / data（runner does that）
-#   - command 不提供 data / error 读取（that's query）
+# Phase 3.3 contract:
+#   * No data / error / fetching_query / parsing_query parameters; the
+#     command holds only stable, cross-uid state (settings, asr_backend,
+#     credential_provider, optional downloader / convert injectors).
+#   * Each ``process_uid(uid, ...)`` call opens its own ``UidContext`` +
+#     ``ProcessingStore`` / ``FetchingStore`` / ``ParsingStore`` and tears
+#     them down on return.
+#   * ``delete_uid`` is a no-op (returns ``{}``); ``BiliCommand.delete_uid``
+#     handles the file-IO removal of the per-uid databases and workdir.
 
 from __future__ import annotations
 
 import logging
-import shutil
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import ProcessingCommandResult
-from .runner import ConvertFn, CredentialProvider, DownloaderFactory, ProcessingRunner
+from .runner import (
+    ConvertFn,
+    CredentialProvider,
+    DownloaderFactory,
+    ProcessingRunner,
+)
 
 if TYPE_CHECKING:
     from .._env import BiliSettings
-    from ..fetching.protocols import FetchingReadView
-    from ..parsing.query import ParsingQuery
     from .audio._asr_backend import ASRBackend
-    from .data import ProcessingDataStore
-    from .error import ProcessingErrorStore
 
 logger = logging.getLogger("bili.processing.command")
 
@@ -35,28 +39,22 @@ class ProcessingCommand:
 
     def __init__(
         self,
-        data: ProcessingDataStore,
-        error: ProcessingErrorStore,
-        temp_dir: str | Path,
-        fetching_query: FetchingReadView,
         settings: BiliSettings,
-        parsing_query: ParsingQuery | None = None,
+        *,
         asr_backend: ASRBackend | None = None,
         credential_provider: CredentialProvider | None = None,
         downloader_factory: DownloaderFactory | None = None,
         convert_fn: ConvertFn | None = None,
     ) -> None:
-        self._data = data
-        self._error = error
-        self._asr_backend = asr_backend
-        self._temp_dir = Path(temp_dir)
         self._settings = settings
+        self._asr_backend = asr_backend
+        self._credential_provider = credential_provider
+        self._downloader_factory = downloader_factory
+        self._convert_fn = convert_fn
+        # The runner is stateless across process_uid calls; we instantiate it
+        # once with the cross-uid services and pass the per-uid stores into
+        # ``run()``.
         self._runner = ProcessingRunner(
-            data=data,
-            error=error,
-            temp_dir=self._temp_dir,
-            fetching_query=fetching_query,
-            parsing_query=parsing_query,
             settings=settings,
             asr_backend=asr_backend,
             credential_provider=credential_provider,
@@ -76,6 +74,11 @@ class ProcessingCommand:
     ) -> ProcessingCommandResult:
         """Trigger processing for a uid.
 
+        Opens a fresh :class:`UidContext` (so main + raw DBs are connected),
+        binds :class:`ProcessingStore` / :class:`FetchingStore` /
+        :class:`ParsingStore` to it, and dispatches to the runner. The
+        context is closed on return regardless of outcome.
+
         Args:
             mode: "incremental" (default) | "full".
             limit: cap discovered bvids to the first N after other filters.
@@ -86,6 +89,11 @@ class ProcessingCommand:
                 but skip worker dispatch. Status is SUCCESS; the candidate
                 list is returned via ``ProcessingCommandResult.dry_run_candidates``.
         """
+        from .._db import UidContext
+        from ..fetching._store import FetchingStore
+        from ..parsing._store import ParsingStore
+        from ._store import ProcessingStore
+
         logger.info(
             "command_received",
             extra={
@@ -97,14 +105,26 @@ class ProcessingCommand:
                 "dry_run": dry_run,
             },
         )
-        status, candidates = await self._runner.run(
-            uid,
-            mode=mode,
-            limit=limit,
-            only_bvids=only_bvids,
-            retry_failed_only=retry_failed_only,
-            dry_run=dry_run,
-        )
+
+        ctx = UidContext(uid, self._settings.bili_db_dir)
+        await ctx.open()
+        try:
+            proc_store = ProcessingStore(ctx)
+            fetch_store = FetchingStore(ctx)
+            parse_store = ParsingStore(ctx)
+            status, candidates = await self._runner.run(
+                uid,
+                proc_store=proc_store,
+                fetch_store=fetch_store,
+                parse_store=parse_store,
+                mode=mode,
+                limit=limit,
+                only_bvids=only_bvids,
+                retry_failed_only=retry_failed_only,
+                dry_run=dry_run,
+            )
+        finally:
+            await ctx.close()
         return ProcessingCommandResult(
             uid=uid,
             status=status,
@@ -112,28 +132,22 @@ class ProcessingCommand:
         )
 
     async def delete_uid(self, uid: int) -> dict[str, int]:
-        """Delete all processing state for a uid. Returns counts."""
-        data_count = await self._data.delete_by_uid_prefix(uid)
-        error_count = await self._error.delete_by_uid(uid)
-        # Remove temp directory for this uid
-        temp_uid_dir = self._temp_dir / str(uid)
-        temp_existed = temp_uid_dir.exists()
-        if temp_existed:
-            shutil.rmtree(temp_uid_dir, ignore_errors=True)
-        # Remove ASR cache directory for this uid (layout: {asr_cache_dir}/{uid}/)
-        asr_cache_uid_dir = Path(self._settings.bili_processing_asr_cache_dir) / str(uid)
-        asr_cache_existed = asr_cache_uid_dir.exists()
-        if asr_cache_existed:
-            shutil.rmtree(asr_cache_uid_dir, ignore_errors=True)
-        return {
-            "data": data_count,
-            "errors": error_count,
-            "temp_removed": int(temp_existed),
-            "asr_cache_removed": int(asr_cache_existed),
-        }
+        """No-op in Phase 3.
+
+        ``BiliCommand.delete_uid`` removes ``{uid}.db`` / ``{uid}.raw.db``
+        / ``{db_dir}/{uid}/`` directly. The processing stage's per-uid
+        files (audio temp + ASR cache) live OUTSIDE that workdir and are
+        not cleaned up by this stage today; see the open question in the
+        Phase 3.3 deliverable.
+        """
+        return {}
 
     async def close(self) -> None:
-        await self._data.close()
-        await self._error.close()
+        """Close cross-uid resources held by the command (asr_backend HTTP
+        session, etc.).
+
+        Per-uid contexts are opened and closed inside :meth:`process_uid`;
+        nothing context-scoped survives this call.
+        """
         if self._asr_backend is not None:
             await self._asr_backend.close()

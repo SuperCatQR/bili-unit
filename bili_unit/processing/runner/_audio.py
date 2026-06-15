@@ -10,13 +10,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..._types import CredentialProvider
-from ...fetching import EndpointStatus
 from .. import (
     ProcessingItemStatus,
     ProcessingPipelineStatus,
 )
-from ..keys import _proc_key, _task_key
-from ..task import PipelineEntry, ProcessingTaskValue
 from ._audio_work import (
     audio_convert_page,
     audio_download_page,
@@ -32,6 +29,9 @@ from ._pipeline_executor import (
 
 if TYPE_CHECKING:
     from ..._env import BiliSettings
+    from ...fetching._store import FetchingStore
+    from ...parsing._store import ParsingStore
+    from .._store import ProcessingStore
     from ..audio._asr_backend import ASRBackend
     from ..audio._asr_cache import ASRCacheStore
 
@@ -51,17 +51,16 @@ _AUDIO = "audio"
 class _AudioMixin:
     """Mixin providing audio pipeline methods for :class:`ProcessingRunner`.
 
-    Accesses runner state (``self._data``, ``self._error``, ``self._fetch_qry``,
-    ``self._settings``, ``self._temp_dir``, ``self._asr_backend``,
-    ``self._credential_provider``) and helpers (``_get_asr_cache``,
-    ``_write_progress``, ``_derive_pipeline_status``, ``_is_retryable``) via
-    the combined MRO at runtime.
+    Accesses runner state (``self._store``, ``self._fetch_store``,
+    ``self._parse_store``, ``self._settings``, ``self._temp_dir``,
+    ``self._asr_backend``, ``self._credential_provider``) and helpers
+    (``_get_asr_cache``, ``_derive_pipeline_status``, ``_is_retryable``)
+    via the combined MRO at runtime.
     """
 
-    _data: Any
-    _error: Any
-    _fetch_qry: Any
-    _parse_qry: Any
+    _store: ProcessingStore | None
+    _fetch_store: FetchingStore | None
+    _parse_store: ParsingStore | None
     _settings: BiliSettings
     _temp_dir: Path
     _asr_backend: ASRBackend | None
@@ -70,11 +69,6 @@ class _AudioMixin:
     _convert_fn: Any
 
     def _get_asr_cache(self) -> ASRCacheStore | None: ...  # pragma: no cover
-
-    async def _write_progress(
-        self, uid: int, pipeline: str, item_type: str,
-        counts: dict[str, int], done: bool,
-    ) -> None: ...  # pragma: no cover
 
     @staticmethod
     def _derive_pipeline_status(
@@ -89,7 +83,6 @@ class _AudioMixin:
     async def _run_audio(
         self: Any,
         uid: int,
-        tv: ProcessingTaskValue,
         mode: str,
         *,
         limit: int | None = None,
@@ -103,10 +96,9 @@ class _AudioMixin:
         candidate set the worker pool processes, or *would* have processed
         on dry-run). The list mirrors the order items are enqueued.
         """
-        entry = tv.pipelines.setdefault(_AUDIO, PipelineEntry())
-        entry.status = ProcessingPipelineStatus.RUNNING
-        await self._data.update_task_pipeline(
-            _task_key(uid), _AUDIO, entry.status.value, items=entry.items,
+        store = self._store
+        await store.update_task_pipeline(
+            _AUDIO, status=ProcessingPipelineStatus.RUNNING.value,
         )
 
         # 1. discover audio work items (one per bvid)
@@ -135,13 +127,10 @@ class _AudioMixin:
                 "skipped": skipped,
             },
         }
-        entry.items = rollup
-        await self._data.update_task_pipeline(
-            _task_key(uid), _AUDIO, entry.status.value, items=rollup,
+        await store.update_task_pipeline(
+            _AUDIO, status=ProcessingPipelineStatus.RUNNING.value,
+            items=rollup,
         )
-
-        # 2. write progress marker (initial)
-        await self._write_progress(uid, _AUDIO, "transcription", rollup["transcription"], done=False)
 
         if dry_run:
             # Skip credential resolution / worker dispatch entirely. We
@@ -157,13 +146,9 @@ class _AudioMixin:
             rollup["transcription"] = {
                 "total": 0, "completed": 0, "failed": 0, "skipped": 0,
             }
-            entry.items = rollup
-            entry.status = self._derive_pipeline_status(rollup)
-            await self._data.update_task_pipeline(
-                _task_key(uid), _AUDIO, entry.status.value, items=rollup,
-            )
-            await self._write_progress(
-                uid, _AUDIO, "transcription", rollup["transcription"], done=True,
+            final_status = self._derive_pipeline_status(rollup)
+            await store.update_task_pipeline(
+                _AUDIO, status=final_status.value, items=rollup,
             )
             return candidates
 
@@ -183,11 +168,10 @@ class _AudioMixin:
             await self._dispatch_audio_workers(uid, audio_items, rollup, credential)
 
         # 5. final pipeline status
-        entry.status = self._derive_pipeline_status(rollup)
-        await self._data.update_task_pipeline(
-            _task_key(uid), _AUDIO, entry.status.value, items=rollup,
+        final_status = self._derive_pipeline_status(rollup)
+        await store.update_task_pipeline(
+            _AUDIO, status=final_status.value, items=rollup,
         )
-        await self._write_progress(uid, _AUDIO, "transcription", rollup["transcription"], done=True)
         return candidates
 
     async def _discover_audio_items(
@@ -200,9 +184,11 @@ class _AudioMixin:
         limit: int | None = None,
         dry_run: bool = False,
     ) -> tuple[list[WorkItem], int, int]:
-        """Discover audio work items from video_detail.
+        """Discover audio work items from raw video_detail payloads.
 
-        Each bvid produces one WorkItem carrying its page list.
+        Reads the raw fanout payloads from the fetching store (one row per
+        bvid). Each bvid produces one :class:`WorkItem` carrying its page
+        list.
 
         Filter ordering (each step narrows the previous one's output):
             1. ``only_bvids``      — restrict to a caller-supplied bvid set.
@@ -215,14 +201,12 @@ class _AudioMixin:
             4. ``limit``            — cap to first N after the steps above.
 
         Returns ``(ready_items, skipped_count, subtitle_done_count)``.
-        ``skipped_count`` is the number of bvids elided by the incremental
-        skip rule (so the rollup ``total`` still reflects the full discovery
-        set).  ``subtitle_done_count`` is the number of bvids fulfilled via
-        the subtitle short-circuit; their persisted records carry
-        ``transcription_source: "subtitle"`` so the audio worker is bypassed.
         """
-        vd_pairs = await self._fetch_qry.list_video_details(uid)
-        if not vd_pairs:
+        fetch_store = self._fetch_store
+        # raw_payload is the inner response dict (envelope-folded). For
+        # video_detail that's ``{"info": {...}, "tags": [...]}``.
+        payloads = await fetch_store.list_fanout_payloads("video_detail")
+        if not payloads:
             return [], 0, 0
 
         only_set: set[str] | None = (
@@ -230,21 +214,18 @@ class _AudioMixin:
         )
 
         items: list[WorkItem] = []
-        for bvid, status in vd_pairs:
-            if status != EndpointStatus.SUCCESS:
-                continue
+        # Sorted iteration → stable discovery order across runs.
+        for bvid in sorted(payloads.keys()):
             if only_set is not None and bvid not in only_set:
                 continue
-            dto = await self._fetch_qry.get_video_detail(uid, bvid)
-            if dto is None or dto.raw_payload is None:
+            payload = payloads[bvid]
+            if not isinstance(payload, dict):
                 continue
-
-            info = dto.raw_payload.get("info", {})
-            pages = info.get("pages", [])
+            info = payload.get("info") or {}
+            pages = info.get("pages") or []
             if not pages:
                 continue
 
-            # Build page metadata list for the audio worker.
             page_list = []
             for i, page in enumerate(pages):
                 page_list.append({
@@ -264,9 +245,6 @@ class _AudioMixin:
             uid, items, mode, retry_failed_only=retry_failed_only,
         )
 
-        # Subtitle short-circuit: prune ``ready`` to drop bvids whose
-        # parsed video_subtitle is already complete; write their result
-        # directly so the audio worker pool is bypassed.
         ready, subtitle_done = await self._apply_subtitle_shortcuts(
             uid, ready, dry_run=dry_run,
         )
@@ -287,24 +265,25 @@ class _AudioMixin:
         For each item whose parsed ``video_subtitle`` exists and is complete
         (every page has a selected language), build an audio-pipeline result
         dict from the subtitle segments and write a SUCCESS row to the
-        processing data store.  Those items are removed from the returned
-        list so workers do not re-process them.
+        processing store.  Those items are removed from the returned list so
+        workers do not re-process them.
 
         ``dry_run`` skips both the read and the persistence: short-circuit
         candidates would still flow through the worker pool on a real run,
         and we don't want dry-run to mutate processing storage.
-
-        Returns ``(remaining_items, subtitle_done_count)``.
         """
-        if dry_run or self._parse_qry is None or not items:
+        if dry_run or self._parse_store is None or not items:
             return items, 0
+
+        store = self._store
+        parse_store = self._parse_store
 
         remaining: list[WorkItem] = []
         done_count = 0
         for item in items:
             bvid = item.item_id
             try:
-                subtitle = await self._parse_qry.get_video_subtitle(uid, bvid)
+                subtitle = await parse_store.get_video_subtitle_payload(bvid)
             except Exception:  # noqa: BLE001 — defensive: never block audio
                 logger.warning(
                     "subtitle_lookup_failed",
@@ -320,7 +299,7 @@ class _AudioMixin:
                 continue
 
             now = int(time.time() * 1000)
-            await self._data.put(_proc_key(uid, "audio", bvid), {
+            payload = {
                 "uid": uid,
                 "pipeline": "audio",
                 "item_type": "transcription",
@@ -329,7 +308,21 @@ class _AudioMixin:
                 "result": result,
                 "source_endpoints": ["video_subtitle"],
                 "processed_at": now,
-            })
+            }
+            transcript = " ".join(
+                p.get("text", "") for p in result["pages"] if isinstance(p, dict)
+            )
+            await store.save_audio_transcription(
+                bvid,
+                status="success",
+                transcription_source=result.get("transcription_source"),
+                transcript=transcript or None,
+                audio_tokens=0,
+                seconds=0,
+                cache_hits=0,
+                payload=payload,
+                processed_at_ms=now,
+            )
             done_count += 1
             logger.info(
                 "audio_subtitle_shortcut",
@@ -354,17 +347,12 @@ class _AudioMixin:
         if not isinstance(pages, list) or not pages:
             return None
 
-        # A subtitle is "complete" iff every page has a selected lan. We
-        # validate the dict directly instead of round-tripping through the
-        # dataclass to keep the hot path cheap.
         for p in pages:
             if not isinstance(p, dict):
                 return None
             if not p.get("lan"):
                 return None
 
-        # Map subtitle pages back to bvid pages by page_index so we can
-        # carry the original duration from video_detail.
         bvid_pages = {
             p["page_index"]: p for p in item.item_data.get("pages", [])
             if isinstance(p, dict) and "page_index" in p
@@ -445,18 +433,17 @@ class _AudioMixin:
         """Apply incremental skip rule for audio items.
 
         ``retry_failed_only`` overrides the normal incremental rule: only
-        items whose existing ``status`` is FAILED are kept; everything else
+        items whose existing status is FAILED are kept; everything else
         (no record yet, SUCCESS, anything other than FAILED) is dropped
         without being counted as ``skipped`` so the rollup reflects
         "considered for retry" rather than the full population.
         """
+        store = self._store
         if retry_failed_only:
             ready: list[WorkItem] = []
             for item in items:
-                existing = await self._data.get(_proc_key(uid, "audio", item.item_id))
-                if existing is None:
-                    continue
-                if existing.get("status") == ProcessingItemStatus.FAILED.value:
+                status = await store.get_audio_status(item.item_id)
+                if status == "failed":
                     ready.append(item)
             return ready, 0
 
@@ -465,12 +452,11 @@ class _AudioMixin:
         ready = []
         skipped = 0
         for item in items:
-            existing = await self._data.get(_proc_key(uid, "audio", item.item_id))
-            if existing is None:
+            status = await store.get_audio_status(item.item_id)
+            if status is None:
                 ready.append(item)
                 continue
-            status = existing.get("status")
-            if status == ProcessingItemStatus.SUCCESS.value:
+            if status == "success":
                 skipped += 1
                 continue
             ready.append(item)
@@ -536,7 +522,6 @@ class _AudioMixin:
             item_type="transcription",
             item_id=bvid,
             source_endpoints=("video_detail",),
-            key=_proc_key(uid, "audio", bvid),
             retry_event="audio_item_retry",
             failed_event="audio_item_failed",
             log_id_field="bvid",
@@ -544,8 +529,7 @@ class _AudioMixin:
         )
         return await run_item_with_retry(
             ctx,
-            data=self._data,
-            error=self._error,
+            store=self._store,
             do_work=_do_work,
             is_retryable=self._is_retryable,
             max_attempts=self._settings.bili_processing_max_retries + 1,

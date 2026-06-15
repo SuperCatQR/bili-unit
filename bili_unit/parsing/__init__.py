@@ -8,9 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .._storage import DecodeError as _DecodeError
+
+if TYPE_CHECKING:
+    from .._env import BiliSettings
+    from .command import ParsingCommand
 
 # ---------------------------------------------------------------------------
 # Status enums
@@ -148,35 +152,21 @@ class ParsingTaskValue:
 
 
 # ---------------------------------------------------------------------------
-# Assembly root — opens parsing stores and wires dependencies
+# Assembly root — returns the ParsingCommand
 # ---------------------------------------------------------------------------
 
-async def assemble(
-    settings,
-    *,
-    fetching_query,  # FetchingReadView (kept untyped to avoid runtime cyclic import)
-):
-    """Open parsing stores, wire dependencies, return ``(cmd, qry, data)``.
+async def assemble(settings: BiliSettings) -> ParsingCommand:
+    """Build a :class:`ParsingCommand` bound to ``settings``.
 
-    Args:
-        settings: ``BiliSettings`` already loaded by the caller.
-        fetching_query: a :class:`FetchingReadView`-shaped object (typically
-            ``bili_unit.fetching.query.Query``). Required: parsing reads raw
-            payloads from upstream.
-
-    Caller is responsible for closing the returned data store via
-    ``await data.close()`` (or via cmd.close()).
+    Phase 3 contract: parsing no longer holds a long-lived store. The
+    :class:`ParsingCommand` opens a per-uid SQLite context inside
+    ``parse_uid`` and closes it on return. Caller still owns the lifetime
+    of the command via ``await cmd.close()`` (a no-op today, kept for
+    forward compatibility with future cross-uid resources).
     """
     from .command import ParsingCommand
-    from .data import ParsingDataStore
-    from .query import ParsingQuery
 
-    data = ParsingDataStore(settings.bili_parsing_data_dir)
-    await data.open()
-
-    cmd = ParsingCommand(data=data, fetching_query=fetching_query)
-    qry = ParsingQuery(data=data)
-    return cmd, qry, data
+    return ParsingCommand(settings)
 
 
 __all__ = [

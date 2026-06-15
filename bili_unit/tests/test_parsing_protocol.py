@@ -4,8 +4,17 @@
 # method declared on :class:`bili_unit.parsing.protocols.ParsingReadView`.
 # This is a lightweight name-set assertion, not a full type-signature check.
 
+import pytest
+
 from bili_unit.parsing.protocols import ParsingReadView
 from bili_unit.parsing.query import ParsingQuery
+
+# ParsingReadView / ParsingQuery are part of the legacy Python read facade
+# slated for deletion in Phase 4. Keep the import paths but skip the
+# assertion; consumers query SQLite directly now.
+pytestmark = pytest.mark.skip(
+    reason="moved to Phase 6 rewrite — read API replaced by direct SQL in Phase 4",
+)
 
 
 def test_parsing_query_implements_parsing_read_view():

@@ -9,13 +9,10 @@
 #   * per-item retry + error recording + status persistence
 #     (``run_item_with_retry`` + ``ItemRetryContext``)
 #
-# Each pipeline supplies only what differs — the do-work body, the retryable
-# classifier, the record identity, and the log event names — via a thin
-# adapter, so the retry/record/persist skeleton lives in exactly one place.
-#
-# TODO: when the second pipeline (subtitle/OCR) lands, this seam gains its
-# second adapter. Until then audio is the sole consumer; keep the abstraction
-# honest by not pre-splitting on hypothetical variation.
+# Phase 3.3: ``data`` / ``error`` are gone — the executor talks to a single
+# :class:`ProcessingStore`. Persistence dispatch is pipeline-specific so the
+# store call sites are typed (audio → ``save_audio_transcription``); when a
+# second pipeline lands, the seam grows a new branch.
 
 from __future__ import annotations
 
@@ -24,7 +21,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..._logging import Progress
 from ..._retry import (
@@ -34,6 +31,9 @@ from ..._retry import (
     RetryPolicy,
 )
 from .. import ProcessingItemStatus
+
+if TYPE_CHECKING:
+    from .._store import ProcessingStore
 
 
 @dataclass(frozen=True)
@@ -67,8 +67,7 @@ class ItemRetryContext:
 
     The executor (:func:`run_item_with_retry`) owns the retry orchestration
     and the success/failure write skeleton; this context carries the
-    pipeline-specific identity (used both for the ``_proc_key`` payload and
-    the error record) and the log event names.
+    pipeline-specific identity and the log event names.
     """
 
     uid: int
@@ -76,7 +75,6 @@ class ItemRetryContext:
     item_type: str
     item_id: str
     source_endpoints: tuple[str, ...]
-    key: str
     # Logging — pipelines key log lines on their preferred id field
     # (audio uses ``bvid``).  ``failed_event`` may be None when a pipeline
     # logs nothing on final failure.
@@ -86,11 +84,80 @@ class ItemRetryContext:
     failed_event: str | None = None
 
 
+def _build_record_payload(
+    ctx: ItemRetryContext,
+    status: str,
+    result: Any,
+    processed_at_ms: int,
+    *,
+    retry_count: int | None = None,
+) -> dict[str, Any]:
+    """Build the ProcessingItemDTO-shaped dict stored in ``audio_transcription.payload``."""
+    payload: dict[str, Any] = {
+        "uid": ctx.uid,
+        "pipeline": ctx.pipeline,
+        "item_type": ctx.item_type,
+        "item_id": ctx.item_id,
+        "status": status,
+        "result": result,
+        "source_endpoints": list(ctx.source_endpoints),
+        "processed_at": processed_at_ms,
+    }
+    if retry_count is not None:
+        payload["retry_count"] = retry_count
+    return payload
+
+
+async def _persist_audio_failure(
+    store: ProcessingStore,
+    ctx: ItemRetryContext,
+    record: dict[str, Any],
+) -> None:
+    """Write a FAILED audio_transcription row carrying the per-item record dict."""
+    await store.save_audio_transcription(
+        ctx.item_id,
+        status="failed",
+        transcription_source=None,
+        transcript=None,
+        audio_tokens=None,
+        seconds=None,
+        cache_hits=None,
+        payload=record,
+    )
+
+
+async def _persist_audio_success(
+    store: ProcessingStore,
+    ctx: ItemRetryContext,
+    record: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    """Write a SUCCESS audio_transcription row from a finished audio result."""
+    transcription_source = result.get("transcription_source")
+    pages = result.get("pages") or []
+    transcript = "\n".join(
+        p.get("text", "") for p in pages if isinstance(p, dict)
+    )
+    cost = result.get("cost") or {}
+    audio_tokens = cost.get("audio_tokens")
+    seconds = cost.get("seconds")
+    cache_hits = cost.get("cache_hits")
+    await store.save_audio_transcription(
+        ctx.item_id,
+        status="success",
+        transcription_source=transcription_source,
+        transcript=transcript or None,
+        audio_tokens=int(audio_tokens) if audio_tokens is not None else None,
+        seconds=float(seconds) if seconds is not None else None,
+        cache_hits=int(cache_hits) if cache_hits is not None else None,
+        payload=record,
+    )
+
+
 async def run_item_with_retry(
     ctx: ItemRetryContext,
     *,
-    data: Any,
-    error: Any,
+    store: ProcessingStore,
     do_work: Callable[[], Awaitable[Any]],
     is_retryable: Callable[[Exception], bool],
     max_attempts: int,
@@ -104,26 +171,7 @@ async def run_item_with_retry(
     status row is written; on success a SUCCESS row carrying ``result`` is
     written.  Returns True on success, False once retries are exhausted or a
     PERMANENT error is hit (final state is already persisted either way).
-
-    ``do_work`` may be sync-wrapped-in-async or genuinely async — the driver
-    only awaits it, so both work unchanged.
     """
-
-    def _record(status: str, result: Any, processed_at: int,
-                *, retry_count: int | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "uid": ctx.uid,
-            "pipeline": ctx.pipeline,
-            "item_type": ctx.item_type,
-            "item_id": ctx.item_id,
-            "status": status,
-            "result": result,
-            "source_endpoints": list(ctx.source_endpoints),
-            "processed_at": processed_at,
-        }
-        if retry_count is not None:
-            payload["retry_count"] = retry_count
-        return payload
 
     def _classify(exc: Exception) -> RetryClassification:
         return (
@@ -143,16 +191,20 @@ async def run_item_with_retry(
                        "retry": outcome.attempt,
                        "delay_s": outcome.delay_seconds, "error": str(exc)},
             )
-            await error.record(
-                exc, uid=ctx.uid, pipeline=ctx.pipeline,
-                item_type=ctx.item_type, item_id=ctx.item_id,
+            await store.record_error(
+                pipeline=ctx.pipeline,
+                item_type=ctx.item_type,
+                item_id=ctx.item_id,
+                error_type=type(exc).__name__,
+                message=str(exc),
                 retryable=True,
                 detail={"retry_count": outcome.attempt},
             )
-            await data.put(ctx.key, _record(
-                ProcessingItemStatus.FAILED.value, None, now,
+            record = _build_record_payload(
+                ctx, ProcessingItemStatus.FAILED.value, None, now,
                 retry_count=outcome.attempt,
-            ))
+            )
+            await _persist_audio_failure(store, ctx, record)
             return None
 
         # Final failure: PERMANENT or RETRYABLE-exhausted.
@@ -162,19 +214,23 @@ async def run_item_with_retry(
                 extra={"uid": ctx.uid, ctx.log_id_field: ctx.log_id_value,
                        "retry_count": outcome.attempt, "error": str(exc)},
             )
-        await error.record(
-            exc, uid=ctx.uid, pipeline=ctx.pipeline,
-            item_type=ctx.item_type, item_id=ctx.item_id,
+        await store.record_error(
+            pipeline=ctx.pipeline,
+            item_type=ctx.item_type,
+            item_id=ctx.item_id,
+            error_type=type(exc).__name__,
+            message=str(exc),
             retryable=False,
             detail=(
                 {"retry_count": outcome.attempt}
                 if outcome.attempt > 1 else None
             ),
         )
-        await data.put(ctx.key, _record(
-            ProcessingItemStatus.FAILED.value, None, now,
+        record = _build_record_payload(
+            ctx, ProcessingItemStatus.FAILED.value, None, now,
             retry_count=outcome.attempt if outcome.attempt > 1 else 0,
-        ))
+        )
+        await _persist_audio_failure(store, ctx, record)
         return None
 
     policy = RetryPolicy(
@@ -188,9 +244,10 @@ async def run_item_with_retry(
         return False
 
     now = int(time.time() * 1000)
-    await data.put(ctx.key, _record(
-        ProcessingItemStatus.SUCCESS.value, result, now,
-    ))
+    record = _build_record_payload(
+        ctx, ProcessingItemStatus.SUCCESS.value, result, now,
+    )
+    await _persist_audio_success(store, ctx, record, result)
     return True
 
 

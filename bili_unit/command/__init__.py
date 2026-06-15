@@ -2,20 +2,21 @@
 #
 # Per docs/structure/bili.md §10, the bili unit's outward write entry is the
 # `command/` package. Its job is to编排 fetching / parsing / processing /
-# cleansing stages (each owns its own internal command). Today fetching +
-# parsing + processing are wired; cleansing comes later.
+# cleansing stages (each owns its own internal command).
 #
-# Boundaries (docs/structure/bili.md §8):
+# Boundaries:
 #   - command 不直接调用 client / transform / audio
 #   - command 不写 raw / temp / data
-#   - command 不提供 data / error 读取（那是 query 的事）
+#   - command 不提供 data / error 读取（消费者直接 sqlite3 查 db_path(uid)）
 
 from __future__ import annotations
 
 import logging
+import shutil
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .._manifest import compute_manifest, delete_manifest, write_manifest
+from .._db.paths import resolve as _resolve_paths
 from ..fetching import CommandResult
 from ..fetching.command import Command as _FetchingCommand
 
@@ -25,13 +26,19 @@ if TYPE_CHECKING:
     from ..parsing.command import ParsingCommand as _ParsingCommand
     from ..processing import ProcessingCommandResult
     from ..processing.command import ProcessingCommand as _ProcessingCommand
-    from ..query import BiliQuery
 
 logger = logging.getLogger("bili.command")
 
 
 class BiliCommand:
-    """Bili unit的统一写侧入口；编排各阶段 command。"""
+    """Bili unit的统一写侧入口；编排各阶段 command。
+
+    Phase 3 simplification (vs. legacy):
+      * No ``query`` parameter — read side is consumer's SQL, not a Python facade.
+      * No ``_persist_manifest`` — manifest is now ``manifest_summary`` SQL VIEW.
+      * ``delete_uid`` deletes the on-disk files directly (one main DB, one raw
+        DB, one workdir per uid) instead of routing through per-stage stores.
+    """
 
     def __init__(
         self,
@@ -39,16 +46,11 @@ class BiliCommand:
         parsing: _ParsingCommand | None = None,
         processing: _ProcessingCommand | None = None,
         *,
-        query: BiliQuery | None = None,
         settings: BiliSettings | None = None,
     ) -> None:
         self._fetching = fetching
         self._parsing = parsing
         self._processing = processing
-        # ``query`` and ``settings`` are required for manifest persistence;
-        # callers that omit them get the historical no-manifest behaviour
-        # (kept for backward compatibility with embeddings + tests).
-        self._query = query
         self._settings = settings
 
     # -- fetching stage ----------------------------------------------------
@@ -60,9 +62,7 @@ class BiliCommand:
         mode: str = "incremental",
     ) -> CommandResult:
         """触发 fetching 抓取流水线。"""
-        result = await self._fetching.fetch_uid(uid, endpoints, mode=mode)
-        await self._persist_manifest(uid)
-        return result
+        return await self._fetching.fetch_uid(uid, endpoints, mode=mode)
 
     # -- parsing stage -----------------------------------------------------
 
@@ -75,11 +75,9 @@ class BiliCommand:
         """触发 parsing 解析流水线。"""
         if self._parsing is None:
             raise RuntimeError("parsing command was not assembled")
-        result = await self._parsing.parse_uid(
+        return await self._parsing.parse_uid(
             uid, mode=mode, download_images=download_images,
         )
-        await self._persist_manifest(uid)
-        return result
 
     # -- processing stage --------------------------------------------------
 
@@ -96,7 +94,7 @@ class BiliCommand:
         """触发 processing 处理流水线。"""
         if self._processing is None:
             raise RuntimeError("processing command was not assembled")
-        result = await self._processing.process_uid(
+        return await self._processing.process_uid(
             uid,
             mode=mode,
             limit=limit,
@@ -104,40 +102,48 @@ class BiliCommand:
             retry_failed_only=retry_failed_only,
             dry_run=dry_run,
         )
-        await self._persist_manifest(uid)
-        return result
 
-    # -- delete uid (cross-stage) ------------------------------------------
+    # -- delete uid (file IO; no per-stage routing) ------------------------
 
-    async def delete_uid(self, uid: int) -> dict[str, dict[str, int]]:
-        """Delete all state for a uid across every assembled stage.
+    async def delete_uid(self, uid: int) -> dict[str, int]:
+        """Delete every on-disk artefact for one uid.
 
-        Executes in pipeline order (fetching → parsing → processing). If any
-        stage raises, later stages are skipped and the exception propagates;
-        the partial deletion is left as-is. Re-running ``delete_uid`` after
-        fixing the underlying issue is idempotent and will clear whatever
-        remains.
+        Removes:
+          * ``{db_dir}/{uid}.db``      (main DB)
+          * ``{db_dir}/{uid}.raw.db``  (raw DB)
+          * ``{db_dir}/{uid}/``        (workdir: images / audio caches)
+
+        Returns ``{"main_db": 0|1, "raw_db": 0|1, "workdir_files": N}``.
+        Idempotent — missing files yield 0.
         """
-        if self._parsing is None:
-            raise RuntimeError("parsing command was not assembled")
-        if self._processing is None:
-            raise RuntimeError("processing command was not assembled")
-        fetching_stats = await self._fetching.delete_uid(uid)
-        parsing_stats = await self._parsing.delete_uid(uid)
-        processing_stats = await self._processing.delete_uid(uid)
-        if self._settings is not None:
-            try:
-                delete_manifest(uid, self._settings.bili_manifest_dir)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "manifest_delete_failed",
-                    extra={"uid": uid, "error": str(exc)},
-                )
-        return {
-            "fetching": fetching_stats,
-            "parsing": parsing_stats,
-            "processing": processing_stats,
-        }
+        if self._settings is None:
+            raise RuntimeError(
+                "delete_uid requires settings; pass settings= when constructing BiliCommand",
+            )
+        paths = _resolve_paths(uid, self._settings.bili_db_dir)
+        stats = {"main_db": 0, "raw_db": 0, "workdir_files": 0}
+        if paths.main_db.exists():
+            paths.main_db.unlink()
+            stats["main_db"] = 1
+            # SQLite WAL companion files (-wal / -shm) — also remove.
+            for ext in ("-wal", "-shm"):
+                companion = Path(str(paths.main_db) + ext)
+                if companion.exists():
+                    companion.unlink()
+        if paths.raw_db.exists():
+            paths.raw_db.unlink()
+            stats["raw_db"] = 1
+            for ext in ("-wal", "-shm"):
+                companion = Path(str(paths.raw_db) + ext)
+                if companion.exists():
+                    companion.unlink()
+        if paths.workdir.exists():
+            # Count files for stats (recursive) before nuking the tree.
+            stats["workdir_files"] = sum(
+                1 for _ in paths.workdir.rglob("*") if _.is_file()
+            )
+            shutil.rmtree(paths.workdir)
+        return stats
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -147,27 +153,6 @@ class BiliCommand:
         if self._parsing is not None:
             await self._parsing.close()
         await self._fetching.close()
-
-    # -- internal ----------------------------------------------------------
-
-    async def _persist_manifest(self, uid: int) -> None:
-        """Recompute + write the per-uid manifest after a stage run.
-
-        No-op when the command was assembled without a query / settings (the
-        backward-compat path for narrow tests). Failures are logged but never
-        propagated — the manifest is best-effort and must not break the
-        primary stage flow.
-        """
-        if self._query is None or self._settings is None:
-            return
-        try:
-            manifest = await compute_manifest(uid, self._query)
-            write_manifest(uid, self._settings.bili_manifest_dir, manifest)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "manifest_persist_failed",
-                extra={"uid": uid, "error": str(exc)},
-            )
 
 
 __all__ = ["BiliCommand"]

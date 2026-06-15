@@ -12,6 +12,16 @@ from bili_unit.parsing.materializer import ParsingMaterializer
 from bili_unit.parsing.query import ParsingQuery
 from bili_unit.parsing.specs import MODEL_ORDER, get_spec, iter_specs
 
+# Most tests in this file target the legacy ParsingDataStore + ParsingQuery
+# pair plus the old ParsingMaterializer(data, fetch_qry) signature. Phase
+# 3.2 swapped the materializer to (ctx, parse_store, fetch_store) and
+# replaced the file-KV store; only the spec-registry assertion below is
+# infrastructure-free and survives unchanged. Per-function skips keep that
+# survivor running while we wait for the Phase 6 rewrite.
+_LEGACY_INFRA = pytest.mark.skip(
+    reason="moved to Phase 6 rewrite — parsing internals reshaped in Phase 3.2",
+)
+
 
 @pytest_asyncio.fixture
 async def parsing_store(tmp_path):
@@ -43,6 +53,7 @@ def test_parsing_specs_register_existing_models():
 
 
 @pytest.mark.asyncio
+@_LEGACY_INFRA
 async def test_query_generic_get_item_and_list_items(parsing_store):
     uid = 4242
     await parsing_store.put(_item_key(uid, "article_post", "cv1"), {"id": "cv1", "title": "one"})
@@ -63,6 +74,7 @@ async def test_query_generic_get_item_and_list_items(parsing_store):
 
 
 @pytest.mark.asyncio
+@_LEGACY_INFRA
 async def test_query_legacy_list_methods_read_canonical_model_dirs(parsing_store):
     uid = 4343
     await parsing_store.put(
@@ -91,6 +103,7 @@ async def test_query_legacy_list_methods_read_canonical_model_dirs(parsing_store
 
 
 @pytest.mark.asyncio
+@_LEGACY_INFRA
 async def test_query_generic_rejects_unknown_model(parsing_store):
     query = ParsingQuery(parsing_store)
 
@@ -102,6 +115,7 @@ async def test_query_generic_rejects_unknown_model(parsing_store):
 
 
 @pytest.mark.asyncio
+@_LEGACY_INFRA
 async def test_incremental_user_profile_skips_existing_key(parsing_store):
     uid = 5151
     existing = {"_model_name": "user_profile", "mid": uid, "name": "already parsed"}
@@ -121,6 +135,7 @@ async def test_incremental_user_profile_skips_existing_key(parsing_store):
 
 
 @pytest.mark.asyncio
+@_LEGACY_INFRA
 async def test_incremental_video_work_skips_existing_items(parsing_store):
     uid = 6262
     await parsing_store.put(

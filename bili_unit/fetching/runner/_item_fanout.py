@@ -23,10 +23,10 @@ from .. import (
     ResourceUnavailableError,
 )
 from .._endpoint_spec import EndpointSpec
-from ..keys import _fetch_key, _item_fetch_key, _progress_key, _task_key
 
 if TYPE_CHECKING:
     from ..._env import BiliSettings
+    from .._store import FetchingStore
 
 logger = logging.getLogger("bili.fetching.runner")
 
@@ -39,17 +39,7 @@ class _ItemFanoutResult(StrEnum):
 
 
 def _classify_item_exc(exc: Exception) -> RetryClassification:
-    """Classify an item-level fetch exception.
-
-    AuthError and ResourceUnavailableError both terminate the retry loop
-    immediately — they signal "no point retrying".  The caller examines the
-    re-raised exception type to decide what to return:
-      AuthError                    → 'permanent' (caller aborts whole fan-out)
-      ResourceUnavailableError     → 'failed'    (only this item, siblings continue)
-      other FetchingError exhausted → 'failed'
-    Unknown exception types are also permanent: a logic bug shouldn't burn
-    the retry budget.
-    """
+    """Classify an item-level fetch exception."""
     if isinstance(exc, (AuthError, ResourceUnavailableError)):
         return RetryClassification.PERMANENT
     if isinstance(exc, FetchingError):
@@ -60,12 +50,9 @@ def _classify_item_exc(exc: Exception) -> RetryClassification:
 class _ItemFanoutMixin:
     """Mixin providing ``_run_item_endpoint`` / ``_process_single_item`` for :class:`Runner`."""
 
-    _data: Any
-    _error: Any
+    _store: FetchingStore
     _rl: Any
     _settings: BiliSettings
-
-    async def _update_endpoint_status(self, uid, ep_name, status, **kw) -> None: ...  # pragma: no cover
 
     # -- item-level fan-out endpoint ------------------------------------
 
@@ -83,56 +70,51 @@ class _ItemFanoutMixin:
         results per item_id.
         """
         ep_name = spec.name
-        await self._update_endpoint_status(uid, ep_name, EndpointStatus.RUNNING, retry_count=0)
+        await self._store.update_endpoint_state(
+            ep_name,
+            status=EndpointStatus.RUNNING.value,
+            retry_count=0,
+        )
 
         # 1. Load source endpoint data
-        source_key = _fetch_key(uid, spec.source_endpoint)
-        source_data = await self._data.get(source_key)
-        if source_data is None or not source_data.get("raw_payload"):
-            await self._update_endpoint_status(
-                uid, ep_name, EndpointStatus.FAILED_PERMANENT,
+        source_payload = (
+            await self._store.get_raw_payload(spec.source_endpoint)
+            if spec.source_endpoint
+            else None
+        )
+        if not source_payload:
+            err_id = await self._store.record_error(
+                endpoint=ep_name,
+                error_type="FetchingError",
+                message=f"source {spec.source_endpoint} data not available",
+                retryable=False,
             )
-            await self._error.record(
-                FetchingError(f"source {spec.source_endpoint} data not available"),
-                uid=uid, endpoint=ep_name, retryable=False,
+            await self._store.update_endpoint_state(
+                ep_name,
+                status=EndpointStatus.FAILED_PERMANENT.value,
+                last_error_id=err_id,
             )
-            now_ms = int(time.time() * 1000)
-            await self._data.put(_fetch_key(uid, ep_name), {
-                "uid": uid,
-                "endpoint": ep_name,
-                "status": EndpointStatus.FAILED_PERMANENT.value,
-                "raw_payload": None,
-                "fetched_at": now_ms,
-                "updated_at": now_ms,
-            })
             return
 
         # 2. Extract items
-        items = spec.extract_items(source_data["raw_payload"])
+        items = spec.extract_items(source_payload)
         if not items:
             logger.info(
                 "item_endpoint_no_items",
                 extra={"uid": uid, "endpoint": ep_name},
             )
-            await self._update_endpoint_status(
-                uid, ep_name, EndpointStatus.SUCCESS,
+            await self._store.update_endpoint_state(
+                ep_name,
+                status=EndpointStatus.SUCCESS.value,
+                item_progress={"total": 0, "completed": 0, "failed": 0},
             )
-            now_ms = int(time.time() * 1000)
-            await self._data.put(_fetch_key(uid, ep_name), {
-                "uid": uid,
-                "endpoint": ep_name,
-                "status": EndpointStatus.SUCCESS.value,
-                "raw_payload": None,
-                "fetched_at": now_ms,
-                "updated_at": now_ms,
-                "item_counts": {"total": 0, "completed": 0, "failed": 0},
-            })
+            await self._store.save_progress(
+                ep_name,
+                {"cursor": None, "total": 0, "fetched": 0},
+            )
             return
 
         total_items = len(items)
-
-        # Shared counters — safe in single-threaded asyncio as long as
-        # increments happen outside any ``await`` expression.
         completed_items = 0
         failed_items = 0
 
@@ -159,18 +141,17 @@ class _ItemFanoutMixin:
             bar.update(1, postfix=f"ok={completed_items} fail={failed_items}")
 
             # Update live progress (non-atomic; fine in single-threaded asyncio).
-            now_ms = int(time.time() * 1000)
-            progress_val = {
-                "mode": "item_fanout",
-                "total_items": total_items,
-                "completed_items": completed_items,
-                "failed_items": failed_items,
-                "done": False,
-                "updated_at": now_ms,
-            }
-            await self._data.put(_progress_key(uid, ep_name), progress_val)
-            await self._data.update_task_endpoint(
-                _task_key(uid), ep_name, EndpointStatus.RUNNING.value,
+            await self._store.save_progress(
+                ep_name,
+                {
+                    "cursor": "running",
+                    "total": total_items,
+                    "fetched": completed_items,
+                },
+            )
+            await self._store.update_endpoint_state(
+                ep_name,
+                status=EndpointStatus.RUNNING.value,
                 item_progress={
                     "total": total_items,
                     "completed": completed_items,
@@ -188,18 +169,10 @@ class _ItemFanoutMixin:
                 )
             except FetchingError:
                 # AuthError from any item → abort and mark permanently failed.
-                await self._update_endpoint_status(
-                    uid, ep_name, EndpointStatus.FAILED_PERMANENT,
+                await self._store.update_endpoint_state(
+                    ep_name,
+                    status=EndpointStatus.FAILED_PERMANENT.value,
                 )
-                now_ms = int(time.time() * 1000)
-                await self._data.put(_fetch_key(uid, ep_name), {
-                    "uid": uid,
-                    "endpoint": ep_name,
-                    "status": EndpointStatus.FAILED_PERMANENT.value,
-                    "raw_payload": None,
-                    "fetched_at": now_ms,
-                    "updated_at": now_ms,
-                })
                 return
         finally:
             bar.close()
@@ -212,42 +185,24 @@ class _ItemFanoutMixin:
         else:
             final_status = EndpointStatus.SUCCESS
 
-        now_ms = int(time.time() * 1000)
-        final_progress = {
-            "mode": "item_fanout",
-            "total_items": total_items,
-            "completed_items": completed_items,
-            "failed_items": failed_items,
-            "done": True,
-            "updated_at": now_ms,
-        }
-        await self._data.put(_progress_key(uid, ep_name), final_progress)
+        await self._store.save_progress(
+            ep_name,
+            {
+                "cursor": None,
+                "total": total_items,
+                "fetched": completed_items,
+            },
+        )
 
-        await self._update_endpoint_status(
-            uid, ep_name, final_status,
+        await self._store.update_endpoint_state(
+            ep_name,
+            status=final_status.value,
             item_progress={
                 "total": total_items,
                 "completed": completed_items,
                 "failed": failed_items,
             },
         )
-
-        # Write endpoint-level fetch key so query layer can read status.
-        # Individual item payloads live in per-bvid keys; this record only
-        # carries the aggregate status and item counts.
-        await self._data.put(_fetch_key(uid, ep_name), {
-            "uid": uid,
-            "endpoint": ep_name,
-            "status": final_status.value,
-            "raw_payload": None,
-            "fetched_at": now_ms,
-            "updated_at": now_ms,
-            "item_counts": {
-                "total": total_items,
-                "completed": completed_items,
-                "failed": failed_items,
-            },
-        })
 
         logger.info(
             "item_endpoint_completed",
@@ -268,22 +223,18 @@ class _ItemFanoutMixin:
         item_id: str,
         mode: str,
     ) -> _ItemFanoutResult:
-        """Fetch and store a single item. Returns an _ItemFanoutResult enum value.
-
-        'permanent' signals an AuthError that should abort the whole fan-out.
-        'failed' covers everything else that didn't succeed (including
-        ResourceUnavailableError, exhausted retries, and unexpected errors).
-        """
+        """Fetch and store a single item. Returns an _ItemFanoutResult enum value."""
         ep_name = spec.name
 
         # Incremental / refresh: skip if already stored (and fresh for refresh).
         if mode in ("incremental", "refresh"):
-            existing = await self._data.get(_item_fetch_key(uid, ep_name, item_id))
+            existing = await self._store.get_raw_payload(ep_name, item_id)
             if existing is not None:
                 if mode == "incremental":
                     return _ItemFanoutResult.SUCCESS
                 # refresh mode: check freshness window
-                fetched_at = existing.get("fetched_at")
+                ages = await self._store.list_item_ages_ms(ep_name)
+                fetched_at = ages.get(item_id)
                 if fetched_at is not None:
                     now_ms = int(time.time() * 1000)
                     age_ms = now_ms - fetched_at
@@ -307,14 +258,20 @@ class _ItemFanoutMixin:
             exc: Exception, outcome: RetryOutcome,
         ) -> int | None:
             if isinstance(exc, AuthError):
-                await self._error.record(
-                    exc, uid=uid, endpoint=ep_name, retryable=False,
+                await self._store.record_error(
+                    endpoint=ep_name,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                    retryable=False,
                 )
                 return None
 
             if isinstance(exc, ResourceUnavailableError):
-                await self._error.record(
-                    exc, uid=uid, endpoint=ep_name, retryable=False,
+                await self._store.record_error(
+                    endpoint=ep_name,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                    retryable=False,
                     detail={"item_id": item_id},
                 )
                 logger.info(
@@ -328,14 +285,12 @@ class _ItemFanoutMixin:
 
             if isinstance(exc, Http412Error):
                 advice = await self._rl.record_412(spec.rate_limit_key)
-                await self._data.put("rate_limit:global", self._rl.to_state())
-                await self._data.put(
-                    f"rate_limit:{spec.rate_limit_key}",
-                    self._rl.to_state(endpoint=spec.rate_limit_key),
-                )
+                # rate-limit state is in-memory only; no persistence call here.
                 retry_state["count"] += 1
-                await self._error.record(
-                    exc, uid=uid, endpoint=ep_name,
+                await self._store.record_error(
+                    endpoint=ep_name,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
                     retryable=outcome.will_retry,
                     detail={"item_id": item_id, "retry_count": retry_state["count"]},
                 )
@@ -361,8 +316,10 @@ class _ItemFanoutMixin:
 
             if isinstance(exc, FetchingError):
                 retry_state["count"] += 1
-                await self._error.record(
-                    exc, uid=uid, endpoint=ep_name,
+                await self._store.record_error(
+                    endpoint=ep_name,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
                     retryable=outcome.will_retry,
                     detail={"item_id": item_id},
                 )
@@ -386,10 +343,10 @@ class _ItemFanoutMixin:
                 )
                 return None
 
-            # Unknown error → wrap and record as failed.
-            wrapped = FetchingError(f"unexpected: {type(exc).__name__}: {exc}")
-            await self._error.record(
-                wrapped, uid=uid, endpoint=ep_name,
+            await self._store.record_error(
+                endpoint=ep_name,
+                error_type="FetchingError",
+                message=f"unexpected: {type(exc).__name__}: {exc}",
                 retryable=False,
                 detail={"item_id": item_id},
             )
@@ -409,24 +366,10 @@ class _ItemFanoutMixin:
         except AuthError:
             return _ItemFanoutResult.PERMANENT
         except Exception:
-            # ResourceUnavailableError / exhausted FetchingError / unknown:
-            # all map to a single-item failure that lets siblings continue.
             return _ItemFanoutResult.FAILED
 
         # Success — store item.
-        now_ms = int(time.time() * 1000)
-        fetch_val = {
-            "uid": uid,
-            "endpoint": ep_name,
-            "item_id": item_id,
-            "status": "SUCCESS",
-            "raw_payload": result,
-            "fetched_at": now_ms,
-            "updated_at": now_ms,
-        }
-        await self._data.put(
-            _item_fetch_key(uid, ep_name, item_id), fetch_val,
-        )
+        await self._store.save_raw_payload(ep_name, item_id, result)
         logger.info(
             "item_endpoint_item_saved",
             extra={"uid": uid, "endpoint": ep_name, "item_id": item_id},

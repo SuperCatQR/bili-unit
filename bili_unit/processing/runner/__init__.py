@@ -7,37 +7,29 @@
 # Concurrency control: asyncio.Queue with maxsize from
 # BILI_PROCESSING_QUEUE_MAXSIZE. Workers exit on sentinel (None).
 #
-# Split into sub-modules for maintainability:
-#   _audio.py      — _AudioMixin (discover / dispatch / process_audio_one / do_audio_work)
-#   _audio_work.py — pure per-page helpers (download / convert / transcribe)
-#   _pipeline_executor.py — shared queue / worker / rollup mechanics
-#
-# This module retains: orchestration (run), helpers, and the runner class.
-#
-# AudioDownloader / convert_single are injected via ProcessingRunner
-# constructor (downloader_factory= / convert_fn=) so tests can substitute
-# without module-level patching.
+# Phase 3.3: ``ProcessingStore`` (SQLite) replaces the old
+# ProcessingDataStore + ProcessingErrorStore pair. The runner is
+# constructed once with cross-uid services (settings / asr_backend /
+# downloader / convert_fn) and the per-uid stores enter via :meth:`run`.
+# The audio mixin reads them back from ``self`` for the duration of one
+# call.
 
 from __future__ import annotations
 
 import logging
 import shutil
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import (
     AudioError,
-    ProcessingItemStatus,
     ProcessingPipelineStatus,
     ProcessingTaskStatus,
 )
 from ..audio._asr_cache import ASRCacheStore
 from ..audio._converter import convert_single as _real_convert_single
 from ..audio._downloader import AudioDownloader as _real_audio_downloader_cls
-from ..keys import _progress_key, _task_key
-from ..task import PipelineEntry, ProcessingTaskValue
 from ._audio import CredentialProvider, _AudioMixin
 from ._audio_work import (
     ConvertFn,
@@ -50,11 +42,10 @@ DownloaderFactory = Callable[..., Any]  # AudioDownloader constructor, compatibl
 
 if TYPE_CHECKING:
     from ..._env import BiliSettings
-    from ...fetching.protocols import FetchingReadView
-    from ...parsing.query import ParsingQuery
+    from ...fetching._store import FetchingStore
+    from ...parsing._store import ParsingStore
+    from .._store import ProcessingStore
     from ..audio._asr_backend import ASRBackend
-    from ..data import ProcessingDataStore
-    from ..error import ProcessingErrorStore
 
 logger = logging.getLogger("bili.processing.runner")
 
@@ -67,22 +58,13 @@ class ProcessingRunner(_AudioMixin):
 
     def __init__(
         self,
-        data: ProcessingDataStore,
-        error: ProcessingErrorStore,
-        temp_dir: str | Path,
-        fetching_query: FetchingReadView,
         settings: BiliSettings,
-        parsing_query: ParsingQuery | None = None,
+        *,
         asr_backend: ASRBackend | None = None,
         credential_provider: CredentialProvider | None = None,
         downloader_factory: DownloaderFactory | None = None,
         convert_fn: ConvertFn | None = None,
     ) -> None:
-        self._data = data
-        self._error = error
-        self._temp_dir = Path(temp_dir)
-        self._fetch_qry = fetching_query
-        self._parse_qry = parsing_query
         self._settings = settings
         self._asr_backend = asr_backend
         self._credential_provider = credential_provider
@@ -93,6 +75,17 @@ class ProcessingRunner(_AudioMixin):
             convert_fn if convert_fn is not None else _real_convert_single
         )
         self._asr_cache: ASRCacheStore | None = None
+        # Per-uid stores assigned for the duration of ``run``.
+        self._store: ProcessingStore | None = None
+        self._fetch_store: FetchingStore | None = None
+        self._parse_store: ParsingStore | None = None
+
+    # ``_temp_dir`` is derived from settings on demand (per-uid scoping is
+    # done inside _do_audio_work). Exposed as a property so audio code can
+    # keep using ``self._temp_dir / str(uid) / "audio" / bvid`` unchanged.
+    @property
+    def _temp_dir(self) -> Path:
+        return Path(self._settings.bili_processing_temp_dir)
 
     def _get_asr_cache(self) -> ASRCacheStore | None:
         """Lazy-build the ASR resume cache when enabled.
@@ -113,8 +106,11 @@ class ProcessingRunner(_AudioMixin):
     async def run(
         self,
         uid: int,
-        mode: str = "incremental",
         *,
+        proc_store: ProcessingStore,
+        fetch_store: FetchingStore,
+        parse_store: ParsingStore,
+        mode: str = "incremental",
         limit: int | None = None,
         only_bvids: list[str] | None = None,
         retry_failed_only: bool = False,
@@ -124,6 +120,10 @@ class ProcessingRunner(_AudioMixin):
 
         Args:
             uid: target user.
+            proc_store: per-uid processing store (writes audio_transcription
+                + stage_task[stage='processing'] + stage_error rows).
+            fetch_store: per-uid fetching store (read-only here — list_fanout_payloads).
+            parse_store: per-uid parsing store (read-only here — get_video_subtitle_payload).
             mode: "incremental" (default) or "full".
             limit / only_bvids / retry_failed_only / dry_run: see
                 :meth:`ProcessingCommand.process_uid`.
@@ -146,34 +146,45 @@ class ProcessingRunner(_AudioMixin):
             },
         )
 
-        # Phase 0 — load / create task value
-        tv = await self._load_or_init_task(uid)
-        tv.status = ProcessingTaskStatus.RUNNING
-        await self._save_task(tv)
+        # Bind per-uid stores so the audio mixin can reach them through ``self``.
+        self._store = proc_store
+        self._fetch_store = fetch_store
+        self._parse_store = parse_store
+        try:
+            # Phase 0 — seed (or merge) the processing task envelope.
+            await proc_store.init_task([_AUDIO])
+            await proc_store.update_task_status(
+                ProcessingTaskStatus.RUNNING.value,
+            )
 
-        # Phase 1 — audio pipeline
-        candidates = await self._run_audio(
-            uid, tv, mode,
-            limit=limit,
-            only_bvids=only_bvids,
-            retry_failed_only=retry_failed_only,
-            dry_run=dry_run,
-        )
+            # Phase 1 — audio pipeline
+            candidates = await self._run_audio(
+                uid, mode,
+                limit=limit,
+                only_bvids=only_bvids,
+                retry_failed_only=retry_failed_only,
+                dry_run=dry_run,
+            )
 
-        # Phase 2 — finalise
-        tv = await self._reload_task(uid) or tv
-        tv.status = self._derive_task_status(tv)
-        tv.failed_item_ids = await self._collect_failed_item_ids(uid)
-        await self._save_task(tv)
+            # Phase 2 — finalise: derive task status from current pipeline rollup.
+            task = await proc_store.get_task() or {}
+            payload = task.get("payload") or {}
+            pipelines = payload.get("pipelines") or {}
+            task_status = self._derive_task_status(pipelines)
+            await proc_store.update_task_status(task_status.value)
 
-        # Phase 2 — cleanup temp
-        await self._cleanup_temp(uid)
+            # Phase 2 — cleanup temp
+            await self._cleanup_temp(uid)
 
-        logger.info(
-            "processing_completed",
-            extra={"uid": uid, "status": tv.status.value},
-        )
-        return tv.status, candidates
+            logger.info(
+                "processing_completed",
+                extra={"uid": uid, "status": task_status.value},
+            )
+            return task_status, candidates
+        finally:
+            self._store = None
+            self._fetch_store = None
+            self._parse_store = None
 
     # -- helpers -----------------------------------------------------------
 
@@ -197,87 +208,6 @@ class ProcessingRunner(_AudioMixin):
         if isinstance(exc, ASRConfigError):
             return False
         return isinstance(exc, AudioError)
-
-    async def _load_or_init_task(
-        self, uid: int,
-    ) -> ProcessingTaskValue:
-        existing = await self._data.get(_task_key(uid))
-        if existing is not None:
-            return ProcessingTaskValue.from_dict(existing)
-        now = int(time.time() * 1000)
-        tv = ProcessingTaskValue(
-            uid=uid,
-            status=ProcessingTaskStatus.PENDING,
-            pipelines={_AUDIO: PipelineEntry()},
-            created_at=now,
-            updated_at=now,
-        )
-        await self._save_task(tv)
-        return tv
-
-    async def _reload_task(self, uid: int) -> ProcessingTaskValue | None:
-        existing = await self._data.get(_task_key(uid))
-        if existing is None:
-            return None
-        return ProcessingTaskValue.from_dict(existing)
-
-    async def _save_task(self, tv: ProcessingTaskValue) -> None:
-        await self._data.put(_task_key(tv.uid), tv.to_dict())
-
-    async def _collect_failed_item_ids(self, uid: int) -> list[str]:
-        """Aggregate ``failed_item_ids`` from the data store.
-
-        Entries are encoded as ``"pipeline:item_type:item_id"``; the data
-        store carries the *current* item status (latest write wins), so
-        an item that failed and was later retried to SUCCESS no longer
-        surfaces here even though forensic error records remain in the
-        error log. Reading from the data store instead of the error
-        store is the fix for stale ``failed_item_ids`` after a
-        retry-to-success on a subsequent run.
-
-        Order is sorted for stability.
-        """
-        prefix = f"uid:{uid}:proc:"
-        try:
-            rows = await self._data.list_prefix(prefix)
-        except Exception:  # noqa: BLE001 — never fail task save on data read
-            return []
-        ids: set[str] = set()
-        for _, v in rows:
-            if not isinstance(v, dict):
-                continue
-            if v.get("status") != ProcessingItemStatus.FAILED.value:
-                continue
-            pipeline = v.get("pipeline") or "unknown"
-            item_type = v.get("item_type") or "unknown"
-            item_id = v.get("item_id") or ""
-            if item_id:
-                ids.add(f"{pipeline}:{item_type}:{item_id}")
-        return sorted(ids)
-
-    async def _write_progress(
-        self,
-        uid: int,
-        pipeline: str,
-        item_type: str,
-        counts: dict[str, int],
-        done: bool,
-    ) -> None:
-        total = counts.get("total", 0)
-        completed = counts.get("completed", 0)
-        failed = counts.get("failed", 0)
-        skipped = counts.get("skipped", 0)
-        remaining = max(0, total - completed - failed - skipped)
-        await self._data.put(_progress_key(uid, pipeline, item_type), {
-            "pipeline": pipeline,
-            "item_type": item_type,
-            "total_items": total,
-            "completed_items": completed,
-            "failed_items": failed,
-            "skipped_items": skipped,
-            "remaining_items": remaining,
-            "done": done,
-        })
 
     async def _cleanup_temp(self, uid: int) -> None:
         """Remove residual temp files for a uid after processing."""
@@ -315,10 +245,19 @@ class ProcessingRunner(_AudioMixin):
         return ProcessingPipelineStatus.SUCCESS
 
     @staticmethod
-    def _derive_task_status(tv: ProcessingTaskValue) -> ProcessingTaskStatus:
-        if not tv.pipelines:
+    def _derive_task_status(
+        pipelines: dict[str, dict[str, Any]],
+    ) -> ProcessingTaskStatus:
+        if not pipelines:
             return ProcessingTaskStatus.SUCCESS
-        statuses = [p.status for p in tv.pipelines.values()]
+        statuses: list[ProcessingPipelineStatus] = []
+        for entry in pipelines.values():
+            try:
+                statuses.append(
+                    ProcessingPipelineStatus(entry.get("status", "PENDING")),
+                )
+            except ValueError:
+                statuses.append(ProcessingPipelineStatus.PENDING)
         if all(s == ProcessingPipelineStatus.SUCCESS for s in statuses):
             return ProcessingTaskStatus.SUCCESS
         if any(s == ProcessingPipelineStatus.RUNNING for s in statuses):

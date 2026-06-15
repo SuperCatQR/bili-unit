@@ -6,6 +6,13 @@ import pytest
 
 from bili_unit.parsing.data import ParsingDataStore, ParsingKeyMapper
 
+# ParsingDataStore (file-directory KV store) is replaced by ParsingStore
+# (SQLite) in Phase 3. The Phase 2 store has its own test file
+# (test_parsing_store_sqlite.py); this legacy file is punted to Phase 6.
+pytestmark = pytest.mark.skip(
+    reason="moved to Phase 6 rewrite — ParsingDataStore replaced by ParsingStore in Phase 3.2",
+)
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------

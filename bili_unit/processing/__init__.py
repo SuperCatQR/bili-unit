@@ -1,10 +1,18 @@
 # bili_unit/processing — common DTOs, exceptions.
+#
+# Phase 3.3: ``ProcessingStore`` (SQLite) replaces the old file-directory
+# ``ProcessingDataStore`` + ``ProcessingErrorStore`` pair.  ``assemble()``
+# now returns a single ``ProcessingCommand``; per-uid stores are constructed
+# inside ``ProcessingCommand.process_uid``.
+#
+# DTOs (``ProcessingItemDTO`` / ``ProcessingTaskDTO`` / ...) and the legacy
+# ``ProcessingErrorDTO`` are still imported by tests and the legacy
+# ``ProcessingQuery``; Phase 4 prunes them. They are kept here as inert
+# shape definitions.
 
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
-
-from .._storage import DecodeError as _DecodeError
 
 # ---------------------------------------------------------------------------
 # Status enums
@@ -83,12 +91,19 @@ class QueueError(ProcessingError):
     """队列操作错误。"""
 
 
-class DataError(_DecodeError, ProcessingError):
-    """存储 / 序列化失败。"""
+class DataError(ProcessingError):
+    """存储 / 序列化失败。
+
+    The legacy file-directory stores (``data.py`` / ``error.py``, still on
+    disk for old tests) need a multi-inheritance hybrid with
+    :class:`bili_unit._storage.DecodeError`. To keep the import graph clean
+    we register that hybrid lazily; this base class stays a plain
+    ``ProcessingError`` subclass.
+    """
 
 
 # ---------------------------------------------------------------------------
-# DTOs
+# DTOs (Phase 4 will prune these; kept here for ProcessingQuery compatibility)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -149,42 +164,32 @@ class ProcessingCommandResult:
 
 
 # ---------------------------------------------------------------------------
-# Assembly root — opens processing stores, wires dependencies, picks ASR backend
+# Assembly root — picks ASR backend, returns a single ProcessingCommand
 # ---------------------------------------------------------------------------
 
 async def assemble(
     settings,
     *,
-    fetching_query,
-    parsing_query=None,
     asr_backend_override: str | None = None,
     credential_provider=None,
 ):
-    """Open processing stores, wire dependencies, return ``(cmd, qry, data, error)``.
+    """Return a configured :class:`ProcessingCommand`.
 
     Args:
         settings: ``BiliSettings`` already loaded by the caller.
-        fetching_query: a :class:`FetchingReadView`-shaped object.
-        parsing_query: optional :class:`ParsingQuery` — when provided, audio
-            pipeline can short-circuit ASR for bvids whose ``video_subtitle``
-            is already complete in parsing storage.
         asr_backend_override: takes precedence over BILI_PROCESSING_ASR_BACKEND.
         credential_provider: async callable returning a ``Credential | None``;
             defaults to ``bili_unit.fetching.auth.get_credential`` when None.
 
-    Caller is responsible for closing the returned stores via cmd.close().
+    Per Phase 3 conventions, the returned command does NOT pre-open any
+    per-uid stores; each ``process_uid`` call constructs its own
+    :class:`UidContext` + stores and tears them down on return. The caller
+    only needs to call :meth:`ProcessingCommand.close` to release the
+    ASR backend's HTTP session (if any).
     """
     from ..fetching.auth import get_credential
     from .audio._asr_backend import create_asr_backend
     from .command import ProcessingCommand
-    from .data import ProcessingDataStore
-    from .error import ProcessingErrorStore
-    from .query import ProcessingQuery
-
-    data = ProcessingDataStore(settings.bili_processing_data_dir)
-    error = ProcessingErrorStore(settings.bili_processing_error_dir)
-    await data.open()
-    await error.open()
 
     backend_name = asr_backend_override or settings.bili_processing_asr_backend
     asr_backend = create_asr_backend(backend_name, settings=settings)
@@ -192,18 +197,11 @@ async def assemble(
     if credential_provider is None:
         credential_provider = get_credential
 
-    cmd = ProcessingCommand(
-        data=data,
-        error=error,
-        temp_dir=settings.bili_processing_temp_dir,
-        fetching_query=fetching_query,
-        parsing_query=parsing_query,
-        settings=settings,
+    return ProcessingCommand(
+        settings,
         asr_backend=asr_backend,
         credential_provider=credential_provider,
     )
-    qry = ProcessingQuery(data=data, error=error)
-    return cmd, qry, data, error
 
 
 __all__ = [

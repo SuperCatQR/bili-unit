@@ -2,9 +2,13 @@
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .._storage import DecodeError as _DecodeError
+
+if TYPE_CHECKING:
+    from .._env import BiliSettings
+    from .command import Command
 
 # ---------------------------------------------------------------------------
 # Task / Endpoint status enums (cf. fetching_engineering.md §12)
@@ -131,35 +135,28 @@ class TaskResult:
 
 
 # ---------------------------------------------------------------------------
-# Assembly root — wires env → stores → components → entry points
+# Assembly root — wires env → settings → rate limit → Command
 # ---------------------------------------------------------------------------
 
-async def assemble(settings=None) -> tuple:
-    """Read env, open stores, wire dependencies, return (Command, Query, DataStore, ErrorStore).
+async def assemble(settings: "BiliSettings | None" = None) -> "Command":
+    """Read env, init HTTP backend, wire dependencies, return a Command.
+
+    Phase 3 contract: returns a single ``Command``. The store layer is now
+    request-scoped — Command opens its own ``UidContext`` + ``FetchingStore``
+    inside each ``fetch_uid`` call.
 
     Args:
         settings: pre-built ``BiliSettings`` to use. ``None`` (default) lazy-loads
             from .env via :func:`bili_unit._env.get_settings` — keeps the historical
             CLI behaviour intact.
-
-    Caller is responsible for closing stores via ``await data.close()`` /
-    ``await error.close()`` when done.
     """
     from .._env import get_settings
     from ._bilibili_adapter import init_http_backend
     from .command import Command
-    from .data import DataStore
-    from .error import ErrorStore
-    from .query import Query
     from .rate_limit import RateLimitController
 
     s = settings if settings is not None else get_settings()
     init_http_backend(s.bili_fetching_http_backend, s.bili_fetching_impersonate)
-
-    data = DataStore(s.bili_fetching_data_dir)
-    error = ErrorStore(s.bili_fetching_error_dir)
-    await data.open()
-    await error.open()
 
     rl = RateLimitController(
         global_qps=s.bili_fetching_global_qps,
@@ -168,6 +165,4 @@ async def assemble(settings=None) -> tuple:
         recovery_cooldown=s.bili_fetching_recovery_cooldown,
     )
     stale_ms = int(s.bili_fetching_stale_running_threshold_seconds * 1000)
-    cmd = Command(data, error, rl, s, stale_running_threshold_ms=stale_ms)
-    qry = Query(data, error)
-    return cmd, qry, data, error
+    return Command(s, rl, stale_running_threshold_ms=stale_ms)
