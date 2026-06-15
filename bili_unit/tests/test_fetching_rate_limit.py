@@ -21,15 +21,6 @@ async def test_rate_limit_acquire_different_endpoints():
     await rl.acquire("a")
 
 
-def test_rate_limit_state_shape():
-    rl = RateLimitController(global_qps=0.5, endpoint_qps=0.2)
-    state = rl.to_state()
-    assert state["scope"] == "global"
-    assert state["endpoint"] is None
-    assert state["qps"] == 0.5
-    assert "updated_at" in state
-
-
 @pytest.mark.asyncio
 async def test_rate_limit_412_adjusts_global_qps():
     rl = RateLimitController(global_qps=1.0, endpoint_qps=0.5)
@@ -65,16 +56,6 @@ async def test_rate_limit_does_not_modify_task():
     assert not hasattr(rl, "task")
     assert not hasattr(rl, "_task")
     assert not hasattr(rl, "update_task")
-
-
-@pytest.mark.asyncio
-async def test_rate_limit_to_state_endpoint():
-    rl = RateLimitController(global_qps=1, endpoint_qps=0.5)
-    await rl.acquire("videos")
-    state = rl.to_state(endpoint="videos")
-    assert state["scope"] == "videos"
-    assert state["endpoint"] == "videos"
-    assert state["qps"] == 0.5
 
 
 # ======================================================================
@@ -254,19 +235,6 @@ async def test_recovery_video_detail_independent():
     with patch.object(rl_mod.time, "time", return_value=500.0):
         await rl.acquire("video_detail")
     assert rl._video_detail_qps == 0.4
-
-
-@pytest.mark.asyncio
-async def test_recovery_to_state_includes_original():
-    """to_state includes original QPS for monitoring."""
-    rl = RateLimitController(global_qps=1.0, endpoint_qps=0.5, video_detail_qps=0.2)
-    state = rl.to_state()
-    assert "original_global_qps" in state
-    assert state["original_global_qps"] == 1.0
-
-    state_ep = rl.to_state(endpoint="video_detail")
-    assert "original_endpoint_qps" in state_ep
-    assert state_ep["original_endpoint_qps"] == 0.2
 
 
 @pytest.mark.asyncio

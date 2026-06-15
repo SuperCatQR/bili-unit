@@ -25,40 +25,26 @@ from bili_unit._env import BiliSettings  # noqa: F401 — exposed for downstream
 # skipped wholesale; Phase 4/6 will rewrite or delete them.
 # ---------------------------------------------------------------------------
 collect_ignore_glob = [
-    # Phase 4 deletions (cross-stage / unit-level):
-    "test_storage_kv_contract.py",
-    "test_manifest.py",
+    # Phase 6 — cross-stage / SDK-facing tests (rewrite against unit-level facade):
     "test_delete_uid.py",
     "test_sdk_assemble_settings.py",
     "test_sdk_session.py",
     "test_sdk_public_surface.py",
     "test_task_failed_item_ids.py",
     "test_cli_subset.py",
-    # Phase 6 rewrites (use legacy DataStore / ErrorStore / Query directly;
-    # production code now uses SQLite stores — these tests need to be re-authored
-    # against the new store API or direct SQL):
+    # Phase 6 — runner / command tests (rewrite against new SQLite stores):
     "test_fetching_runner.py",
     "test_fetching_video_detail.py",
     "test_fetching_command.py",
-    "test_fetching_query.py",
-    "test_fetching_protocol.py",
-    "test_fetching_task.py",
-    "test_fetching_rate_limit.py",
     "test_fetching_integration.py",
     "test_fetching_media_list_and_runner_safety.py",
     "test_fetching_extended_endpoints.py",
-    "test_fetching_data.py",
-    "test_fetching_error.py",
-    "test_fetching_error_classification.py",
     "test_processing_runner.py",
     "test_processing_cost.py",
     "test_processing_cli_filters.py",
     "test_processing_subtitle_priority.py",
-    "test_processing_data_error.py",
-    "test_parsing_data.py",
     "test_parsing_command.py",
     "test_parsing_infra.py",
-    "test_parsing_protocol.py",
     "test_parsing_video_subtitle.py",
 ]
 
