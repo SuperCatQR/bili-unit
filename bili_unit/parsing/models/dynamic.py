@@ -292,6 +292,28 @@ class ForwardedDynamic:
 
 @dataclass
 class DynamicPost:
+    """One dynamic-feed entry.
+
+    A dynamic is essentially an *envelope* — for most types the actual body
+    lives in another entity that ``target_ref`` points at:
+
+    - ``DYNAMIC_TYPE_AV`` → ``video:<bvid>`` (full body in ``video_work``);
+      ``text`` is empty because the upstream feed does not include the
+      per-video description (only the title via ``major.title``).
+    - ``DYNAMIC_TYPE_OPUS`` / ``DRAW`` / ``DYNAMIC_TYPE_ARTICLE`` →
+      ``opus:<opus_id>`` (full body in ``opus_post``); ``text`` is empty
+      because the body lives in the linked opus.
+    - ``DYNAMIC_TYPE_FORWARD`` → original target via ``forwarded`` /
+      ``forwarded_ref``; the user's repost caption (if any) is in
+      ``text``, the original poster's caption (if any) is in
+      ``forwarded.text``. For video reposts both are usually empty —
+      that is the upstream truth, not a parsing gap.
+
+    So an empty ``text`` on a non-FORWARD dynamic is normal: open
+    ``target_ref`` to find the content. ``major`` carries whatever
+    summary metadata the listing exposes (title, summary_text, cover).
+    """
+
     _model_name: str = "dynamic_event"
     _schema_version: int = 1
 

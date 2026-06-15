@@ -59,6 +59,7 @@ class SubtitlePage:
     cid: int = 0
     lan: str = ""        # selected default language; "" means no body found
     lan_doc: str = ""
+    is_ai: bool = False  # True iff ``lan`` starts with ``ai-`` (AI-generated)
     segments: list[SubtitleSegment] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -67,6 +68,7 @@ class SubtitlePage:
             "cid": self.cid,
             "lan": self.lan,
             "lan_doc": self.lan_doc,
+            "is_ai": self.is_ai,
             "segments": [s.to_dict() for s in self.segments],
         }
 
@@ -76,11 +78,16 @@ class SubtitlePage:
         segments = [
             SubtitleSegment.from_dict(s) for s in seg_list if isinstance(s, dict)
         ]
+        lan = str(d.get("lan", "") or "")
+        # Legacy v1 JSON has no ``is_ai``; derive it from the ``lan`` prefix
+        # so old persisted data round-trips with the same semantics.
+        is_ai = bool(d.get("is_ai")) if "is_ai" in d else lan.startswith("ai-")
         return cls(
             page_index=int(d.get("page_index", 0) or 0),
             cid=int(d.get("cid", 0) or 0),
-            lan=str(d.get("lan", "") or ""),
+            lan=lan,
             lan_doc=str(d.get("lan_doc", "") or ""),
+            is_ai=is_ai,
             segments=segments,
         )
 
@@ -110,14 +117,18 @@ def _coerce_segments(body: Any) -> list[SubtitleSegment]:
     return out
 
 
-def _select_language(content: list[Any]) -> tuple[str, str, list[SubtitleSegment]]:
+def _select_language(
+    content: list[Any],
+) -> tuple[str, str, bool, list[SubtitleSegment]]:
     """Pick the best language entry from a page's ``content`` array.
 
     Priority (by ``lan`` prefix): zh-CN > zh-Hans > zh-HK > ai-zh > en >
     first non-empty body.
 
-    Returns ``(lan, lan_doc, segments)`` — empty strings + empty list when
-    nothing is usable (every entry has ``_fetch_error`` or empty body).
+    Returns ``(lan, lan_doc, is_ai, segments)`` — empty strings + False +
+    empty list when nothing is usable (every entry has ``_fetch_error`` or
+    empty body). ``is_ai`` is True iff the resolved ``lan`` starts with
+    ``ai-``.
     """
     # Build candidate map: lan -> (lan_doc, segments). Skip _fetch_error and
     # empty bodies — we only want languages with usable content.
@@ -136,16 +147,17 @@ def _select_language(content: list[Any]) -> tuple[str, str, list[SubtitleSegment
         usable.append((lan, lan_doc, segments))
 
     if not usable:
-        return "", "", []
+        return "", "", False, []
 
     # Priority lookup by prefix.
     for prefix in _LANG_PRIORITY:
         for lan, lan_doc, segments in usable:
             if lan.startswith(prefix):
-                return lan, lan_doc, segments
+                return lan, lan_doc, lan.startswith("ai-"), segments
 
     # Fallback: first usable.
-    return usable[0]
+    lan, lan_doc, segments = usable[0]
+    return lan, lan_doc, lan.startswith("ai-"), segments
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +169,7 @@ class VideoSubtitle:
     """Typed representation of subtitle text for a single Bilibili video."""
 
     _model_name: str = "video_subtitle"
-    _schema_version: int = 1
+    _schema_version: int = 2
 
     bvid: str = ""
     pages: list[SubtitlePage] = field(default_factory=list)
@@ -177,6 +189,14 @@ class VideoSubtitle:
     def is_complete(self) -> bool:
         """True iff every page resolved at least one language with a body."""
         return bool(self.pages) and all(p.lan for p in self.pages)
+
+    @property
+    def is_ai_only(self) -> bool:
+        """True iff this video has AT LEAST ONE page and EVERY resolved page is AI-generated.
+
+        False when there are no pages, or when at least one page is human-authored.
+        """
+        return bool(self.pages) and all(p.is_ai for p in self.pages)
 
     @classmethod
     def from_raw(cls, bvid: str, raw: dict) -> VideoSubtitle:
@@ -220,7 +240,7 @@ class VideoSubtitle:
                 if lan and lan not in seen_langs:
                     seen_langs.append(lan)
 
-            lan, lan_doc, segments = _select_language(content)
+            lan, lan_doc, is_ai, segments = _select_language(content)
             if not lan:
                 # No usable language for this page — skip; ``is_complete``
                 # will reflect the gap.
@@ -240,6 +260,7 @@ class VideoSubtitle:
                 cid=cid,
                 lan=lan,
                 lan_doc=lan_doc,
+                is_ai=is_ai,
                 segments=segments,
             ))
 
@@ -259,6 +280,7 @@ class VideoSubtitle:
             "pages": [p.to_dict() for p in self.pages],
             "available_languages": list(self.available_languages),
             "is_complete": self.is_complete,
+            "is_ai_only": self.is_ai_only,
             "_source_refs": [ref.to_dict() for ref in self.source_refs],
             "_cross_refs": self.cross_refs.to_dict(),
         }

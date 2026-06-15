@@ -55,8 +55,10 @@ def test_from_raw_picks_zh_cn_when_present():
     page = obj.pages[0]
     assert page.lan == "zh-CN"
     assert page.lan_doc == "doc-zh-CN"
+    assert page.is_ai is False
     assert [s.content for s in page.segments] == ["你好", "世界"]
     assert obj.is_complete is True
+    assert obj.is_ai_only is False
     # available_languages reflects every body-bearing lang (dedup, in order).
     assert set(obj.available_languages) == {"zh-CN", "en-US"}
     # source / cross refs
@@ -81,6 +83,8 @@ def test_from_raw_lang_priority_ai_zh_beats_en():
     }
     obj = VideoSubtitle.from_raw("BV002", raw)
     assert obj.pages[0].lan == "ai-zh"
+    assert obj.pages[0].is_ai is True
+    assert obj.is_ai_only is True
     assert [s.content for s in obj.pages[0].segments] == ["AI 中"]
 
 
@@ -189,24 +193,164 @@ def test_round_trip_dict():
     d = obj.to_dict()
     # Schema metadata
     assert d["_model_name"] == "video_subtitle"
-    assert d["_schema_version"] == 1
+    assert d["_schema_version"] == 2
     assert d["bvid"] == "BV009"
     assert d["is_complete"] is True
+    assert d["is_ai_only"] is False  # mixed: zh-CN page + ai-zh page
+    # Per-page is_ai propagates into the dict.
+    assert d["pages"][0]["is_ai"] is False  # zh-CN
+    assert d["pages"][1]["is_ai"] is True   # ai-zh
     # Round trip through from_dict
     revived = VideoSubtitle.from_dict(d)
     assert revived.bvid == obj.bvid
     assert revived.is_complete == obj.is_complete
+    assert revived.is_ai_only == obj.is_ai_only
     assert len(revived.pages) == len(obj.pages)
     for p1, p2 in zip(revived.pages, obj.pages, strict=True):
         assert p1.page_index == p2.page_index
         assert p1.cid == p2.cid
         assert p1.lan == p2.lan
+        assert p1.is_ai == p2.is_ai
         assert [s.content for s in p1.segments] == [s.content for s in p2.segments]
     assert revived.cross_refs.bvid == "BV009"
 
 
 def test_parser_alias():
     assert PARSER is VideoSubtitle
+
+
+# ---------------------------------------------------------------------------
+# is_ai flag — per-page detection, top-level is_ai_only, v1 migration
+# ---------------------------------------------------------------------------
+
+def test_subtitle_page_is_ai_true_for_ai_zh():
+    raw = {
+        "subtitle": [
+            {"page_index": 0, "cid": 1, "content": [
+                _make_lang_entry("ai-zh", [_seg(0.0, 1.0, "AI 字幕")]),
+            ]},
+        ],
+    }
+    obj = VideoSubtitle.from_raw("BV_AI1", raw)
+    assert len(obj.pages) == 1
+    assert obj.pages[0].lan == "ai-zh"
+    assert obj.pages[0].is_ai is True
+
+
+def test_subtitle_page_is_ai_false_for_zh_cn():
+    raw = {
+        "subtitle": [
+            {"page_index": 0, "cid": 1, "content": [
+                _make_lang_entry("zh-CN", [_seg(0.0, 1.0, "人工")]),
+            ]},
+        ],
+    }
+    obj = VideoSubtitle.from_raw("BV_HUM1", raw)
+    assert len(obj.pages) == 1
+    assert obj.pages[0].lan == "zh-CN"
+    assert obj.pages[0].is_ai is False
+
+
+def test_video_subtitle_is_ai_only_when_all_pages_ai():
+    raw = {
+        "subtitle": [
+            {"page_index": 0, "cid": 1, "content": [
+                _make_lang_entry("ai-zh", [_seg(0.0, 1.0, "p0")]),
+            ]},
+            {"page_index": 1, "cid": 2, "content": [
+                _make_lang_entry("ai-en", [_seg(0.0, 1.0, "p1")]),
+            ]},
+        ],
+    }
+    obj = VideoSubtitle.from_raw("BV_AI_ALL", raw)
+    assert len(obj.pages) == 2
+    assert all(p.is_ai for p in obj.pages)
+    assert obj.is_ai_only is True
+
+
+def test_video_subtitle_is_ai_only_false_when_mixed():
+    raw = {
+        "subtitle": [
+            {"page_index": 0, "cid": 1, "content": [
+                _make_lang_entry("zh-CN", [_seg(0.0, 1.0, "human")]),
+            ]},
+            {"page_index": 1, "cid": 2, "content": [
+                _make_lang_entry("ai-zh", [_seg(0.0, 1.0, "ai")]),
+            ]},
+        ],
+    }
+    obj = VideoSubtitle.from_raw("BV_MIX", raw)
+    assert len(obj.pages) == 2
+    assert obj.is_ai_only is False
+
+
+def test_video_subtitle_is_ai_only_false_when_no_pages():
+    raw = {"subtitle": []}
+    obj = VideoSubtitle.from_raw("BV_EMPTY", raw)
+    assert obj.pages == []
+    assert obj.is_ai_only is False
+
+
+def test_video_subtitle_to_dict_emits_is_ai_only():
+    raw = {
+        "subtitle": [
+            {"page_index": 0, "cid": 1, "content": [
+                _make_lang_entry("ai-zh", [_seg(0.0, 1.0, "ai")]),
+            ]},
+        ],
+    }
+    obj = VideoSubtitle.from_raw("BV_DICT_AI", raw)
+    d = obj.to_dict()
+    assert "is_ai_only" in d
+    assert d["is_ai_only"] is True
+
+    # And the negative case: a human-authored page → False in the dict.
+    raw_human = {
+        "subtitle": [
+            {"page_index": 0, "cid": 1, "content": [
+                _make_lang_entry("zh-CN", [_seg(0.0, 1.0, "human")]),
+            ]},
+        ],
+    }
+    d_h = VideoSubtitle.from_raw("BV_DICT_H", raw_human).to_dict()
+    assert d_h["is_ai_only"] is False
+
+
+def test_video_subtitle_v1_dict_migration():
+    """A v1 dict (no per-page ``is_ai``) → ``from_dict`` infers it from
+    the ``lan`` prefix so legacy persisted data round-trips."""
+    legacy = {
+        "_model_name": "video_subtitle",
+        "_schema_version": 1,
+        "bvid": "BV_LEGACY",
+        "pages": [
+            {
+                "page_index": 0, "cid": 1,
+                "lan": "zh-CN", "lan_doc": "中文",
+                # no "is_ai" key
+                "segments": [{"start": 0.0, "end": 1.0, "content": "human"}],
+            },
+            {
+                "page_index": 1, "cid": 2,
+                "lan": "ai-zh", "lan_doc": "AI 中文",
+                # no "is_ai" key
+                "segments": [{"start": 0.0, "end": 1.0, "content": "ai"}],
+            },
+        ],
+        "available_languages": ["zh-CN", "ai-zh"],
+        "is_complete": True,
+        # legacy v1 had no is_ai_only; from_dict should not require it.
+        "_source_refs": [],
+        "_cross_refs": {},
+    }
+    obj = VideoSubtitle.from_dict(legacy)
+    assert len(obj.pages) == 2
+    assert obj.pages[0].lan == "zh-CN"
+    assert obj.pages[0].is_ai is False
+    assert obj.pages[1].lan == "ai-zh"
+    assert obj.pages[1].is_ai is True
+    # Top-level derived property still works on migrated data.
+    assert obj.is_ai_only is False
 
 
 # ---------------------------------------------------------------------------
