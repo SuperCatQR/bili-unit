@@ -270,6 +270,10 @@ class Query:
         Mirrors :meth:`Runner._collect_failed_item_ids`; lives here as a fallback
         for tasks whose persisted form predates the field. See ``TaskDTO``
         docstring for the encoding.
+
+        Item-level errors are reconciled against the data store: an
+        item that has since written a SUCCESS record is dropped, so a
+        retry-to-success doesn't leave a stale entry behind.
         """
         ids: set[str] = set()
         try:
@@ -282,6 +286,19 @@ class Query:
             if entry.item_progress is not None
         }
 
+        # Pre-load successful item keys per item-level endpoint.
+        succeeded_items: set[tuple[str, str]] = set()
+        for ep in item_level_eps:
+            try:
+                rows = await self._data.list_prefix(f"uid:{uid}:fetch:{ep}:")
+            except Exception:  # noqa: BLE001
+                continue
+            for _, v in rows:
+                if isinstance(v, dict) and v.get("status") == "SUCCESS":
+                    iid = v.get("item_id")
+                    if iid:
+                        succeeded_items.add((ep, str(iid)))
+
         for err in errors:
             ep = err.endpoint
             if not ep:
@@ -289,6 +306,8 @@ class Query:
             detail = err.detail or {}
             item_id = detail.get("item_id") if isinstance(detail, dict) else None
             if item_id:
+                if (ep, str(item_id)) in succeeded_items:
+                    continue
                 ids.add(f"{ep}:{item_id}")
             else:
                 ids.add(ep)

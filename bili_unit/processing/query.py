@@ -138,20 +138,27 @@ class ProcessingQuery:
         )
 
     async def _derive_failed_item_ids(self, uid: int) -> list[str]:
-        """Recompute ``failed_item_ids`` from the error store on the fly.
+        """Recompute ``failed_item_ids`` from the data store on the fly.
 
         Used as a fallback when the persisted task value predates the field.
-        Mirrors :meth:`ProcessingRunner._collect_failed_item_ids`.
+        Mirrors :meth:`ProcessingRunner._collect_failed_item_ids`: reads
+        current item status from the data store (authoritative) rather
+        than the error store (forensic log).
         """
+        prefix = f"uid:{uid}:proc:"
         try:
-            errors = await self._error.list_by_uid(uid)
+            rows = await self._data.list_prefix(prefix)
         except Exception:  # noqa: BLE001
             return []
         ids: set[str] = set()
-        for err in errors:
-            if err.item_id is None:
+        for _, v in rows:
+            if not isinstance(v, dict):
                 continue
-            pipeline = err.pipeline or "unknown"
-            item_type = err.item_type or "unknown"
-            ids.add(f"{pipeline}:{item_type}:{err.item_id}")
+            if v.get("status") != ProcessingItemStatus.FAILED.value:
+                continue
+            pipeline = v.get("pipeline") or "unknown"
+            item_type = v.get("item_type") or "unknown"
+            item_id = v.get("item_id") or ""
+            if item_id:
+                ids.add(f"{pipeline}:{item_type}:{item_id}")
         return sorted(ids)

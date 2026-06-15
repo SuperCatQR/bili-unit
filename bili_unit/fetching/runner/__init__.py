@@ -378,10 +378,16 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
           * uid-level endpoint failure → ``"endpoint"``.
           * item-level fan-out failure → ``"endpoint:item_id"``.
 
-        The error store carries the authoritative ``(endpoint, item_id)`` pairs
-        for FAILED items; uid-level endpoints contribute the bare endpoint name
-        whenever their entry has a ``last_error_id``. Order is deterministic
-        (stable sort on the joined string) so callers get a predictable diff.
+        For item-level entries an error record means "this item failed at
+        least once"; the *current* truth is whether a SUCCESS record now
+        exists in the data store (item-level fan-out only writes a
+        per-item record on success). So we cross-check each errored
+        item against ``uid:{uid}:fetch:{ep}:{item_id}`` and drop items
+        that have since succeeded — without this filter, a retry-to-success
+        leaves the previous error record causing stale ``failed_item_ids``.
+
+        Order is deterministic (stable sort on the joined string) so callers
+        get a predictable diff.
         """
         ids: set[str] = set()
         try:
@@ -394,6 +400,20 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
             if entry.item_progress is not None
         }
 
+        # Pre-load successful item keys once per item-level endpoint to
+        # avoid one data store get per error record.
+        succeeded_items: set[tuple[str, str]] = set()
+        for ep in item_level_eps:
+            try:
+                rows = await self._data.list_prefix(f"uid:{uid}:fetch:{ep}:")
+            except Exception:  # noqa: BLE001
+                continue
+            for _, v in rows:
+                if isinstance(v, dict) and v.get("status") == "SUCCESS":
+                    iid = v.get("item_id")
+                    if iid:
+                        succeeded_items.add((ep, str(iid)))
+
         for err in errors:
             ep = err.endpoint
             if not ep:
@@ -401,6 +421,10 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
             detail = err.detail or {}
             item_id = detail.get("item_id") if isinstance(detail, dict) else None
             if item_id:
+                # If this item later succeeded, skip — the SUCCESS record
+                # supersedes the historical error.
+                if (ep, str(item_id)) in succeeded_items:
+                    continue
                 ids.add(f"{ep}:{item_id}")
             elif ep in item_level_eps:
                 # Item-level endpoint with no item_id detail — treat as

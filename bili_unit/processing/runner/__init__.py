@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from .. import (
     AudioError,
+    ProcessingItemStatus,
     ProcessingPipelineStatus,
     ProcessingTaskStatus,
 )
@@ -224,23 +225,34 @@ class ProcessingRunner(_AudioMixin):
         await self._data.put(_task_key(tv.uid), tv.to_dict())
 
     async def _collect_failed_item_ids(self, uid: int) -> list[str]:
-        """Aggregate ``failed_item_ids`` from the processing error store.
+        """Aggregate ``failed_item_ids`` from the data store.
 
-        Entries are encoded as ``"pipeline:item_type:item_id"``; missing
-        components fall back to ``"unknown"`` so a malformed record never
-        crashes task finalisation. Order is sorted for stability.
+        Entries are encoded as ``"pipeline:item_type:item_id"``; the data
+        store carries the *current* item status (latest write wins), so
+        an item that failed and was later retried to SUCCESS no longer
+        surfaces here even though forensic error records remain in the
+        error log. Reading from the data store instead of the error
+        store is the fix for stale ``failed_item_ids`` after a
+        retry-to-success on a subsequent run.
+
+        Order is sorted for stability.
         """
+        prefix = f"uid:{uid}:proc:"
         try:
-            errors = await self._error.list_by_uid(uid)
-        except Exception:  # noqa: BLE001 — never fail task save on error-log read
+            rows = await self._data.list_prefix(prefix)
+        except Exception:  # noqa: BLE001 — never fail task save on data read
             return []
         ids: set[str] = set()
-        for err in errors:
-            if err.item_id is None:
+        for _, v in rows:
+            if not isinstance(v, dict):
                 continue
-            pipeline = err.pipeline or "unknown"
-            item_type = err.item_type or "unknown"
-            ids.add(f"{pipeline}:{item_type}:{err.item_id}")
+            if v.get("status") != ProcessingItemStatus.FAILED.value:
+                continue
+            pipeline = v.get("pipeline") or "unknown"
+            item_type = v.get("item_type") or "unknown"
+            item_id = v.get("item_id") or ""
+            if item_id:
+                ids.add(f"{pipeline}:{item_type}:{item_id}")
         return sorted(ids)
 
     async def _write_progress(

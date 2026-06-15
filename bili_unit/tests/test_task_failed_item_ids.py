@@ -100,6 +100,53 @@ async def test_fetching_dto_failed_item_ids_includes_item_level(fetching_stores)
 
 
 @pytest.mark.asyncio
+async def test_fetching_dto_failed_item_ids_drops_retry_to_success(fetching_stores):
+    """Regression: an item-level fetch that failed earlier but later
+    succeeded gets a SUCCESS data-store record. The historical error
+    record must NOT cause it to surface in ``failed_item_ids``."""
+    fd, fe = fetching_stores
+    uid = 1010
+    bvid_ok = "BV1retry"
+    bvid_bad = "BV1bad"
+
+    # ok one: error happened then a SUCCESS record was written.
+    await fe.record(
+        Http412Error("rate limited (since cleared)"),
+        uid=uid, endpoint="video_detail", retryable=True,
+        detail={"item_id": bvid_ok},
+    )
+    await fd.put(f"uid:{uid}:fetch:video_detail:{bvid_ok}", {
+        "uid": uid, "endpoint": "video_detail", "item_id": bvid_ok,
+        "status": "SUCCESS", "raw_payload": {"info": {"bvid": bvid_ok}},
+    })
+    # bad one: error only, no SUCCESS record.
+    await fe.record(
+        Http412Error("still failing"),
+        uid=uid, endpoint="video_detail", retryable=False,
+        detail={"item_id": bvid_bad},
+    )
+
+    tv = TaskValue(
+        uid=uid,
+        status=TaskStatus.PARTIAL,
+        endpoints={
+            "video_detail": EndpointEntry(
+                status=EndpointStatus.PARTIAL_ITEM,
+                item_progress={"total": 2, "completed": 1, "failed": 1},
+            ),
+        },
+        created_at=0, updated_at=0,
+    )
+    await fd.put(_fetch_task_key(uid), tv.to_dict())
+
+    qry = FetchingQuery(fd, fe)
+    dto = await qry.get_task(uid)
+    assert dto is not None
+    # Only the still-failing item appears; the retry-to-success one is gone.
+    assert dto.failed_item_ids == [f"video_detail:{bvid_bad}"]
+
+
+@pytest.mark.asyncio
 async def test_fetching_dto_failed_item_ids_uid_level_endpoint(fetching_stores):
     """user_info uid-level FAILED → DTO carries ``user_info`` (no item_id)."""
     fd, fe = fetching_stores
@@ -259,9 +306,9 @@ async def processing_stores(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_processing_dto_failed_item_ids_uses_error_store(processing_stores):
-    """A failed audio bvid recorded in the error store surfaces as
-    ``audio:transcription:BV1abc`` in the DTO."""
+async def test_processing_dto_failed_item_ids_uses_data_store(processing_stores):
+    """A failed audio bvid (FAILED status in data store + matching error
+    record) surfaces as ``audio:transcription:BV1abc`` in the DTO."""
     pd, pe = processing_stores
     uid = 3001
     bvid = "BV1abc"
@@ -284,7 +331,12 @@ async def test_processing_dto_failed_item_ids_uses_error_store(processing_stores
     )
     await pd.put(_proc_task_key(uid), tv.to_dict())
 
-    # Record the matching error.
+    # Production runner writes both a data-store FAILED record AND an error
+    # record on terminal failure; mirror that so the DTO can reconcile.
+    await pd.put(f"uid:{uid}:proc:audio:{bvid}", {
+        "uid": uid, "pipeline": "audio", "item_type": "transcription",
+        "item_id": bvid, "status": "FAILED",
+    })
     await pe.record(
         RuntimeError("download bombed"),
         uid=uid, retryable=False,
@@ -298,17 +350,75 @@ async def test_processing_dto_failed_item_ids_uses_error_store(processing_stores
 
 
 @pytest.mark.asyncio
+async def test_processing_dto_failed_item_ids_drops_retry_to_success(processing_stores):
+    """Regression: an item that failed earlier but later succeeded is
+    SUCCESS in the data store. Even though the error store still carries
+    the historical retry-attempt records, the DTO must NOT list it."""
+    pd, pe = processing_stores
+    uid = 3010
+    bvid = "BV1retry"
+
+    tv = ProcessingTaskValue(
+        uid=uid,
+        status=ProcessingTaskStatus.SUCCESS,
+        pipelines={
+            "audio": PipelineEntry(
+                status=ProcessingPipelineStatus.SUCCESS,
+                items={"transcription": {
+                    "total": 1, "completed": 1, "failed": 0, "skipped": 0,
+                }},
+            ),
+        },
+        created_at=0, updated_at=0,
+    )
+    await pd.put(_proc_task_key(uid), tv.to_dict())
+
+    # Two retryable error records persist (forensic log) — the actual
+    # current state is SUCCESS in the data store after the 3rd attempt.
+    await pe.record(
+        RuntimeError("ASR 401 attempt 1"),
+        uid=uid, retryable=True,
+        pipeline="audio", item_type="transcription", item_id=bvid,
+    )
+    await pe.record(
+        RuntimeError("ASR 401 attempt 2"),
+        uid=uid, retryable=True,
+        pipeline="audio", item_type="transcription", item_id=bvid,
+    )
+    await pd.put(f"uid:{uid}:proc:audio:{bvid}", {
+        "uid": uid, "pipeline": "audio", "item_type": "transcription",
+        "item_id": bvid, "status": "SUCCESS",
+        "result": {"bvid": bvid, "pages": []},
+    })
+
+    qry = ProcessingQuery(data=pd, error=pe)
+    dto = await qry.get_task(uid)
+    assert dto is not None
+    assert dto.failed_item_ids == []
+
+
+@pytest.mark.asyncio
 async def test_processing_dto_failed_item_ids_persisted_via_runner(processing_stores):
-    """``ProcessingRunner._collect_failed_item_ids`` aggregates the error store
-    so the runner can persist the list at task finalisation."""
+    """``ProcessingRunner._collect_failed_item_ids`` aggregates from the
+    data store (current truth) so a retry-to-success on a later run
+    drops out automatically."""
     from bili_unit._env import BiliSettings
     from bili_unit.processing.runner import ProcessingRunner
 
     pd, pe = processing_stores
     uid = 3002
 
-    # Two failed bvids + one with no item_id (must be skipped — would otherwise
-    # surface as ``audio:transcription:None``).
+    # Two FAILED items in data store — these are what currently show as
+    # failed. Error store still has matching records (and one extra
+    # uid-level record with no item_id, which must not surface).
+    await pd.put(f"uid:{uid}:proc:audio:BVa", {
+        "uid": uid, "pipeline": "audio", "item_type": "transcription",
+        "item_id": "BVa", "status": "FAILED",
+    })
+    await pd.put(f"uid:{uid}:proc:audio:BVb", {
+        "uid": uid, "pipeline": "audio", "item_type": "transcription",
+        "item_id": "BVb", "status": "FAILED",
+    })
     await pe.record(
         RuntimeError("err A"), uid=uid, retryable=False,
         pipeline="audio", item_type="transcription", item_id="BVa",
@@ -334,3 +444,49 @@ async def test_processing_dto_failed_item_ids_persisted_via_runner(processing_st
 
     ids = await runner._collect_failed_item_ids(uid)
     assert ids == ["audio:transcription:BVa", "audio:transcription:BVb"]
+
+
+@pytest.mark.asyncio
+async def test_processing_runner_collect_drops_retry_to_success(processing_stores):
+    """Runner-side regression: same as the DTO test but exercising
+    :meth:`ProcessingRunner._collect_failed_item_ids` directly. A
+    SUCCESS-now item with historical error records is NOT collected."""
+    from bili_unit._env import BiliSettings
+    from bili_unit.processing.runner import ProcessingRunner
+
+    pd, pe = processing_stores
+    uid = 3011
+    bvid_ok = "BV1ok"
+    bvid_bad = "BV1bad"
+
+    # ok one: now SUCCESS in data store, but errors remain.
+    await pd.put(f"uid:{uid}:proc:audio:{bvid_ok}", {
+        "uid": uid, "pipeline": "audio", "item_type": "transcription",
+        "item_id": bvid_ok, "status": "SUCCESS",
+    })
+    await pe.record(
+        RuntimeError("transient 401"), uid=uid, retryable=True,
+        pipeline="audio", item_type="transcription", item_id=bvid_ok,
+    )
+    # bad one: still FAILED in data store + error.
+    await pd.put(f"uid:{uid}:proc:audio:{bvid_bad}", {
+        "uid": uid, "pipeline": "audio", "item_type": "transcription",
+        "item_id": bvid_bad, "status": "FAILED",
+    })
+    await pe.record(
+        RuntimeError("permanent"), uid=uid, retryable=False,
+        pipeline="audio", item_type="transcription", item_id=bvid_bad,
+    )
+
+    s = BiliSettings(
+        bili_processing_data_dir=str(pd.base) if hasattr(pd, "base") else "",
+        bili_processing_error_dir=str(pe._base),
+        bili_processing_temp_dir="/tmp/proc",
+    )
+    runner = ProcessingRunner(
+        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
+        fetching_query=MagicMock(), settings=s,
+    )
+
+    ids = await runner._collect_failed_item_ids(uid)
+    assert ids == [f"audio:transcription:{bvid_bad}"]
