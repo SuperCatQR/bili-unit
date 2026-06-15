@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .content_post import CrossRefs, SourceRef, content_key_for_refs
+from ._refs import CrossRefs, SourceRef, content_key_for_refs
 
 logger = logging.getLogger("bili.parsing.models.dynamic")
 

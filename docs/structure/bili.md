@@ -68,13 +68,13 @@ runner       根据任务状态与错误状态编排抓取执行 / 重试
 ### 解析
 
 ```text
-models       5 个 legacy typed dataclass（UpProfile / VideoDetail / Article / OpusPost / DynamicPost）+ 1 个 ContentPost（Article / Opus / Dynamic 的统一内容视图）；from_raw() / to_dict() / from_dict() + 图片协议。processing 层通过 ContentPost 统一消费 article / opus / dynamic 类内容，legacy 三类 dataclass 保留作为 ContentPost candidate 来源。
+models       6 个 typed dataclass（UpProfile / VideoDetail / VideoSubtitle / Article / OpusPost / DynamicPost）；from_raw() / to_dict() / from_dict() + 图片协议。跨 model 共享的 SourceRef / CrossRefs 落在 models/_refs.py。
 _images      ImageDownloader；aiohttp 并发下载 + skip-existing + 失败隔离
 env          保存解析配置；存储目录、图片并发数、超时
 keys         解析层 key 生成（uid:{uid}:task / uid:{uid}:parse:{model}:{item_id}）
 data         ParsingDataStore；JsonKVStore wrapper + 原子更新 helper
 query        ParsingQuery；读取 typed objects 的只读视图
-command      ParsingCommand；parse_uid() 编排 6 个 model（5 legacy + content_post）+ 可选图片下载
+command      ParsingCommand；parse_uid() 编排 6 个 model + 可选图片下载
 ```
 
 ### 处理

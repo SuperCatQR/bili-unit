@@ -82,21 +82,6 @@ PARSING_SPECS: tuple[ParsingSpec, ...] = (
         required_endpoints=("dynamics",),
         priority=50,
     ),
-    ParsingSpec(
-        name="content_post",
-        model="content_post",
-        materializer_handler="_parse_content_posts",
-        source_endpoints=(
-            "articles",
-            "article_detail",
-            "article_list_detail",
-            "opus",
-            "opus_detail",
-            "dynamics",
-        ),
-        required_endpoints=(),
-        priority=60,
-    ),
 )
 
 PARSING_SPEC_REGISTRY = MappingProxyType({spec.name: spec for spec in PARSING_SPECS})

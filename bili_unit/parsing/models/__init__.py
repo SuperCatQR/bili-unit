@@ -20,7 +20,6 @@ _PARSER_NAMES: dict[str, str] = {
     "article_post": ".models.article",
     "opus_post": ".models.opus",
     "dynamic_event": ".models.dynamic",
-    "content_post": ".models.content_post",
 }
 
 

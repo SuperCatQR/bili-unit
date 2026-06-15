@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from .content_post import CrossRefs, SourceRef
+from ._refs import CrossRefs, SourceRef
 
 logger = logging.getLogger("bili.parsing.models.up_profile")
 

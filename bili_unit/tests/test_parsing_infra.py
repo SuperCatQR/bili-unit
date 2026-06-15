@@ -29,18 +29,17 @@ def test_parsing_specs_register_existing_models():
         "article_post",
         "opus_post",
         "dynamic_event",
-        "content_post",
     )
 
     handlers = {spec.name: spec.materializer_handler for spec in iter_specs()}
     assert set(handlers) == set(MODEL_ORDER)
     assert handlers["user_profile"] == "_parse_user_profile"
-    assert handlers["content_post"] == "_parse_content_posts"
+    assert handlers["dynamic_event"] == "_parse_dynamic_events"
     assert handlers["video_subtitle"] == "_parse_video_subtitle"
     assert all(handler.startswith("_parse_") for handler in handlers.values())
     assert get_spec("user_profile").singleton is True
     assert isinstance(get_spec("video_work").parser_cls().__name__, str)
-    assert get_spec("content_post").parser_cls().__name__ == "ContentPost"
+    assert get_spec("dynamic_event").parser_cls().__name__ == "DynamicPost"
 
 
 @pytest.mark.asyncio
@@ -167,157 +166,3 @@ async def test_incremental_video_work_skips_existing_items(parsing_store):
     assert old_item["title"] == "old title"
     assert new_item is not None
     assert new_item["title"] == "BVnew fresh"
-
-
-@pytest.mark.asyncio
-async def test_content_post_materializer_merges_article_opus_dynamic(parsing_store):
-    uid = 7373
-
-    async def get_endpoint(_uid: int, endpoint: str) -> EndpointDTO | None:
-        payloads = {
-            "articles": {
-                "pages": [
-                    {
-                        "articles": [
-                            {
-                                "id": 100,
-                                "title": "Article list title",
-                                "summary": "Article list summary",
-                                "ctime": 1700000000,
-                                "image_urls": ["article-list.jpg"],
-                            }
-                        ]
-                    }
-                ]
-            },
-            "opus": {
-                "pages": [
-                    {
-                        "items": [
-                            {
-                                "opus_id": "200",
-                                "title": "Opus list title",
-                                "summary": "Opus list summary",
-                                "pub_time": 1700000100,
-                                "modules": {},
-                            }
-                        ]
-                    }
-                ]
-            },
-            "dynamics": {
-                "pages": [
-                    {
-                        "items": [
-                            {
-                                "id_str": "dyn_article",
-                                "type": "DYNAMIC_TYPE_ARTICLE",
-                                "modules": {
-                                    "module_dynamic": {
-                                        "desc": {"text": "Article dynamic text"},
-                                        "major": {
-                                            "type": "MAJOR_TYPE_ARTICLE",
-                                            "article": {
-                                                "id": 100,
-                                                "title": "Dynamic article title",
-                                            },
-                                        },
-                                    }
-                                },
-                            },
-                            {
-                                "id_str": "dyn_draw",
-                                "type": "DYNAMIC_TYPE_DRAW",
-                                "modules": {
-                                    "module_dynamic": {
-                                        "desc": {"text": "Draw dynamic text"},
-                                        "major": {
-                                            "type": "MAJOR_TYPE_DRAW",
-                                            "draw": {"items": [{"src": "draw.jpg"}]},
-                                        },
-                                    }
-                                },
-                            },
-                        ]
-                    }
-                ]
-            },
-        }
-        payload = payloads.get(endpoint)
-        if payload is None:
-            return None
-        return EndpointDTO(
-            uid=_uid,
-            endpoint=endpoint,
-            status=EndpointStatus.SUCCESS,
-            available=True,
-            raw_payload=payload,
-        )
-
-    async def list_fanout_payloads(_uid: int, endpoint: str) -> dict[str, dict]:
-        return {
-            "article_detail": {
-                "100": {
-                    "info": {"id": 100, "title": "Article detail title"},
-                    "markdown": "# Article",
-                    "content_json": [{"text": "Article body"}],
-                }
-            },
-            "article_list_detail": {},
-            "opus_detail": {
-                "200": {
-                    "info": {"item": {"title": "Opus detail title"}},
-                    "markdown": "# Opus",
-                    "images": [{"url": "opus-detail.jpg"}],
-                }
-            },
-        }[endpoint]
-
-    fetch_query = MagicMock()
-    fetch_query.get_endpoint = AsyncMock(side_effect=get_endpoint)
-    fetch_query.list_fanout_payloads = AsyncMock(side_effect=list_fanout_payloads)
-    materializer = ParsingMaterializer(parsing_store, fetch_query)
-
-    count = await materializer.parse_model(uid, "content_post", "full")
-
-    assert count == 3
-    query = ParsingQuery(parsing_store)
-    rows = await query.list_items(uid, "content_post")
-    by_key = {row["content_key"]: row for row in rows}
-    assert set(by_key) == {"article:100", "opus:200", "dynamic:dyn_draw"}
-    assert by_key["article:100"]["title"] == "Article detail title"
-    assert by_key["article:100"]["text"] == "Article body"
-    assert by_key["article:100"]["_cross_refs"]["dynamic_id"] == "dyn_article"
-    assert by_key["opus:200"]["title"] == "Opus detail title"
-    assert by_key["dynamic:dyn_draw"]["images"] == ["draw.jpg"]
-
-
-@pytest.mark.asyncio
-async def test_incremental_content_post_skips_existing_item(parsing_store):
-    uid = 8383
-    await parsing_store.put(
-        _item_key(uid, "content_post", "article~100"),
-        {"content_key": "article:100", "title": "old"},
-    )
-
-    fetch_query = MagicMock()
-    fetch_query.get_endpoint = AsyncMock(
-        return_value=EndpointDTO(
-            uid=uid,
-            endpoint="articles",
-            status=EndpointStatus.SUCCESS,
-            available=True,
-            raw_payload={
-                "pages": [{"articles": [{"id": 100, "title": "new"}]}],
-            },
-        ),
-    )
-    fetch_query.list_fanout_payloads = AsyncMock(return_value={})
-    materializer = ParsingMaterializer(parsing_store, fetch_query)
-
-    count = await materializer.parse_model(uid, "content_post", "incremental")
-
-    assert count == 0
-    stored = await parsing_store.get(_item_key(uid, "content_post", "article~100"))
-    assert stored is not None
-    assert stored["title"] == "old"
