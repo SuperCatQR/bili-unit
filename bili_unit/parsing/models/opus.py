@@ -28,6 +28,56 @@ def _str_or_empty(v: Any) -> str:
     return str(v)
 
 
+def _url_from_value(v: Any) -> str:
+    """Extract a URL string from a B站 image-shaped field.
+
+    The listing payload occasionally returns image-shaped fields as either a
+    plain URL string or as ``{"url": ..., "width": ..., "height": ...}``.
+    Fall back to ``""`` for unrecognised shapes — never ``str(dict)``.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        u = v.get("url")
+        if isinstance(u, str) and u:
+            return u
+        return ""
+    return ""
+
+
+def _strip_yaml_frontmatter(md: str) -> str:
+    """Drop a leading ``---\\n...\\n---`` YAML frontmatter block from ``md``.
+
+    ``bilibili-api``'s ``Opus.markdown()`` prepends a giant frontmatter that
+    dumps the raw ``modules`` dict (avatar layers, vip badges, layer_config,
+    container_size...).  On real opus posts this frontmatter is ~90% of the
+    payload — strip it so the stored markdown is just the body.
+
+    Defensive: if ``md`` doesn't start with ``---\\n`` or no closing ``---``
+    is found, return ``md`` unchanged (avoids truncating content that just
+    happens to start with ``---``).
+    """
+    if not md or not md.startswith("---\n"):
+        return md
+    # Look for the closing ``---`` on its own line (followed by ``\n`` or EOF).
+    # Search starts after the opening ``---\n`` so we can't match it as the close.
+    rest = md[4:]
+    idx = rest.find("\n---\n")
+    end: int
+    if idx != -1:
+        end = 4 + idx + len("\n---\n")
+    elif rest.endswith("\n---"):
+        end = 4 + len(rest)
+    else:
+        # No closing fence — treat the leading ``---`` as content, leave alone.
+        return md
+    body = md[end:]
+    # Strip leading blank lines after the closing fence.
+    return body.lstrip("\n")
+
+
 def _modules_dict(raw: Any) -> dict:
     """Normalise the modules block to a dict.
 
@@ -98,6 +148,42 @@ def _extract_opus_pic_urls(modules: dict) -> list[str]:
         return []
 
 
+_IMAGE_WHITELIST = ("width", "height")
+
+
+def _merge_images(
+    detail_images: list[dict],
+    listing_pic_urls: list[str],
+) -> list[dict]:
+    """Merge detail-endpoint images with listing pic URLs.
+
+    Detail wins (it carries width/height); listing pics fill in only if
+    detail didn't supply that URL.  Each entry is whitelisted to
+    ``{url, width, height}`` — unknown keys are dropped so the stored
+    payload stays small.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for img in detail_images:
+        if not isinstance(img, dict):
+            continue
+        url = img.get("url")
+        if not isinstance(url, str) or not url or url in seen:
+            continue
+        entry: dict[str, Any] = {"url": url}
+        for k in _IMAGE_WHITELIST:
+            if k in img:
+                entry[k] = img[k]
+        out.append(entry)
+        seen.add(url)
+    for url in listing_pic_urls:
+        if not isinstance(url, str) or not url or url in seen:
+            continue
+        out.append({"url": url})
+        seen.add(url)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Sub-dataclasses
 # ---------------------------------------------------------------------------
@@ -153,7 +239,7 @@ class OpusStats:
 @dataclass
 class OpusPost:
     _model_name: str = "opus_post"
-    _schema_version: int = 1
+    _schema_version: int = 2
 
     id: str = ""
     title: str = ""
@@ -162,11 +248,12 @@ class OpusPost:
     jump_url: str = ""
     stats: OpusStats = field(default_factory=OpusStats)
     ctime: int | None = None
-    list_images: list[str] = field(default_factory=list)
     markdown: str = ""
-    detail_images: list[dict] = field(default_factory=list)
+    # Merged image list. Each entry: {url, width?, height?, local_path?}.
+    # Detail-endpoint images win over listing pics; cover stays separate
+    # because cover semantics differ.
+    images: list[dict] = field(default_factory=list)
     cover_local: str = ""
-    image_locals: list[str] = field(default_factory=list)
     source_refs: list[SourceRef] = field(default_factory=list)
     cross_refs: CrossRefs = field(default_factory=CrossRefs)
 
@@ -204,8 +291,8 @@ class OpusPost:
         # Normalise modules
         modules = _modules_dict(list_item.get("modules"))
 
-        # Cover and jump_url
-        cover = _str_or_empty(list_item.get("cover"))
+        # Cover: tolerate both string and {url, width, height} shapes.
+        cover = _url_from_value(list_item.get("cover"))
         jump_url = _str_or_empty(list_item.get("jump_url"))
 
         # Title: prefer list_item, fallback to ""
@@ -215,9 +302,6 @@ class OpusPost:
         summary = _str_or_empty(list_item.get("summary"))
         if not summary:
             summary = _extract_opus_summary_text(modules)
-
-        # List images from modules
-        list_images = _extract_opus_pic_urls(modules)
 
         # Stats
         stats = OpusStats.from_raw(list_item.get("stats"))
@@ -239,12 +323,14 @@ class OpusPost:
         if detail and isinstance(detail, dict):
             md = detail.get("markdown")
             if isinstance(md, str):
-                markdown = md
+                markdown = _strip_yaml_frontmatter(md)
             di = detail.get("images")
             if isinstance(di, list):
-                detail_images = [
-                    img for img in di if isinstance(img, dict)
-                ]
+                detail_images = [img for img in di if isinstance(img, dict)]
+
+        # Build merged images list. Detail wins; fall back to listing pics.
+        # Whitelist keys to {url, width, height} — drop anything unknown.
+        images = _merge_images(detail_images, _extract_opus_pic_urls(modules))
 
         source_refs = [SourceRef("opus", opus_id)]
         if detail and isinstance(detail, dict):
@@ -258,9 +344,8 @@ class OpusPost:
             jump_url=jump_url,
             stats=stats,
             ctime=ctime,
-            list_images=list_images,
             markdown=markdown,
-            detail_images=detail_images,
+            images=images,
             source_refs=source_refs,
             cross_refs=CrossRefs(opus_id=opus_id),
         )
@@ -280,11 +365,9 @@ class OpusPost:
             "stats": self.stats.to_dict(),
             "ctime": self.ctime,
             "pub_time": self.ctime,
-            "list_images": list(self.list_images),
             "markdown": self.markdown,
-            "detail_images": [dict(d) for d in self.detail_images],
+            "images": [dict(img) for img in self.images],
             "cover_local": self.cover_local,
-            "image_locals": list(self.image_locals),
             "is_complete": self.is_complete,
             "_source_refs": [ref.to_dict() for ref in self.source_refs],
             "_cross_refs": self.cross_refs.to_dict(),
@@ -295,10 +378,34 @@ class OpusPost:
         stats_d = d.get("stats")
         stats = OpusStats.from_dict(stats_d) if isinstance(stats_d, dict) else OpusStats()
 
-        detail_images_raw = d.get("detail_images", [])
-        detail_images = [
-            img for img in detail_images_raw if isinstance(img, dict)
-        ]
+        # Schema migration: v1 stored ``list_images`` (list[str]) +
+        # ``detail_images`` (list[dict]) + ``image_locals`` (list[str]).
+        # v2 stores a single ``images`` list with embedded ``local_path``.
+        images: list[dict]
+        if "images" in d and isinstance(d.get("images"), list):
+            images = [dict(img) for img in d["images"] if isinstance(img, dict)]
+        else:
+            detail_images_raw = d.get("detail_images") or []
+            list_images_raw = d.get("list_images") or []
+            if isinstance(detail_images_raw, list) and any(
+                isinstance(x, dict) for x in detail_images_raw
+            ):
+                images = [
+                    dict(img) for img in detail_images_raw if isinstance(img, dict)
+                ]
+            else:
+                images = [
+                    {"url": s}
+                    for s in list_images_raw
+                    if isinstance(s, str) and s
+                ]
+            # Best-effort positional pairing of legacy image_locals.
+            old_locals = d.get("image_locals") or []
+            if isinstance(old_locals, list):
+                for i, local in enumerate(old_locals):
+                    if i < len(images) and isinstance(local, str) and local:
+                        images[i]["local_path"] = local
+
         source_refs_raw = d.get("source_refs") or d.get("_source_refs") or []
         source_refs = [
             SourceRef.from_dict(ref)
@@ -314,15 +421,13 @@ class OpusPost:
             id=item_id,
             title=_str_or_empty(d.get("title")),
             summary=_str_or_empty(d.get("summary")),
-            cover=_str_or_empty(d.get("cover")),
+            cover=_url_from_value(d.get("cover")),
             jump_url=_str_or_empty(d.get("jump_url")),
             stats=stats,
             ctime=d.get("ctime") if d.get("ctime") is not None else d.get("pub_time"),
-            list_images=list(d.get("list_images", []) or []),
             markdown=_str_or_empty(d.get("markdown")),
-            detail_images=detail_images,
+            images=images,
             cover_local=_str_or_empty(d.get("cover_local")),
-            image_locals=list(d.get("image_locals", []) or []),
             source_refs=source_refs,
             cross_refs=cross_refs,
         )
@@ -332,44 +437,38 @@ class OpusPost:
     def collect_image_jobs(self, uid: int) -> list[tuple[str, str]]:
         """Return [(url, dest_rel), ...] for image download.
 
-        Order: cover first, then detail images (preferred) or list images.
+        Order: cover (if any) first, then ``self.images`` in stored order.
         """
         jobs: list[tuple[str, str]] = []
 
-        # Cover image
         if self.cover:
             jobs.append((self.cover, f"opus/{self.id}_cover.jpg"))
 
-        # Content images: prefer detail images, fallback to list images
-        if self.detail_images:
-            urls = [
-                img.get("url", "")
-                for img in self.detail_images
-                if isinstance(img, dict)
-            ]
-        else:
-            urls = list(self.list_images)
-
-        for i, url in enumerate(urls):
+        for i, img in enumerate(self.images):
+            url = img.get("url", "") if isinstance(img, dict) else ""
             if url:
                 jobs.append((url, f"opus/{self.id}_{i:02d}.jpg"))
 
         return jobs
 
     def apply_image_results(self, results: list[Any]) -> None:
-        """Fill cover_local and image_locals from download results.
+        """Attach local paths to ``cover_local`` and each ``images[i]``.
 
-        The first result (if any) corresponds to the cover; the rest are
-        content images.
+        Pairs results to entries by URL identity rather than positional
+        index — this keeps cover_local correct when the cover download
+        fails but content downloads succeed.
         """
-        ok_results = [r for r in results if r.status in ("ok", "skipped")]
-
-        if self.cover and ok_results:
-            self.cover_local = ok_results[0].local_path
-            self.image_locals = [r.local_path for r in ok_results[1:]]
-        else:
-            self.cover_local = ""
-            self.image_locals = [r.local_path for r in ok_results]
+        ok = {
+            r.url: r.local_path
+            for r in results
+            if r.status in ("ok", "skipped")
+        }
+        self.cover_local = ok.get(self.cover, "") if self.cover else ""
+        for img in self.images:
+            if not isinstance(img, dict):
+                continue
+            u = img.get("url", "")
+            img["local_path"] = ok.get(u, "")
 
 # ---------------------------------------------------------------------------
 # Module-level export expected by models/__init__.py get_parser()

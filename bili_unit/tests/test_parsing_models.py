@@ -591,9 +591,9 @@ class TestOpusPost:
         assert opus.stats.like == 50
         assert opus.ctime == 1700000000
         assert opus.markdown == "# Opus Content"
-        assert len(opus.detail_images) == 2
-        assert opus.detail_images[0]["url"] == "https://example.com/img1.jpg"
-        assert opus.detail_images[1]["url"] == "https://example.com/img2.jpg"
+        assert len(opus.images) == 2
+        assert opus.images[0]["url"] == "https://example.com/img1.jpg"
+        assert opus.images[1]["url"] == "https://example.com/img2.jpg"
 
     def test_item_id(self, opus_data):
         list_item, detail = opus_data
@@ -615,11 +615,12 @@ class TestOpusPost:
         assert restored.jump_url == opus.jump_url
         assert restored.stats.view == opus.stats.view
         assert restored.ctime == opus.ctime
-        assert restored.list_images == opus.list_images
         assert restored.markdown == opus.markdown
-        assert len(restored.detail_images) == len(opus.detail_images)
+        assert len(restored.images) == len(opus.images)
+        assert [img["url"] for img in restored.images] == [
+            img["url"] for img in opus.images
+        ]
         assert restored.cover_local == opus.cover_local
-        assert restored.image_locals == opus.image_locals
 
     def test_collect_image_jobs_with_cover_and_detail(self, opus_data):
         list_item, detail = opus_data
@@ -635,7 +636,7 @@ class TestOpusPost:
     def test_collect_image_jobs_without_cover(self):
         opus = OpusPost(
             id="opus_no_cover",
-            detail_images=[{"url": "https://example.com/img1.jpg"}],
+            images=[{"url": "https://example.com/img1.jpg"}],
         )
 
         jobs = opus.collect_image_jobs(uid=12345)
@@ -655,31 +656,46 @@ class TestOpusPost:
         opus = OpusPost.from_raw(list_item, detail)
 
         results = [
-            ImageDownloadResult(url="cover", local_path="opus/opus_001_cover.jpg", status="ok"),
-            ImageDownloadResult(url="img1", local_path="opus/opus_001_00.jpg", status="ok"),
-            ImageDownloadResult(url="img2", local_path="opus/opus_001_01.jpg", status="skipped"),
+            ImageDownloadResult(
+                url="https://example.com/cover.jpg",
+                local_path="opus/opus_001_cover.jpg",
+                status="ok",
+            ),
+            ImageDownloadResult(
+                url="https://example.com/img1.jpg",
+                local_path="opus/opus_001_00.jpg",
+                status="ok",
+            ),
+            ImageDownloadResult(
+                url="https://example.com/img2.jpg",
+                local_path="opus/opus_001_01.jpg",
+                status="skipped",
+            ),
         ]
         opus.apply_image_results(results)
 
         assert opus.cover_local == "opus/opus_001_cover.jpg"
-        assert len(opus.image_locals) == 2
-        assert "opus/opus_001_00.jpg" in opus.image_locals
-        assert "opus/opus_001_01.jpg" in opus.image_locals
+        locals_ = [img.get("local_path", "") for img in opus.images]
+        assert "opus/opus_001_00.jpg" in locals_
+        assert "opus/opus_001_01.jpg" in locals_
 
     def test_apply_image_results_without_cover(self):
         opus = OpusPost(
             id="opus_no_cover",
-            detail_images=[{"url": "https://example.com/img1.jpg"}],
+            images=[{"url": "https://example.com/img1.jpg"}],
         )
 
         results = [
-            ImageDownloadResult(url="img1", local_path="opus/opus_no_cover_00.jpg", status="ok"),
+            ImageDownloadResult(
+                url="https://example.com/img1.jpg",
+                local_path="opus/opus_no_cover_00.jpg",
+                status="ok",
+            ),
         ]
         opus.apply_image_results(results)
 
         assert opus.cover_local == ""
-        assert len(opus.image_locals) == 1
-        assert "opus/opus_no_cover_00.jpg" in opus.image_locals
+        assert opus.images[0]["local_path"] == "opus/opus_no_cover_00.jpg"
 
     def test_from_raw_without_detail(self, opus_data):
         list_item, _ = opus_data
@@ -687,7 +703,7 @@ class TestOpusPost:
 
         assert opus.id == "opus_001"
         assert opus.markdown == ""
-        assert opus.detail_images == []
+        assert opus.images == []
 
 
 # ---------------------------------------------------------------------------
@@ -877,8 +893,8 @@ class TestEdgeCases:
         }
         opus = OpusPost.from_raw(list_item, None)
 
-        assert len(opus.list_images) == 1
-        assert opus.list_images[0] == "https://example.com/list1.jpg"
+        assert len(opus.images) == 1
+        assert opus.images[0]["url"] == "https://example.com/list1.jpg"
 
         jobs = opus.collect_image_jobs(uid=12345)
         assert len(jobs) == 1
