@@ -5,7 +5,7 @@
 
 ## 概述
 
-processing 层负责对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。当前仅一条 pipeline：audio。视频元数据 / 内容帖 / UP 主画像直接消费 `parsing.query` 出口面（`get_video_detail` / `list_articles` / `list_opus` / `list_dynamics` / `list_items(uid, "content_post")` / `get_user_profile`），不经 processing。
+processing 层负责对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。当前仅一条 pipeline：audio。视频元数据 / 内容帖 / UP 主画像直接消费 `parsing.query` 出口面（`get_video_detail` / `list_articles` / `list_opus` / `list_dynamics` / `get_user_profile`），不经 processing。
 
 audio 流水线通过 asyncio.Queue + worker pool 并发调度，支持 incremental / full 两种处理模式。数据源是 parsing 层产出的 `VideoDetail`（提供 cid 列表）+ fetching 层（提供 CDN URL）。详见 [docs/feature/parsing.md](parsing.md)。
 

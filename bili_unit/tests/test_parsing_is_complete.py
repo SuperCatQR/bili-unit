@@ -6,12 +6,8 @@
 
 from __future__ import annotations
 
+from bili_unit.parsing.models._refs import SourceRef
 from bili_unit.parsing.models.article import Article
-from bili_unit.parsing.models.content_post import (
-    ContentPost,
-    CrossRefs,
-    SourceRef,
-)
 from bili_unit.parsing.models.dynamic import DynamicPost
 from bili_unit.parsing.models.opus import OpusPost
 from bili_unit.parsing.models.up_profile import UpProfile
@@ -159,74 +155,6 @@ def test_dynamic_incomplete_when_id_str_blank():
 
 
 # ---------------------------------------------------------------------------
-# ContentPost
-# ---------------------------------------------------------------------------
-
-def test_content_post_article_complete_when_markdown_set():
-    c = ContentPost(
-        content_key="article:100", kind="article",
-        title="t", markdown="# body",
-    )
-    assert c.is_complete is True
-
-
-def test_content_post_article_incomplete_without_markdown():
-    c = ContentPost(content_key="article:100", kind="article", title="t")
-    assert c.is_complete is False
-
-
-def test_content_post_opus_complete_when_markdown_set():
-    c = ContentPost(
-        content_key="opus:500", kind="opus", markdown="**body**",
-    )
-    assert c.is_complete is True
-
-
-def test_content_post_video_complete_with_title_and_bvid():
-    c = ContentPost(
-        content_key="video:BV1xx",
-        kind="video",
-        title="hello",
-        cross_refs=CrossRefs(bvid="BV1xx"),
-    )
-    assert c.is_complete is True
-
-
-def test_content_post_video_incomplete_without_bvid():
-    c = ContentPost(content_key="video:?", kind="video", title="hello")
-    assert c.is_complete is False
-
-
-def test_content_post_video_incomplete_without_title():
-    c = ContentPost(
-        content_key="video:BV1xx",
-        kind="video",
-        cross_refs=CrossRefs(bvid="BV1xx"),
-    )
-    assert c.is_complete is False
-
-
-def test_content_post_dynamic_complete_with_text():
-    c = ContentPost(
-        content_key="dynamic:1", kind="dynamic_draw", text="hi there",
-    )
-    assert c.is_complete is True
-
-
-def test_content_post_dynamic_complete_with_images():
-    c = ContentPost(
-        content_key="dynamic:1", kind="dynamic_draw",
-        images=["https://i0.hdslb.com/x.jpg"],
-    )
-    assert c.is_complete is True
-
-
-def test_content_post_dynamic_incomplete_when_empty():
-    c = ContentPost(content_key="dynamic:1", kind="dynamic_draw")
-    assert c.is_complete is False
-
-
-# ---------------------------------------------------------------------------
 # Round-trip: to_dict materialises is_complete; from_dict ignores it.
 # ---------------------------------------------------------------------------
 
@@ -289,17 +217,6 @@ def test_dynamic_roundtrip_carries_is_complete():
     d = dyn.to_dict()
     assert d["is_complete"] is True
     revived = DynamicPost.from_dict(d)
-    assert revived.is_complete is True
-
-
-def test_content_post_roundtrip_carries_is_complete():
-    c = ContentPost(
-        content_key="article:100", kind="article",
-        title="t", markdown="# body",
-    )
-    d = c.to_dict()
-    assert d["is_complete"] is True
-    revived = ContentPost.from_dict(d)
     assert revived.is_complete is True
 
 

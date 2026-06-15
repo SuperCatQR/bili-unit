@@ -26,7 +26,6 @@ EXPECTED_MODEL_ORDER = (
     "article_post",
     "opus_post",
     "dynamic_event",
-    "content_post",
 )
 
 # ======================================================================
@@ -74,7 +73,6 @@ async def test_parse_uid_creates_task(parsing_command, parsing_store):
             "article_post": 3,
             "opus_post": 2,
             "dynamic_event": 4,
-            "content_post": 6,
         }[model_name]
 
     with patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model):
@@ -110,7 +108,6 @@ async def test_parse_uid_partial_status(parsing_command, parsing_store):
             "article_post": 2,
             "opus_post": 0,
             "dynamic_event": 3,
-            "content_post": 2,
         }[model_name]
 
     with patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model):
@@ -146,7 +143,6 @@ async def test_parse_uid_model_failure(parsing_command, parsing_store):
             "video_subtitle": 2,
             "opus_post": 1,
             "dynamic_event": 1,
-            "content_post": 2,
         }[model_name]
 
     with patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model):
@@ -165,7 +161,6 @@ async def test_parse_uid_model_failure(parsing_command, parsing_store):
     assert task_d["models"]["video_work"]["status"] == ParsingModelStatus.SUCCESS.value
     assert task_d["models"]["opus_post"]["status"] == ParsingModelStatus.SUCCESS.value
     assert task_d["models"]["dynamic_event"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["content_post"]["status"] == ParsingModelStatus.SUCCESS.value
 
 
 @pytest.mark.asyncio
