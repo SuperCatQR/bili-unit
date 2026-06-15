@@ -1,35 +1,27 @@
+# Tests for parsing-layer infrastructure: spec registry and the
+# ParsingMaterializer's incremental skip path against the new
+# (ctx, parse_store, fetch_store) signature introduced in Phase 3.2.
+
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call
+from pathlib import Path
 
-import pytest
 import pytest_asyncio
 
-from bili_unit.fetching import EndpointDTO, EndpointStatus
-from bili_unit.parsing.data import ParsingDataStore
-from bili_unit.parsing.keys import _item_key
+from bili_unit._db import UidContext
+from bili_unit.fetching._store import FetchingStore
+from bili_unit.parsing._store import ParsingStore
 from bili_unit.parsing.materializer import ParsingMaterializer
-from bili_unit.parsing.query import ParsingQuery
+from bili_unit.parsing.models.up_profile import UpProfile
+from bili_unit.parsing.models.video_detail import VideoDetail
 from bili_unit.parsing.specs import MODEL_ORDER, get_spec, iter_specs
 
-# Most tests in this file target the legacy ParsingDataStore + ParsingQuery
-# pair plus the old ParsingMaterializer(data, fetch_qry) signature. Phase
-# 3.2 swapped the materializer to (ctx, parse_store, fetch_store) and
-# replaced the file-KV store; only the spec-registry assertion below is
-# infrastructure-free and survives unchanged. Per-function skips keep that
-# survivor running while we wait for the Phase 6 rewrite.
-_LEGACY_INFRA = pytest.mark.skip(
-    reason="moved to Phase 6 rewrite — parsing internals reshaped in Phase 3.2",
-)
+UID = 4242
 
 
-@pytest_asyncio.fixture
-async def parsing_store(tmp_path):
-    store = ParsingDataStore(tmp_path / "parsing")
-    await store.open()
-    yield store
-    await store.close()
-
+# ---------------------------------------------------------------------------
+# Spec registry — pure unit-level assertions, no infrastructure required.
+# ---------------------------------------------------------------------------
 
 def test_parsing_specs_register_existing_models():
     assert MODEL_ORDER == (
@@ -48,136 +40,125 @@ def test_parsing_specs_register_existing_models():
     assert handlers["video_subtitle"] == "_parse_video_subtitle"
     assert all(handler.startswith("_parse_") for handler in handlers.values())
     assert get_spec("user_profile").singleton is True
-    assert isinstance(get_spec("video_work").parser_cls().__name__, str)
+    assert get_spec("video_work").parser_cls().__name__ == "VideoDetail"
     assert get_spec("dynamic_event").parser_cls().__name__ == "DynamicPost"
 
 
-@pytest.mark.asyncio
-@_LEGACY_INFRA
-async def test_query_generic_get_item_and_list_items(parsing_store):
-    uid = 4242
-    await parsing_store.put(_item_key(uid, "article_post", "cv1"), {"id": "cv1", "title": "one"})
-    await parsing_store.put(_item_key(uid, "article_post", "cv2"), {"id": "cv2", "title": "two"})
+# ---------------------------------------------------------------------------
+# Materializer fixtures — open a real UidContext on tmp_path and share it
+# between the parsing/fetching stores so the materializer reads from the
+# same SQLite databases the tests seed.
+# ---------------------------------------------------------------------------
 
-    query = ParsingQuery(parsing_store)
-
-    item = await query.get_item(uid, "article_post", "cv1")
-    assert item is not None
-    assert item["id"] == "cv1"
-    assert item["title"] == "one"
-
-    items = await query.list_items(uid, "article_post")
-    assert {item["id"] for item in items} == {"cv1", "cv2"}
-
-    legacy_items = await query.list_articles(uid)
-    assert {item["id"] for item in legacy_items} == {"cv1", "cv2"}
+@pytest_asyncio.fixture
+async def stores(tmp_path: Path):
+    ctx = UidContext(uid=UID, root=tmp_path)
+    await ctx.open()
+    try:
+        yield ctx, ParsingStore(ctx), FetchingStore(ctx)
+    finally:
+        await ctx.close()
 
 
-@pytest.mark.asyncio
-@_LEGACY_INFRA
-async def test_query_legacy_list_methods_read_canonical_model_dirs(parsing_store):
-    uid = 4343
-    await parsing_store.put(
-        _item_key(uid, "video_work", "BV1xx"),
-        {"_model_name": "video_work", "bvid": "BV1xx"},
+# ---------------------------------------------------------------------------
+# Materializer — incremental mode skip rules. Full-parse paths are covered
+# by the per-model materializer tests in test_parsing_video_subtitle.py and
+# the end-to-end orchestration tests in test_parsing_command.py.
+# ---------------------------------------------------------------------------
+
+async def test_incremental_user_profile_skips_existing_row(stores):
+    """A pre-existing user_profile row + ``incremental`` mode → no fetch read,
+    no re-write. Exercises ``_should_skip_item`` for the singleton path."""
+    ctx, parse_store, fetch_store = stores
+
+    existing = UpProfile(mid=UID, name="already parsed")
+    await parse_store.save_user_profile(existing)
+
+    # Seed every required raw payload — if the materializer wrongly reads
+    # them in incremental mode, the assertion below would catch it because
+    # ``UpProfile.from_raw`` would overwrite the saved name.
+    await fetch_store.save_raw_payload("user_info", "", {"mid": UID, "name": "fresh"})
+    await fetch_store.save_raw_payload(
+        "relation_info", "", {"following": 0, "follower": 0},
     )
-    await parsing_store.put(
-        _item_key(uid, "article_post", "100"),
-        {"_model_name": "article_post", "cvid": "100"},
-    )
-    await parsing_store.put(
-        _item_key(uid, "opus_post", "200"),
-        {"_model_name": "opus_post", "opus_id": "200"},
-    )
-    await parsing_store.put(
-        _item_key(uid, "dynamic_event", "dyn300"),
-        {"_model_name": "dynamic_event", "dynamic_id": "dyn300"},
+    await fetch_store.save_raw_payload("up_stat", "", {})
+
+    materializer = ParsingMaterializer(
+        ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
     )
 
-    query = ParsingQuery(parsing_store)
-
-    assert [item["bvid"] for item in await query.list_video_details(uid)] == ["BV1xx"]
-    assert [item["cvid"] for item in await query.list_articles(uid)] == ["100"]
-    assert [item["opus_id"] for item in await query.list_opus(uid)] == ["200"]
-    assert [item["dynamic_id"] for item in await query.list_dynamics(uid)] == ["dyn300"]
-
-
-@pytest.mark.asyncio
-@_LEGACY_INFRA
-async def test_query_generic_rejects_unknown_model(parsing_store):
-    query = ParsingQuery(parsing_store)
-
-    with pytest.raises(KeyError):
-        await query.get_item(1, "missing_model", "x")
-
-    with pytest.raises(KeyError):
-        await query.list_items(1, "missing_model")
-
-
-@pytest.mark.asyncio
-@_LEGACY_INFRA
-async def test_incremental_user_profile_skips_existing_key(parsing_store):
-    uid = 5151
-    existing = {"_model_name": "user_profile", "mid": uid, "name": "already parsed"}
-    await parsing_store.put(_item_key(uid, "user_profile", str(uid)), existing)
-
-    fetch_query = MagicMock()
-    fetch_query.get_endpoint = AsyncMock()
-    materializer = ParsingMaterializer(parsing_store, fetch_query)
-
-    count = await materializer.parse_model(uid, "user_profile", "incremental")
-
+    count = await materializer.parse_model(UID, "user_profile", "incremental")
     assert count == 0
-    fetch_query.get_endpoint.assert_not_awaited()
-    stored = await parsing_store.get(_item_key(uid, "user_profile", str(uid)))
-    assert stored is not None
-    assert stored["name"] == existing["name"]
+
+    payload = await parse_store.get_user_profile_payload(UID)
+    assert payload is not None
+    assert payload["name"] == "already parsed"
 
 
-@pytest.mark.asyncio
-@_LEGACY_INFRA
-async def test_incremental_video_work_skips_existing_items(parsing_store):
-    uid = 6262
-    await parsing_store.put(
-        _item_key(uid, "video_work", "BVold"),
-        {"_model_name": "video_work", "bvid": "BVold", "title": "old title"},
+async def test_incremental_video_work_skips_existing_items(stores):
+    """Pre-existing BVold row is preserved; only BVnew is parsed and written."""
+    ctx, parse_store, fetch_store = stores
+
+    old = VideoDetail(bvid="BVold", title="old title")
+    await parse_store.save_video(old)
+
+    fresh_raw = {
+        "info": {
+            "bvid": "BVnew",
+            "title": "BVnew fresh",
+            "pages": [],
+            "stat": {},
+            "owner": {},
+        },
+        "tags": [],
+    }
+    # Both BVold and BVnew sit in the fanout payload table; the materializer
+    # must skip BVold because of the incremental contract.
+    await fetch_store.save_raw_payload(
+        "video_detail", "BVold", {"info": {"bvid": "BVold", "title": "stale"}, "tags": []},
+    )
+    await fetch_store.save_raw_payload("video_detail", "BVnew", fresh_raw)
+
+    materializer = ParsingMaterializer(
+        ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
     )
 
-    async def get_video_detail(_uid: int, bvid: str) -> EndpointDTO:
-        return EndpointDTO(
-            uid=_uid,
-            endpoint="video_detail",
-            status=EndpointStatus.SUCCESS,
-            available=True,
-            raw_payload={
-                "info": {
-                    "bvid": bvid,
-                    "title": f"{bvid} fresh",
-                    "pages": [],
-                    "stat": {},
-                    "owner": {},
-                },
-                "tags": [],
-            },
-        )
-
-    fetch_query = MagicMock()
-    fetch_query.list_video_details = AsyncMock(
-        return_value=[
-            ("BVold", EndpointStatus.SUCCESS),
-            ("BVnew", EndpointStatus.SUCCESS),
-        ],
-    )
-    fetch_query.get_video_detail = AsyncMock(side_effect=get_video_detail)
-    materializer = ParsingMaterializer(parsing_store, fetch_query)
-
-    count = await materializer.parse_model(uid, "video_work", "incremental")
-
+    count = await materializer.parse_model(UID, "video_work", "incremental")
     assert count == 1
-    assert fetch_query.get_video_detail.await_args_list == [call(uid, "BVnew")]
-    old_item = await parsing_store.get(_item_key(uid, "video_work", "BVold"))
-    new_item = await parsing_store.get(_item_key(uid, "video_work", "BVnew"))
-    assert old_item is not None
-    assert old_item["title"] == "old title"
-    assert new_item is not None
-    assert new_item["title"] == "BVnew fresh"
+
+    old_payload = await parse_store.get_video_payload("BVold")
+    new_payload = await parse_store.get_video_payload("BVnew")
+    assert old_payload is not None
+    assert old_payload["title"] == "old title"
+    assert new_payload is not None
+    assert new_payload["title"] == "BVnew fresh"
+
+
+async def test_full_mode_user_profile_overwrites_existing(stores):
+    """Sanity counterpart: the same pre-seeded row is re-parsed in ``full``
+    mode and the new payload from raw wins. Confirms the skip is mode-gated."""
+    ctx, parse_store, fetch_store = stores
+
+    existing = UpProfile(mid=UID, name="stale")
+    await parse_store.save_user_profile(existing)
+
+    await fetch_store.save_raw_payload(
+        "user_info",
+        "",
+        {"mid": UID, "name": "fresh", "face": ""},
+    )
+    await fetch_store.save_raw_payload(
+        "relation_info", "", {"following": 1, "follower": 2},
+    )
+    await fetch_store.save_raw_payload("up_stat", "", {"archive": {"view": 0}})
+
+    materializer = ParsingMaterializer(
+        ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
+    )
+
+    count = await materializer.parse_model(UID, "user_profile", "full")
+    assert count == 1
+
+    payload = await parse_store.get_user_profile_payload(UID)
+    assert payload is not None
+    assert payload["name"] == "fresh"

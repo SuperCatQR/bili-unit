@@ -1,136 +1,60 @@
-# Tests for the W3.1 ASR / subtitle cost tracking.
+# Tests for the W3.1 ASR / subtitle cost tracking — Phase 6 SQLite rewrite.
 #
-# audio result dicts now carry a ``cost`` block with audio_tokens, seconds,
+# Audio result dicts carry a ``cost`` block with audio_tokens, seconds,
 # model, cache_hits, fresh_segments. Cache hits keep accumulating tokens /
 # seconds (so the bvid-level cost is stable across runs) while fresh_segments
 # / cache_hits expose how the work split. Subtitle short-circuit returns a
 # zero-cost block tagged with model="subtitle".
+#
+# Tests 1-3 exercise ``_do_audio_work`` directly with a unit-style runner
+# (no store wiring needed — _do_audio_work returns the result dict; the
+# rollup writer is a separate seam tested in test_processing_runner).
+#
+# Test 4 exercises ``process_uid`` end-to-end: the subtitle short-circuit
+# writes its zero-cost result through ``ProcessingStore.save_audio_transcription``,
+# and the assertion reads it back from the SQLite store.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock
 
-import pytest
 import pytest_asyncio
 
+from bili_unit._db import UidContext
 from bili_unit._env import BiliSettings
-from bili_unit.fetching import EndpointStatus, TaskStatus
-from bili_unit.fetching.data import DataStore as FetchingDataStore
-from bili_unit.fetching.error import ErrorStore as FetchingErrorStore
-from bili_unit.fetching.keys import _fetch_key, _item_fetch_key
-from bili_unit.fetching.keys import _task_key as _fetch_task_key
-from bili_unit.fetching.query import Query as FetchingQuery
-from bili_unit.fetching.task import EndpointEntry, TaskValue
-from bili_unit.parsing.data import ParsingDataStore
-from bili_unit.parsing.keys import _item_key as _parsing_item_key
-from bili_unit.parsing.query import ParsingQuery
-from bili_unit.processing import ProcessingItemStatus
+from bili_unit.fetching._store import FetchingStore
+from bili_unit.parsing._store import ParsingStore
+from bili_unit.parsing.models.video_subtitle import (
+    SubtitlePage,
+    SubtitleSegment,
+    VideoSubtitle,
+)
+from bili_unit.processing._store import ProcessingStore
 from bili_unit.processing.audio import (
+    ASRCacheStore,
     ASRResult,
+    CachedSegment,
     Mp3Segment,
 )
 from bili_unit.processing.command import ProcessingCommand
-from bili_unit.processing.data import ProcessingDataStore
-from bili_unit.processing.error import ProcessingErrorStore
-from bili_unit.processing.keys import _proc_key
+from bili_unit.processing.runner import ProcessingRunner
 from bili_unit.processing.runner._pipeline_executor import WorkItem
 
 # ---------------------------------------------------------------------------
-# Settings + fakes
+# Settings + helpers
 # ---------------------------------------------------------------------------
 
 def _make_settings(tmp_path) -> BiliSettings:
     return BiliSettings(
-        bili_processing_data_dir=str(tmp_path / "proc-data"),
+        bili_db_dir=str(tmp_path / "db"),
         bili_processing_temp_dir=str(tmp_path / "proc-temp"),
-        bili_processing_error_dir=str(tmp_path / "proc-error"),
         bili_processing_audio_workers=1,
         bili_processing_queue_maxsize=8,
         bili_processing_max_retries=0,
         bili_processing_retry_delays="0",
         bili_processing_asr_cache_dir=str(tmp_path / "proc-asr-cache"),
     )
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest_asyncio.fixture
-async def fetching_stack(tmp_path):
-    fd = FetchingDataStore(str(tmp_path / "fetch-data"))
-    fe = FetchingErrorStore(str(tmp_path / "fetch-error"))
-    await fd.open()
-    await fe.open()
-    qry = FetchingQuery(fd, fe)
-    yield fd, fe, qry
-    await fd.close()
-    await fe.close()
-
-
-@pytest_asyncio.fixture
-async def parsing_stack(tmp_path):
-    pd = ParsingDataStore(str(tmp_path / "parse-data"))
-    await pd.open()
-    pq = ParsingQuery(data=pd)
-    yield pd, pq
-    await pd.close()
-
-
-async def _seed_fetching_video_detail(
-    fd: FetchingDataStore,
-    uid: int,
-    bvids: list[str],
-    *,
-    pages_per_bvid: int = 1,
-) -> None:
-    pages_template = [
-        {"cid": idx + 1, "part": f"P{idx + 1}", "duration": 60}
-        for idx in range(pages_per_bvid)
-    ]
-    tv = TaskValue(
-        uid=uid,
-        status=TaskStatus.SUCCESS,
-        endpoints={
-            "video_detail": EndpointEntry(
-                status=EndpointStatus.SUCCESS,
-                item_progress={
-                    "total": len(bvids),
-                    "completed": len(bvids),
-                    "failed": 0,
-                },
-            ),
-        },
-        created_at=0,
-        updated_at=0,
-    )
-    await fd.put(_fetch_task_key(uid), tv.to_dict())
-    await fd.put(_fetch_key(uid, "video_detail"), {
-        "uid": uid, "endpoint": "video_detail",
-        "status": EndpointStatus.SUCCESS.value,
-        "raw_payload": None,
-        "item_counts": {
-            "total": len(bvids), "completed": len(bvids), "failed": 0,
-        },
-    })
-    for bvid in bvids:
-        await fd.put(_item_fetch_key(uid, "video_detail", bvid), {
-            "uid": uid, "endpoint": "video_detail", "item_id": bvid,
-            "status": EndpointStatus.SUCCESS.value,
-            "raw_payload": {
-                "info": {
-                    "bvid": bvid,
-                    "aid": 0,
-                    "title": f"title-{bvid}",
-                    "desc": "", "duration": 60 * pages_per_bvid,
-                    "pages": pages_template,
-                    "stat": {"view": 1, "danmaku": 0, "reply": 0,
-                             "favorite": 0, "coin": 0, "share": 0, "like": 1},
-                    "owner": {"mid": 999, "name": "U"},
-                },
-                "tags": [],
-            },
-        })
 
 
 def _make_segments(tmp_path, ranges):
@@ -143,10 +67,12 @@ def _make_segments(tmp_path, ranges):
     return out
 
 
-def _make_command(tmp_path, fqry, pd, pe, settings, *, mock_asr, mock_dl, mock_convert):
-    return ProcessingCommand(
-        data=pd, error=pe, temp_dir=settings.bili_processing_temp_dir,
-        fetching_query=fqry, settings=settings,
+def _make_unit_runner(settings, *, mock_asr, mock_dl, mock_convert) -> ProcessingRunner:
+    """Build a runner with injected pieces — ``_do_audio_work`` reads them
+    from ``self``; no store wiring needed for cost-block assertions."""
+    return ProcessingRunner(
+        settings=settings,
+        asr_backend=mock_asr,
         credential_provider=AsyncMock(return_value=None),
         downloader_factory=lambda credential=None: mock_dl,
         convert_fn=mock_convert,
@@ -157,18 +83,10 @@ def _make_command(tmp_path, fqry, pd, pe, settings, *, mock_asr, mock_dl, mock_c
 # 1. Fresh ASR — every segment hits the backend → cost accumulates.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_cost_accumulates_for_fresh_asr_segments(tmp_path, fetching_stack):
-    fd, _fe, fqry = fetching_stack
+async def test_cost_accumulates_for_fresh_asr_segments(tmp_path: Path):
+    s = _make_settings(tmp_path)
     uid = 7000
     bvid = "BVcost1"
-    await _seed_fetching_video_detail(fd, uid, [bvid])
-
-    s = _make_settings(tmp_path)
-    pd = ProcessingDataStore(s.bili_processing_data_dir)
-    pe = ProcessingErrorStore(s.bili_processing_error_dir)
-    await pd.open()
-    await pe.open()
 
     work_item = WorkItem(
         item_type="audio", item_id=bvid,
@@ -195,13 +113,10 @@ async def test_cost_accumulates_for_fresh_asr_segments(tmp_path, fetching_stack)
     ])
     mock_asr.model = "m"
 
-    cmd = _make_command(
-        tmp_path, fqry, pd, pe, s,
-        mock_asr=mock_asr, mock_dl=mock_dl, mock_convert=mock_convert,
+    runner = _make_unit_runner(
+        s, mock_asr=mock_asr, mock_dl=mock_dl, mock_convert=mock_convert,
     )
-
-    with patch.object(cmd._runner, "_asr_backend", mock_asr):
-        result = await cmd._runner._do_audio_work(uid, work_item, credential=None)
+    result = await runner._do_audio_work(uid, work_item, credential=None)
 
     cost = result["cost"]
     assert cost["audio_tokens"] == 300
@@ -210,26 +125,15 @@ async def test_cost_accumulates_for_fresh_asr_segments(tmp_path, fetching_stack)
     assert cost["cache_hits"] == 0
     assert cost["model"] == "m"
 
-    await pd.close()
-    await pe.close()
-
 
 # ---------------------------------------------------------------------------
 # 2. Cache hits — second run reuses cached tokens; fresh = 0.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_cost_persists_through_cache_on_second_run(tmp_path, fetching_stack):
-    fd, _fe, fqry = fetching_stack
+async def test_cost_persists_through_cache_on_second_run(tmp_path: Path):
+    s = _make_settings(tmp_path)
     uid = 7001
     bvid = "BVcost2"
-    await _seed_fetching_video_detail(fd, uid, [bvid])
-
-    s = _make_settings(tmp_path)
-    pd = ProcessingDataStore(s.bili_processing_data_dir)
-    pe = ProcessingErrorStore(s.bili_processing_error_dir)
-    await pd.open()
-    await pe.open()
 
     work_item = WorkItem(
         item_type="audio", item_id=bvid,
@@ -245,10 +149,10 @@ async def test_cost_persists_through_cache_on_second_run(tmp_path, fetching_stac
     )
     mock_dl.download_to_file = AsyncMock()
 
-    # Same seg layout used for both runs.
     def _fresh_segs():
         return _make_segments(tmp_path, [(0.0, 15.0), (15.0, 30.0), (30.0, 45.0)])
 
+    # First run — pay the full cost up front.
     mock_convert_first = AsyncMock(return_value=_fresh_segs())
     mock_asr_first = AsyncMock()
     mock_asr_first.transcribe = AsyncMock(side_effect=[
@@ -258,32 +162,23 @@ async def test_cost_persists_through_cache_on_second_run(tmp_path, fetching_stac
     ])
     mock_asr_first.model = "m"
 
-    cmd_first = _make_command(
-        tmp_path, fqry, pd, pe, s,
-        mock_asr=mock_asr_first, mock_dl=mock_dl, mock_convert=mock_convert_first,
+    runner_first = _make_unit_runner(
+        s, mock_asr=mock_asr_first, mock_dl=mock_dl, mock_convert=mock_convert_first,
     )
-    with patch.object(cmd_first._runner, "_asr_backend", mock_asr_first):
-        first = await cmd_first._runner._do_audio_work(
-            uid, work_item, credential=None,
-        )
-    # Sanity: first run paid full cost.
+    first = await runner_first._do_audio_work(uid, work_item, credential=None)
     assert first["cost"]["fresh_segments"] == 3
     assert first["cost"]["audio_tokens"] == 300
 
-    # First run cleared the cache for this bvid (success path); reseed it
-    # the way a real failure-then-retry would have left things by running
-    # the page through transcribe with a cache-aware backend that records
-    # tokens. We simulate this by upserting CachedSegments with audio_tokens
-    # ourselves, which is the same path the runner uses on every fresh ASR
-    # call.
-    from bili_unit.processing.audio import ASRCacheStore, CachedSegment
+    # _do_audio_work clears the cache on success; reseed it the way a real
+    # failure-then-retry would have — ASRCacheStore upsert is the same path
+    # the runner uses on every fresh ASR call.
     cache = ASRCacheStore(s.bili_processing_asr_cache_dir)
     page = cache.load_page(uid, bvid, 0)
     cache.upsert(page, CachedSegment(0.0, 15.0, "a", "auto", 15.0, "m", audio_tokens=100))
     cache.upsert(page, CachedSegment(15.0, 30.0, "b", "auto", 15.0, "m", audio_tokens=100))
     cache.upsert(page, CachedSegment(30.0, 45.0, "c", "auto", 15.0, "m", audio_tokens=100))
 
-    # Second run: empty backend; everything should hit cache.
+    # Second run — empty backend; everything must hit cache.
     mock_convert_second = AsyncMock(return_value=_fresh_segs())
     mock_asr_second = AsyncMock()
     mock_asr_second.transcribe = AsyncMock(
@@ -291,47 +186,29 @@ async def test_cost_persists_through_cache_on_second_run(tmp_path, fetching_stac
     )
     mock_asr_second.model = "m"
 
-    cmd_second = _make_command(
-        tmp_path, fqry, pd, pe, s,
-        mock_asr=mock_asr_second, mock_dl=mock_dl, mock_convert=mock_convert_second,
+    runner_second = _make_unit_runner(
+        s, mock_asr=mock_asr_second, mock_dl=mock_dl,
+        mock_convert=mock_convert_second,
     )
-    with patch.object(cmd_second._runner, "_asr_backend", mock_asr_second):
-        second = await cmd_second._runner._do_audio_work(
-            uid, work_item, credential=None,
-        )
+    second = await runner_second._do_audio_work(uid, work_item, credential=None)
 
     cost = second["cost"]
-    # Cache hits accumulate the same audio_tokens as the original run.
     assert cost["audio_tokens"] == 300
     assert cost["seconds"] == 45
-    # No fresh ASR calls; all 3 segments came from cache.
     assert cost["fresh_segments"] == 0
     assert cost["cache_hits"] == 3
-
-    await pd.close()
-    await pe.close()
 
 
 # ---------------------------------------------------------------------------
 # 3. Mixed — 2 cache hits + 1 fresh.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_cost_aggregates_mixed_cache_and_fresh(tmp_path, fetching_stack):
-    from bili_unit.processing.audio import ASRCacheStore, CachedSegment
-
-    fd, _fe, fqry = fetching_stack
+async def test_cost_aggregates_mixed_cache_and_fresh(tmp_path: Path):
+    s = _make_settings(tmp_path)
     uid = 7002
     bvid = "BVcost3"
-    await _seed_fetching_video_detail(fd, uid, [bvid])
 
-    s = _make_settings(tmp_path)
-    pd = ProcessingDataStore(s.bili_processing_data_dir)
-    pe = ProcessingErrorStore(s.bili_processing_error_dir)
-    await pd.open()
-    await pe.open()
-
-    # Pre-seed two cached segments.
+    # Pre-seed two cached segments — third one will be fresh.
     cache = ASRCacheStore(s.bili_processing_asr_cache_dir)
     page = cache.load_page(uid, bvid, 0)
     cache.upsert(page, CachedSegment(0.0, 15.0, "a", "auto", 15.0, "m", audio_tokens=100))
@@ -362,13 +239,10 @@ async def test_cost_aggregates_mixed_cache_and_fresh(tmp_path, fetching_stack):
     ])
     mock_asr.model = "m"
 
-    cmd = _make_command(
-        tmp_path, fqry, pd, pe, s,
-        mock_asr=mock_asr, mock_dl=mock_dl, mock_convert=mock_convert,
+    runner = _make_unit_runner(
+        s, mock_asr=mock_asr, mock_dl=mock_dl, mock_convert=mock_convert,
     )
-
-    with patch.object(cmd._runner, "_asr_backend", mock_asr):
-        result = await cmd._runner._do_audio_work(uid, work_item, credential=None)
+    result = await runner._do_audio_work(uid, work_item, credential=None)
 
     cost = result["cost"]
     assert cost["audio_tokens"] == 300
@@ -377,67 +251,100 @@ async def test_cost_aggregates_mixed_cache_and_fresh(tmp_path, fetching_stack):
     assert cost["fresh_segments"] == 1
     assert cost["model"] == "m"
 
-    await pd.close()
-    await pe.close()
-
 
 # ---------------------------------------------------------------------------
 # 4. Subtitle short-circuit — cost is zero / model="subtitle".
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_subtitle_shortcut_writes_zero_cost(
-    tmp_path, fetching_stack, parsing_stack,
-):
-    fd, _fe, fqry = fetching_stack
-    pd_parse, pqry = parsing_stack
+@pytest_asyncio.fixture
+async def _seeded_subtitle(tmp_path: Path):
+    """Seed a uid with one bvid carrying both a video_detail raw payload and
+    a complete VideoSubtitle parsed row — the precondition for the audio
+    short-circuit. Yields ``(settings, uid, bvid)``."""
+    s = _make_settings(tmp_path)
     uid = 7003
     bvid = "BVcostSub"
-    await _seed_fetching_video_detail(fd, uid, [bvid])
 
-    # Seed a complete subtitle (one page with a lan + segments).
-    await pd_parse.put(
-        _parsing_item_key(uid, "video_subtitle", bvid),
-        {
-            "_model_name": "video_subtitle",
-            "_schema_version": 1,
-            "bvid": bvid,
-            "pages": [{
-                "page_index": 0, "cid": 1,
-                "lan": "zh-CN", "lan_doc": "中文（中国）",
-                "segments": [
-                    {"start": 0.0, "end": 1.5, "content": "hello"},
-                    {"start": 1.5, "end": 3.0, "content": "world"},
-                ],
-            }],
-            "available_languages": ["zh-CN"],
-            "is_complete": True,
-            "_source_refs": [{"endpoint": "video_subtitle", "item_id": bvid}],
-            "_cross_refs": {
-                "cvid": None, "opus_id": None,
-                "dynamic_id": None, "bvid": bvid,
+    ctx = UidContext(uid, s.bili_db_dir)
+    await ctx.open()
+    try:
+        fetch_store = FetchingStore(ctx)
+        parse_store = ParsingStore(ctx)
+
+        await fetch_store.save_raw_payload("video_detail", bvid, {
+            "info": {
+                "bvid": bvid, "aid": 0, "title": f"title-{bvid}",
+                "desc": "", "duration": 60,
+                "pages": [{"cid": 1, "part": "P1", "duration": 60}],
+                "stat": {"view": 1, "danmaku": 0, "reply": 0,
+                         "favorite": 0, "coin": 0, "share": 0, "like": 1},
+                "owner": {"mid": 999, "name": "U"},
             },
-        },
-    )
+            "tags": [],
+        })
 
-    s = _make_settings(tmp_path)
-    pd = ProcessingDataStore(s.bili_processing_data_dir)
-    pe = ProcessingErrorStore(s.bili_processing_error_dir)
-    await pd.open()
-    await pe.open()
+        # Placeholder video row to satisfy the audio_transcription FK.
+        await ctx.main.execute(
+            "INSERT OR IGNORE INTO video(bvid, title, payload, parsed_at_ms) "
+            "VALUES (?, ?, ?, ?)",
+            (bvid, f"title-{bvid}", "{}", 0),
+        )
+
+        # Complete VideoSubtitle (one page with a body) — drives the short-circuit.
+        sub = VideoSubtitle(
+            bvid=bvid,
+            pages=[
+                SubtitlePage(
+                    page_index=0, cid=1,
+                    lan="zh-CN", lan_doc="中文（中国）",
+                    is_ai=False,
+                    segments=[
+                        SubtitleSegment(start=0.0, end=1.5, content="hello"),
+                        SubtitleSegment(start=1.5, end=3.0, content="world"),
+                    ],
+                ),
+            ],
+            available_languages=["zh-CN"],
+        )
+        await parse_store.save_video_subtitle(sub)
+    finally:
+        await ctx.close()
+
+    yield s, uid, bvid
+
+
+async def test_subtitle_shortcut_writes_zero_cost(_seeded_subtitle):
+    s, uid, bvid = _seeded_subtitle
 
     cmd = ProcessingCommand(
-        data=pd, error=pe, temp_dir=s.bili_processing_temp_dir,
-        fetching_query=fqry, parsing_query=pqry, settings=s,
+        s,
         credential_provider=AsyncMock(return_value=None),
     )
+    try:
+        await cmd.process_uid(uid)
+    finally:
+        await cmd.close()
 
-    await cmd.process_uid(uid)
+    # Read back the audio_transcription row through the store.
+    ctx = UidContext(uid, s.bili_db_dir)
+    await ctx.open()
+    try:
+        proc_store = ProcessingStore(ctx)
+        status = await proc_store.get_audio_status(bvid)
+        payload = await proc_store.get_audio_payload(bvid)
 
-    record = await pd.get(_proc_key(uid, "audio", bvid))
-    assert record is not None
-    assert record["status"] == ProcessingItemStatus.SUCCESS.value
-    res = record["result"]
+        # Typed columns also reflect the subtitle short-circuit.
+        row = await ctx.main.fetch_one(
+            "SELECT transcription_source, audio_tokens, seconds, cache_hits "
+            "FROM audio_transcription WHERE bvid = ?",
+            (bvid,),
+        )
+    finally:
+        await ctx.close()
+
+    assert status == "success"
+    assert payload is not None
+    res = payload["result"]
     assert res["transcription_source"] == "subtitle"
 
     cost = res["cost"]
@@ -447,5 +354,9 @@ async def test_subtitle_shortcut_writes_zero_cost(
     assert cost["cache_hits"] == 0
     assert cost["fresh_segments"] == 0
 
-    await pd.close()
-    await pe.close()
+    # Typed columns mirror the cost block (the store decomposes them).
+    assert row is not None
+    assert row["transcription_source"] == "subtitle"
+    assert row["audio_tokens"] == 0
+    assert row["seconds"] == 0
+    assert row["cache_hits"] == 0

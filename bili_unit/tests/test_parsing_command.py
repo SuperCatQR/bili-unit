@@ -1,33 +1,37 @@
-# tests for bili_unit.parsing.command and bili_unit.parsing.query
-# Run: uv run pytest bili_unit/tests/test_parsing_command.py -v
+# Tests for bili_unit.parsing.command.ParsingCommand on the SQLite stack.
+#
+# ParsingCommand now takes only ``BiliSettings`` and constructs UidContext /
+# ParsingStore / FetchingStore on each parse_uid call. The old ParsingQuery
+# layer was deleted in Phase 3.2 and replaced with direct store reads, so
+# the legacy "ParsingQuery DTO" tests (~13 of them) were dropped — they
+# tested an interface that no longer exists. The ``failed_item_ids`` task
+# field is also gone (see ``parsing/__init__.py``); related assertions
+# were dropped for the same reason.
+#
+# The status-rollup tests below patch ``ParsingMaterializer.parse_model``
+# at class level so the orchestration logic can be exercised without
+# having to seed every model's raw payloads. The end-to-end integration
+# test at the bottom drives the real materializer over seeded
+# FetchingStore rows to confirm the wiring.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import json
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
-import pytest_asyncio
 
+from bili_unit._db import UidContext
+from bili_unit._env import BiliSettings
+from bili_unit.fetching._store import FetchingStore
 from bili_unit.parsing import (
     ParsingCommandResult,
     ParsingModelStatus,
     ParsingTaskStatus,
-    ParsingTaskValue,
 )
+from bili_unit.parsing._store import ParsingStore
 from bili_unit.parsing.command import ParsingCommand
-from bili_unit.parsing.data import ParsingDataStore
-from bili_unit.parsing.keys import _item_key, _task_key
-from bili_unit.parsing.query import ParsingQuery
-
-# ParsingCommand no longer takes a ParsingDataStore + FetchingReadView; it
-# now takes only BiliSettings and constructs UidContext / ParsingStore /
-# FetchingStore on each parse_uid call. The old test fixtures and
-# assertions are deeply coupled to that legacy shape, so the entire file is
-# punted to Phase 6 for rewrite.
-pytestmark = pytest.mark.skip(
-    reason="moved to Phase 6 rewrite — ParsingCommand signature changed in Phase 3.2",
-)
-
 
 EXPECTED_MODEL_ORDER = (
     "user_profile",
@@ -38,451 +42,384 @@ EXPECTED_MODEL_ORDER = (
     "dynamic_event",
 )
 
-# ======================================================================
+
+# ---------------------------------------------------------------------------
 # Fixtures
-# ======================================================================
+# ---------------------------------------------------------------------------
 
-@pytest_asyncio.fixture
-async def parsing_store(tmp_path):
-    store = ParsingDataStore(tmp_path / "parsing")
-    await store.open()
-    yield store
-    await store.close()
+@pytest.fixture
+def settings(tmp_path: Path) -> BiliSettings:
+    return BiliSettings(bili_db_dir=str(tmp_path))
 
 
 @pytest.fixture
-def fetch_query():
-    """Mock fetching query -- parsing only reads from it via model parsers."""
-    return MagicMock()
+def parsing_command(settings: BiliSettings) -> ParsingCommand:
+    return ParsingCommand(settings)
 
 
-@pytest.fixture
-def parsing_command(parsing_store, fetch_query):
-    return ParsingCommand(parsing_store, fetch_query)
+async def _read_task(uid: int, settings: BiliSettings) -> dict | None:
+    """Open a fresh UidContext and return the parsing stage_task payload
+    along with its status column."""
+    ctx = UidContext(uid=uid, root=settings.bili_db_dir)
+    await ctx.open()
+    try:
+        row = await ctx.main.fetch_one(
+            "SELECT status, payload FROM stage_task WHERE stage = 'parsing'",
+        )
+        if row is None:
+            return None
+        return {"status": row["status"], **json.loads(row["payload"])}
+    finally:
+        await ctx.close()
 
 
-@pytest.fixture
-def parsing_query(parsing_store):
-    return ParsingQuery(parsing_store)
+# ---------------------------------------------------------------------------
+# parse_uid — status rollup over per-model counts
+# ---------------------------------------------------------------------------
 
+async def test_parse_uid_all_models_succeed_status_success(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    """All models return positive counts → overall SUCCESS, every model
+    SUCCESS in the task payload, counts persisted."""
+    counts = {
+        "user_profile": 1,
+        "video_work": 5,
+        "video_subtitle": 5,
+        "article_post": 3,
+        "opus_post": 2,
+        "dynamic_event": 4,
+    }
 
-# ======================================================================
-# ParsingCommand -- parse_uid
-# ======================================================================
+    async def fake_parse_model(self, uid, model_name, mode):
+        return counts[model_name]
 
-@pytest.mark.asyncio
-async def test_parse_uid_creates_task(parsing_command, parsing_store):
-    """All models succeed with positive counts -> overall SUCCESS."""
-
-    async def fake_parse_model(uid, model_name, mode):
-        # Return a positive count for every model
-        return {
-            "user_profile": 1,
-            "video_work": 5,
-            "video_subtitle": 5,
-            "article_post": 3,
-            "opus_post": 2,
-            "dynamic_event": 4,
-        }[model_name]
-
-    with patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model):
+    with patch(
+        "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+        new=fake_parse_model,
+    ):
         result = await parsing_command.parse_uid(uid=1001, mode="full")
 
     assert isinstance(result, ParsingCommandResult)
     assert result.uid == 1001
     assert result.status == ParsingTaskStatus.SUCCESS
 
-    # Verify the task was persisted with correct model entries
-    task_d = await parsing_store.get(_task_key(1001))
-    assert task_d is not None
-    assert task_d["status"] == ParsingTaskStatus.SUCCESS.value
+    task = await _read_task(1001, settings)
+    assert task is not None
+    assert task["status"] == ParsingTaskStatus.SUCCESS.value
 
-    models = task_d["models"]
+    models = task["models"]
     assert tuple(models.keys()) == EXPECTED_MODEL_ORDER
+    for name in EXPECTED_MODEL_ORDER:
+        assert models[name]["status"] == ParsingModelStatus.SUCCESS.value
+        assert models[name]["count"] == counts[name]
 
-    for model_name in EXPECTED_MODEL_ORDER:
-        assert models[model_name]["status"] == ParsingModelStatus.SUCCESS.value
-        assert models[model_name]["count"] > 0
 
+async def test_parse_uid_zero_count_in_full_mode_yields_partial(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    """In full mode, a model returning zero is treated as "nothing fetched",
+    which downgrades the overall status to PARTIAL even though the model
+    itself still ran SUCCESS."""
+    counts = {
+        "user_profile": 1,
+        "video_work": 0,
+        "video_subtitle": 0,
+        "article_post": 2,
+        "opus_post": 0,
+        "dynamic_event": 3,
+    }
 
-@pytest.mark.asyncio
-async def test_parse_uid_partial_status(parsing_command, parsing_store):
-    """Some models return 0 -> overall PARTIAL, zero-count models still SUCCESS."""
+    async def fake_parse_model(self, uid, model_name, mode):
+        return counts[model_name]
 
-    async def fake_parse_model(uid, model_name, mode):
-        # video_work and opus_post return 0 (nothing to parse)
-        return {
-            "user_profile": 1,
-            "video_work": 0,
-            "video_subtitle": 0,
-            "article_post": 2,
-            "opus_post": 0,
-            "dynamic_event": 3,
-        }[model_name]
-
-    with patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model):
+    with patch(
+        "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+        new=fake_parse_model,
+    ):
         result = await parsing_command.parse_uid(uid=2002)
 
     assert result.status == ParsingTaskStatus.PARTIAL
 
-    task_d = await parsing_store.get(_task_key(2002))
-    assert task_d is not None
-    assert task_d["status"] == ParsingTaskStatus.PARTIAL.value
+    task = await _read_task(2002, settings)
+    assert task is not None
+    assert task["status"] == ParsingTaskStatus.PARTIAL.value
 
-    # Zero-count models are still marked SUCCESS (they ran fine, just found nothing new)
-    assert task_d["models"]["video_work"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["video_work"]["count"] == 0
-    assert task_d["models"]["opus_post"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["opus_post"]["count"] == 0
+    # Zero-count models are still SUCCESS at the model level — they ran fine,
+    # just found nothing.
+    assert task["models"]["video_work"]["status"] == ParsingModelStatus.SUCCESS.value
+    assert task["models"]["video_work"]["count"] == 0
+    assert task["models"]["opus_post"]["count"] == 0
+    # And positive-count models report what the materializer returned.
+    assert task["models"]["user_profile"]["count"] == 1
+    assert task["models"]["article_post"]["count"] == 2
+    assert task["models"]["dynamic_event"]["count"] == 3
 
-    # Positive-count models
-    assert task_d["models"]["user_profile"]["count"] == 1
-    assert task_d["models"]["article_post"]["count"] == 2
 
+async def test_parse_uid_model_failure_marks_failed_and_partial(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    """One model raising → that model FAILED, others SUCCESS, overall
+    PARTIAL. The error must not propagate out of parse_uid."""
 
-@pytest.mark.asyncio
-async def test_parse_uid_model_failure(parsing_command, parsing_store):
-    """One model raises -> that model is FAILED, overall PARTIAL, others unaffected."""
-
-    async def fake_parse_model(uid, model_name, mode):
+    async def fake_parse_model(self, uid, model_name, mode):
         if model_name == "article_post":
             raise RuntimeError("simulated parse failure")
-        return {
-            "user_profile": 1,
-            "video_work": 2,
-            "video_subtitle": 2,
-            "opus_post": 1,
-            "dynamic_event": 1,
-        }[model_name]
+        return 1
 
-    with patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model):
+    with patch(
+        "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+        new=fake_parse_model,
+    ):
         result = await parsing_command.parse_uid(uid=3003)
 
     assert result.status == ParsingTaskStatus.PARTIAL
 
-    task_d = await parsing_store.get(_task_key(3003))
-    assert task_d is not None
-
-    # The failed model
-    assert task_d["models"]["article_post"]["status"] == ParsingModelStatus.FAILED.value
-
-    # The other models should still be SUCCESS
-    assert task_d["models"]["user_profile"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["video_work"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["opus_post"]["status"] == ParsingModelStatus.SUCCESS.value
-    assert task_d["models"]["dynamic_event"]["status"] == ParsingModelStatus.SUCCESS.value
+    task = await _read_task(3003, settings)
+    assert task is not None
+    assert task["models"]["article_post"]["status"] == ParsingModelStatus.FAILED.value
+    for name in EXPECTED_MODEL_ORDER:
+        if name == "article_post":
+            continue
+        assert task["models"][name]["status"] == ParsingModelStatus.SUCCESS.value
 
 
-@pytest.mark.asyncio
-async def test_parse_uid_with_download_images(parsing_command):
-    """download_images=True triggers _download_images after model parsing."""
+async def test_parse_uid_incremental_mode_with_existing_rows_stays_success(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    """Incremental mode: when a model returns count=0 but already has rows
+    in the DB (i.e. nothing new to parse, but historical data exists), the
+    overall status stays SUCCESS — the "no fetch payload" branch is
+    suppressed by the existing-items check."""
+    uid = 4242
 
-    async def fake_parse_model(uid, model_name, mode):
+    # Pre-seed user_profile so get_existing_item_ids("user_profile") is
+    # non-empty during the post-zero-check branch.
+    ctx = UidContext(uid=uid, root=settings.bili_db_dir)
+    await ctx.open()
+    try:
+        from bili_unit.parsing.models.up_profile import UpProfile
+        from bili_unit.parsing.models.video_detail import VideoDetail
+
+        ps = ParsingStore(ctx)
+        await ps.save_user_profile(UpProfile(mid=uid, name="seed"))
+        await ps.save_video(VideoDetail(bvid="BVseed", title="seed"))
+    finally:
+        await ctx.close()
+
+    async def fake_parse_model(self, uid_arg, model_name, mode):
+        # Every model claims it had nothing new — this mimics a real
+        # incremental run where all items are already parsed.
+        return 0
+
+    with patch(
+        "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+        new=fake_parse_model,
+    ):
+        result = await parsing_command.parse_uid(uid=uid, mode="incremental")
+
+    # user_profile + video_work already have rows, but the other 4 don't and
+    # they returned 0 in incremental → those still trigger PARTIAL.
+    assert result.status == ParsingTaskStatus.PARTIAL
+
+
+async def test_parse_uid_with_download_images_calls_downloader(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    """download_images=True triggers ParsingMaterializer.download_images
+    after model parsing and persists the summary into the task payload."""
+
+    async def fake_parse_model(self, uid, model_name, mode):
         return 1
 
-    fake_images_summary = {"total": 3, "ok": 2, "skipped": 1, "failed": 0, "failed_urls": []}
+    fake_summary = {
+        "total": 3, "ok": 2, "skipped": 1, "failed": 0, "failed_urls": [],
+    }
+    download_mock = AsyncMock(return_value=fake_summary)
 
     with (
-        patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model),
-        patch.object(
-            parsing_command, "_download_images", new=AsyncMock(return_value=fake_images_summary),
-        ) as mock_dl,
+        patch(
+            "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+            new=fake_parse_model,
+        ),
+        patch(
+            "bili_unit.parsing.command.ParsingMaterializer.download_images",
+            new=download_mock,
+        ),
     ):
         result = await parsing_command.parse_uid(uid=4004, download_images=True)
 
     assert result.status == ParsingTaskStatus.SUCCESS
-    mock_dl.assert_awaited_once_with(4004)
+    download_mock.assert_awaited_once_with(4004)
+
+    task = await _read_task(4004, settings)
+    assert task is not None
+    assert task["images"] == fake_summary
 
 
-@pytest.mark.asyncio
-async def test_parse_uid_without_download_images(parsing_command):
-    """download_images=False (default) must NOT call _download_images."""
+async def test_parse_uid_without_download_images_does_not_call_downloader(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    """download_images=False (default) skips the downloader entirely; the
+    images block in the task payload stays None."""
 
-    async def fake_parse_model(uid, model_name, mode):
+    async def fake_parse_model(self, uid, model_name, mode):
         return 1
 
+    download_mock = AsyncMock()
+
     with (
-        patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model),
-        patch.object(
-            parsing_command, "_download_images", new=AsyncMock(),
-        ) as mock_dl,
+        patch(
+            "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+            new=fake_parse_model,
+        ),
+        patch(
+            "bili_unit.parsing.command.ParsingMaterializer.download_images",
+            new=download_mock,
+        ),
     ):
         await parsing_command.parse_uid(uid=5005, download_images=False)
 
-    mock_dl.assert_not_awaited()
+    download_mock.assert_not_awaited()
+
+    task = await _read_task(5005, settings)
+    assert task is not None
+    assert task["images"] is None
 
 
-@pytest.mark.asyncio
-async def test_parse_uid_download_images_failure_does_not_affect_status(parsing_command):
-    """If _download_images raises, overall status is still based on model parsing."""
+async def test_parse_uid_download_images_failure_does_not_change_status(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    """An exception out of download_images is logged, swallowed, and does
+    not contaminate the model-level status rollup."""
 
-    async def fake_parse_model(uid, model_name, mode):
+    async def fake_parse_model(self, uid, model_name, mode):
         return 1
 
     with (
-        patch.object(parsing_command, "_parse_model", side_effect=fake_parse_model),
-        patch.object(
-            parsing_command, "_download_images", new=AsyncMock(side_effect=RuntimeError("dl fail")),
+        patch(
+            "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+            new=fake_parse_model,
+        ),
+        patch(
+            "bili_unit.parsing.command.ParsingMaterializer.download_images",
+            new=AsyncMock(side_effect=RuntimeError("dl fail")),
         ),
     ):
         result = await parsing_command.parse_uid(uid=6006, download_images=True)
 
-    # All models succeeded with count > 0, so status is SUCCESS despite image failure
+    # All models succeeded with positive counts → SUCCESS regardless of the
+    # image download outcome.
     assert result.status == ParsingTaskStatus.SUCCESS
 
-
-# ======================================================================
-# ParsingQuery -- task accessors
-# ======================================================================
-
-@pytest.mark.asyncio
-async def test_query_get_task_none(parsing_query):
-    """No task in store -> returns None."""
-    result = await parsing_query.get_task(uid=9999)
-    assert result is None
+    task = await _read_task(6006, settings)
+    assert task is not None
+    # images block remains None because the exception fired before the
+    # update_task_images call.
+    assert task["images"] is None
 
 
-@pytest.mark.asyncio
-async def test_query_get_task_success(parsing_store, parsing_query):
-    """Put a task dict directly into the store, verify query returns correct DTO."""
-    uid = 7007
-    tv = ParsingTaskValue(
-        uid=uid,
-        status=ParsingTaskStatus.SUCCESS,
-        models={
-            "user_profile": {"status": "SUCCESS", "count": 1},
-            "video_work": {"status": "SUCCESS", "count": 10},
-            "article_post": {"status": "FAILED", "count": 0},
-        },
-        created_at=1700000000000,
-        updated_at=1700000001000,
-    )
-    await parsing_store.put(_task_key(uid), tv.to_dict())
+# ---------------------------------------------------------------------------
+# parse_uid — passes mode through to the materializer.
+# ---------------------------------------------------------------------------
 
-    dto = await parsing_query.get_task(uid)
-    assert dto is not None
-    assert dto.uid == uid
-    assert dto.status == ParsingTaskStatus.SUCCESS
-    assert dto.created_at == 1700000000000
-    assert dto.updated_at is not None  # auto-injected by store
+async def test_parse_uid_passes_mode_through_to_materializer(
+    parsing_command: ParsingCommand,
+):
+    """The ``mode`` argument should reach every per-model materializer call
+    unchanged — full vs incremental gates the materializer's skip logic."""
+    seen: list[tuple[int, str, str]] = []
 
-    # Model DTOs
-    assert "user_profile" in dto.models
-    assert dto.models["user_profile"].status == ParsingModelStatus.SUCCESS
-    assert dto.models["user_profile"].count == 1
+    async def fake_parse_model(self, uid, model_name, mode):
+        seen.append((uid, model_name, mode))
+        return 1
 
-    assert dto.models["video_work"].count == 10
+    with patch(
+        "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+        new=fake_parse_model,
+    ):
+        await parsing_command.parse_uid(uid=7007, mode="incremental")
 
-    assert dto.models["article_post"].status == ParsingModelStatus.FAILED
-    assert dto.models["article_post"].count == 0
+    assert {entry[2] for entry in seen} == {"incremental"}
+    assert [entry[1] for entry in seen] == list(EXPECTED_MODEL_ORDER)
 
 
-@pytest.mark.asyncio
-async def test_query_list_tasks(parsing_store, parsing_query):
-    """Put multiple task dicts, verify list_tasks returns all sorted by uid."""
-    for uid in (100, 200, 300):
-        tv = ParsingTaskValue(
-            uid=uid,
-            status=ParsingTaskStatus.SUCCESS,
-            models={"user_profile": {"status": "SUCCESS", "count": 1}},
-            created_at=1700000000000,
+# ---------------------------------------------------------------------------
+# End-to-end — real materializer over seeded raw payloads
+# ---------------------------------------------------------------------------
+
+async def test_parse_uid_end_to_end_writes_typed_rows(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    """Drive the real ParsingMaterializer through ParsingCommand by seeding
+    the FetchingStore raw DB with one minimal payload per model that has a
+    listing endpoint. The user_profile and video_work models are sufficient
+    to confirm the wiring; the remaining four return 0 (no listing seeded)
+    and trigger PARTIAL — that's exactly the expected behaviour for a
+    fresh uid with only those two endpoints fetched."""
+    uid = 9001
+
+    # Seed the raw DB before the command runs.
+    seed_ctx = UidContext(uid=uid, root=settings.bili_db_dir)
+    await seed_ctx.open()
+    try:
+        fetch = FetchingStore(seed_ctx)
+
+        # user_profile required raws.
+        await fetch.save_raw_payload(
+            "user_info", "",
+            {"mid": uid, "name": "real", "face": "https://example.com/f.jpg"},
         )
-        await parsing_store.put(_task_key(uid), tv.to_dict())
+        await fetch.save_raw_payload(
+            "relation_info", "", {"following": 1, "follower": 2},
+        )
+        await fetch.save_raw_payload(
+            "up_stat", "", {"archive": {"view": 10}, "article": {"view": 0}, "likes": 0},
+        )
 
-    tasks = await parsing_query.list_tasks()
-    assert len(tasks) == 3
-    assert [t["uid"] for t in tasks] == [100, 200, 300]
-    assert all(t["status"] == ParsingTaskStatus.SUCCESS for t in tasks)
-    assert all(t["model_count"] == 1 for t in tasks)
+        # video_work fanout — one bvid.
+        await fetch.save_raw_payload(
+            "video_detail", "BV1real",
+            {
+                "info": {
+                    "bvid": "BV1real",
+                    "title": "Real Video",
+                    "pages": [],
+                    "stat": {},
+                    "owner": {},
+                },
+                "tags": [],
+            },
+        )
+    finally:
+        await seed_ctx.close()
 
+    result = await parsing_command.parse_uid(uid=uid, mode="full")
 
-@pytest.mark.asyncio
-async def test_query_list_tasks_empty(parsing_query):
-    """Empty store -> empty list."""
-    tasks = await parsing_query.list_tasks()
-    assert tasks == []
+    # 4 of 6 models produced 0 rows in full mode → PARTIAL.
+    assert result.status == ParsingTaskStatus.PARTIAL
 
+    # Verify rows actually landed in the parsing main DB.
+    read_ctx = UidContext(uid=uid, root=settings.bili_db_dir)
+    await read_ctx.open()
+    try:
+        ps = ParsingStore(read_ctx)
+        assert await ps.get_existing_item_ids("user_profile") == {str(uid)}
+        assert await ps.get_existing_item_ids("video_work") == {"BV1real"}
 
-# ======================================================================
-# ParsingQuery -- typed object accessors
-# ======================================================================
+        profile = await ps.get_user_profile_payload(uid)
+        assert profile is not None
+        assert profile["name"] == "real"
 
-@pytest.mark.asyncio
-async def test_query_get_user_profile(parsing_store, parsing_query):
-    """Put a user_profile dict, verify query returns it."""
-    uid = 8008
-    profile = {"uid": uid, "name": "test_user", "face": "https://example.com/face.jpg"}
-    await parsing_store.put(_item_key(uid, "user_profile", str(uid)), profile)
+        video = await ps.get_video_payload("BV1real")
+        assert video is not None
+        assert video["title"] == "Real Video"
+    finally:
+        await read_ctx.close()
 
-    result = await parsing_query.get_user_profile(uid)
-    assert result is not None
-    assert result["uid"] == uid
-    assert result["name"] == "test_user"
-
-
-@pytest.mark.asyncio
-async def test_query_get_user_profile_none(parsing_query):
-    """No profile stored -> returns None."""
-    result = await parsing_query.get_user_profile(uid=9999)
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_query_list_video_details(parsing_store, parsing_query):
-    """Legacy list_video_details reads from the canonical video_work model dir."""
-    uid = 9009
-    for bvid in ("BV1xx", "BV2yy", "BV3zz"):
-        detail = {"_model_name": "video_work", "bvid": bvid, "title": f"Video {bvid}", "uid": uid}
-        await parsing_store.put(_item_key(uid, "video_work", bvid), detail)
-
-    results = await parsing_query.list_video_details(uid)
-    assert len(results) == 3
-    bvids = {r["bvid"] for r in results}
-    assert bvids == {"BV1xx", "BV2yy", "BV3zz"}
-
-
-@pytest.mark.asyncio
-async def test_query_list_video_details_empty(parsing_query):
-    """No videos stored -> empty list."""
-    results = await parsing_query.list_video_details(uid=9999)
-    assert results == []
-
-
-@pytest.mark.asyncio
-async def test_query_get_video_detail(parsing_store, parsing_query):
-    """Legacy get_video_detail reads from the canonical video_work model dir."""
-    uid = 1010
-    bvid = "BV1abc"
-    detail = {"_model_name": "video_work", "bvid": bvid, "title": "Test Video", "duration": 120}
-    await parsing_store.put(_item_key(uid, "video_work", bvid), detail)
-
-    result = await parsing_query.get_video_detail(uid, bvid)
-    assert result is not None
-    assert result["bvid"] == bvid
-    assert result["title"] == "Test Video"
-
-
-@pytest.mark.asyncio
-async def test_query_get_video_detail_none(parsing_query):
-    """No matching video -> returns None."""
-    result = await parsing_query.get_video_detail(uid=9999, bvid="BVnone")
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_query_list_articles(parsing_store, parsing_query):
-    uid = 1111
-    for cvid in ("cv100", "cv200"):
-        article = {"_model_name": "article_post", "cvid": cvid, "title": f"Article {cvid}"}
-        await parsing_store.put(_item_key(uid, "article_post", cvid), article)
-
-    results = await parsing_query.list_articles(uid)
-    assert len(results) == 2
-    assert {r["cvid"] for r in results} == {"cv100", "cv200"}
-
-
-@pytest.mark.asyncio
-async def test_query_get_article(parsing_store, parsing_query):
-    uid = 1212
-    cvid = "cv999"
-    article = {"_model_name": "article_post", "cvid": cvid, "title": "Deep Dive"}
-    await parsing_store.put(_item_key(uid, "article_post", cvid), article)
-
-    result = await parsing_query.get_article(uid, cvid)
-    assert result is not None
-    assert result["cvid"] == cvid
-    assert result["title"] == "Deep Dive"
-
-
-@pytest.mark.asyncio
-async def test_query_list_opus(parsing_store, parsing_query):
-    uid = 1313
-    for opus_id in ("op1", "op2", "op3"):
-        opus = {"_model_name": "opus_post", "opus_id": opus_id, "content": f"Opus {opus_id}"}
-        await parsing_store.put(_item_key(uid, "opus_post", opus_id), opus)
-
-    results = await parsing_query.list_opus(uid)
-    assert len(results) == 3
-    assert {r["opus_id"] for r in results} == {"op1", "op2", "op3"}
-
-
-@pytest.mark.asyncio
-async def test_query_get_opus(parsing_store, parsing_query):
-    uid = 1414
-    opus_id = "op42"
-    opus = {"_model_name": "opus_post", "opus_id": opus_id, "content": "Hello opus"}
-    await parsing_store.put(_item_key(uid, "opus_post", opus_id), opus)
-
-    result = await parsing_query.get_opus(uid, opus_id)
-    assert result is not None
-    assert result["opus_id"] == opus_id
-    assert result["content"] == "Hello opus"
-
-
-@pytest.mark.asyncio
-async def test_query_list_dynamics(parsing_store, parsing_query):
-    uid = 1515
-    for dyn_id in ("dyn10", "dyn20"):
-        dynamic = {"_model_name": "dynamic_event", "dynamic_id": dyn_id, "text": f"Dynamic {dyn_id}"}
-        await parsing_store.put(_item_key(uid, "dynamic_event", dyn_id), dynamic)
-
-    results = await parsing_query.list_dynamics(uid)
-    assert len(results) == 2
-    assert {r["dynamic_id"] for r in results} == {"dyn10", "dyn20"}
-
-
-@pytest.mark.asyncio
-async def test_query_get_dynamic(parsing_store, parsing_query):
-    uid = 1616
-    dynamic_id = "dyn99"
-    dynamic = {"_model_name": "dynamic_event", "dynamic_id": dynamic_id, "text": "Some dynamic"}
-    await parsing_store.put(_item_key(uid, "dynamic_event", dynamic_id), dynamic)
-
-    result = await parsing_query.get_dynamic(uid, dynamic_id)
-    assert result is not None
-    assert result["dynamic_id"] == dynamic_id
-    assert result["text"] == "Some dynamic"
-
-
-# ======================================================================
-# ParsingQuery -- images DTO in task
-# ======================================================================
-
-@pytest.mark.asyncio
-async def test_query_get_task_with_images(parsing_store, parsing_query):
-    """Task with images block should populate the images DTO."""
-    uid = 1717
-    tv = ParsingTaskValue(
-        uid=uid,
-        status=ParsingTaskStatus.SUCCESS,
-        models={"user_profile": {"status": "SUCCESS", "count": 1}},
-        images={"total": 5, "ok": 3, "skipped": 1, "failed": 1, "failed_urls": ["https://bad"]},
-        created_at=1700000000000,
-    )
-    await parsing_store.put(_task_key(uid), tv.to_dict())
-
-    dto = await parsing_query.get_task(uid)
-    assert dto is not None
-    assert dto.images is not None
-    assert dto.images.total == 5
-    assert dto.images.ok == 3
-    assert dto.images.skipped == 1
-    assert dto.images.failed == 1
-    assert dto.images.failed_urls == ["https://bad"]
-
-
-@pytest.mark.asyncio
-async def test_query_get_task_without_images(parsing_store, parsing_query):
-    """Task without images block -> images DTO is None."""
-    uid = 1818
-    tv = ParsingTaskValue(
-        uid=uid,
-        status=ParsingTaskStatus.SUCCESS,
-        models={"user_profile": {"status": "SUCCESS", "count": 1}},
-        created_at=1700000000000,
-    )
-    await parsing_store.put(_task_key(uid), tv.to_dict())
-
-    dto = await parsing_query.get_task(uid)
-    assert dto is not None
-    assert dto.images is None
+    task = await _read_task(uid, settings)
+    assert task is not None
+    assert task["models"]["user_profile"]["status"] == ParsingModelStatus.SUCCESS.value
+    assert task["models"]["user_profile"]["count"] == 1
+    assert task["models"]["video_work"]["status"] == ParsingModelStatus.SUCCESS.value
+    assert task["models"]["video_work"]["count"] == 1

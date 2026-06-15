@@ -5,14 +5,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
 
-import pytest
 import pytest_asyncio
 
-from bili_unit.parsing.data import ParsingDataStore
-from bili_unit.parsing.keys import _item_key
+from bili_unit._db import UidContext
+from bili_unit.fetching._store import FetchingStore
+from bili_unit.parsing._store import ParsingStore
 from bili_unit.parsing.materializer import ParsingMaterializer
+from bili_unit.parsing.models.video_detail import VideoDetail
 from bili_unit.parsing.models.video_subtitle import (
     PARSER,
     SubtitlePage,
@@ -355,21 +356,48 @@ def test_video_subtitle_v1_dict_migration():
 
 # ---------------------------------------------------------------------------
 # Materializer — _parse_video_subtitle
+#
+# These tests exercise the new ``ParsingMaterializer(ctx, parse_store,
+# fetch_store)`` signature against real SQLite databases on tmp_path: the
+# fanout payloads are seeded into the fetching raw DB and the parsed rows
+# are read back from the parsing main DB.
 # ---------------------------------------------------------------------------
 
+UID = 4242
+
+
 @pytest_asyncio.fixture
-async def parsing_store(tmp_path):
-    store = ParsingDataStore(tmp_path / "parsing")
-    await store.open()
-    yield store
-    await store.close()
+async def stores(tmp_path: Path):
+    ctx = UidContext(uid=UID, root=tmp_path)
+    await ctx.open()
+    try:
+        yield ctx, ParsingStore(ctx), FetchingStore(ctx)
+    finally:
+        await ctx.close()
 
 
-@pytest.mark.asyncio
-@pytest.mark.skip(reason="moved to Phase 6 rewrite — materializer signature changed in Phase 3.2")
-async def test_materializer_writes_video_subtitle(parsing_store):
+def _zh_subtitle_raw(lan: str = "zh-CN") -> dict:
+    return {
+        "pages": [{"cid": 1, "part": "p1"}],
+        "subtitle": [
+            {"page_index": 0, "cid": 1, "content": [
+                {"lan": lan, "lan_doc": lan,
+                 "body": [{"from": 0.0, "to": 1.0, "content": "x"}]},
+            ]},
+        ],
+    }
+
+
+async def _seed_parent_video(parse_store: ParsingStore, bvid: str) -> None:
+    """Insert a parent ``video`` row so the FK from video_subtitle holds."""
+    await parse_store.save_video(VideoDetail(bvid=bvid, title=f"parent {bvid}"))
+
+
+async def test_materializer_writes_video_subtitle(stores):
     """``_parse_video_subtitle`` reads fetching fanout payloads and writes
     one VideoSubtitle row per bvid."""
+    ctx, parse_store, fetch_store = stores
+
     raw_a = {
         "pages": [{"cid": 1, "part": "p1"}],
         "subtitle": [
@@ -387,75 +415,81 @@ async def test_materializer_writes_video_subtitle(parsing_store):
             ]},
         ],
     }
-    fake_fetch = MagicMock()
-    fake_fetch.list_fanout_payloads = AsyncMock(return_value={
-        "BVA1": raw_a, "BVB2": raw_b,
-    })
-    materializer = ParsingMaterializer(parsing_store, fake_fetch)
+    await fetch_store.save_raw_payload("video_subtitle", "BVA1", raw_a)
+    await fetch_store.save_raw_payload("video_subtitle", "BVB2", raw_b)
 
-    count = await materializer.parse_model(uid=42, model_name="video_subtitle", mode="full")
+    # Parent video rows must exist for the video_subtitle FK to hold.
+    await _seed_parent_video(parse_store, "BVA1")
+    await _seed_parent_video(parse_store, "BVB2")
+
+    materializer = ParsingMaterializer(
+        ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
+    )
+    count = await materializer.parse_model(
+        uid=UID, model_name="video_subtitle", mode="full",
+    )
 
     assert count == 2
-    fake_fetch.list_fanout_payloads.assert_awaited_with(42, "video_subtitle")
 
-    obj_a = await parsing_store.get(_item_key(42, "video_subtitle", "BVA1"))
+    obj_a = await parse_store.get_video_subtitle_payload("BVA1")
     assert obj_a is not None
     assert obj_a["bvid"] == "BVA1"
     assert obj_a["pages"][0]["lan"] == "zh-CN"
 
-    obj_b = await parsing_store.get(_item_key(42, "video_subtitle", "BVB2"))
+    obj_b = await parse_store.get_video_subtitle_payload("BVB2")
     assert obj_b is not None
     assert obj_b["pages"][0]["lan"] == "en-US"
 
 
-@pytest.mark.asyncio
-@pytest.mark.skip(reason="moved to Phase 6 rewrite — materializer signature changed in Phase 3.2")
-async def test_materializer_returns_zero_when_no_fanout(parsing_store):
+async def test_materializer_returns_zero_when_no_fanout(stores):
     """No fanout entries → handler returns 0 without writing anything."""
-    fake_fetch = MagicMock()
-    fake_fetch.list_fanout_payloads = AsyncMock(return_value={})
-    materializer = ParsingMaterializer(parsing_store, fake_fetch)
+    ctx, parse_store, fetch_store = stores
 
-    count = await materializer.parse_model(uid=43, model_name="video_subtitle", mode="full")
-
-    assert count == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.skip(reason="moved to Phase 6 rewrite — materializer signature changed in Phase 3.2")
-async def test_materializer_skips_existing_in_incremental_mode(parsing_store):
-    """Existing rows are kept; only fresh bvids are written in
-    ``incremental`` mode."""
-    raw = {
-        "subtitle": [
-            {"page_index": 0, "cid": 1, "content": [
-                {"lan": "zh-CN", "body": [{"from": 0.0, "to": 1.0, "content": "x"}]},
-            ]},
-        ],
-    }
-    fake_fetch = MagicMock()
-    fake_fetch.list_fanout_payloads = AsyncMock(return_value={
-        "BV01": raw, "BV02": raw,
-    })
-    materializer = ParsingMaterializer(parsing_store, fake_fetch)
-
-    # Pre-seed BV01 so it should be skipped.
-    await parsing_store.put(
-        _item_key(99, "video_subtitle", "BV01"),
-        {"_model_name": "video_subtitle", "bvid": "BV01"},
+    materializer = ParsingMaterializer(
+        ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
+    )
+    count = await materializer.parse_model(
+        uid=UID, model_name="video_subtitle", mode="full",
     )
 
+    assert count == 0
+    assert await parse_store.get_existing_item_ids("video_subtitle") == set()
+
+
+async def test_materializer_skips_existing_in_incremental_mode(stores):
+    """Existing rows are kept; only fresh bvids are written in
+    ``incremental`` mode."""
+    ctx, parse_store, fetch_store = stores
+
+    # Pre-seed BV01 directly so it should be skipped.
+    await _seed_parent_video(parse_store, "BV01")
+    await _seed_parent_video(parse_store, "BV02")
+    seed = VideoSubtitle.from_raw("BV01", _zh_subtitle_raw("zh-HK"))
+    await parse_store.save_video_subtitle(seed)
+
+    # Fanout offers both BV01 (with a different lan) and BV02. Only BV02
+    # should be written; BV01's pre-existing row must survive untouched.
+    await fetch_store.save_raw_payload(
+        "video_subtitle", "BV01", _zh_subtitle_raw("zh-CN"),
+    )
+    await fetch_store.save_raw_payload(
+        "video_subtitle", "BV02", _zh_subtitle_raw("zh-CN"),
+    )
+
+    materializer = ParsingMaterializer(
+        ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
+    )
     count = await materializer.parse_model(
-        uid=99, model_name="video_subtitle", mode="incremental",
+        uid=UID, model_name="video_subtitle", mode="incremental",
     )
 
     assert count == 1  # only BV02
-    pre_existing = await parsing_store.get(_item_key(99, "video_subtitle", "BV01"))
-    # Untouched: stored value still carries the sentinel; only ``updated_at``
-    # is injected by the store on write.
-    assert pre_existing is not None
-    assert pre_existing.get("_model_name") == "video_subtitle"
-    assert pre_existing.get("bvid") == "BV01"
-    # Sanity: the materializer would have populated ``pages`` if it re-wrote
-    # the row, so its absence proves the skip path.
-    assert "pages" not in pre_existing
+    bv01 = await parse_store.get_video_subtitle_payload("BV01")
+    assert bv01 is not None
+    # The seeded zh-HK lan survived the run; it was not overwritten by the
+    # zh-CN raw payload that incremental mode chose to skip.
+    assert bv01["pages"][0]["lan"] == "zh-HK"
+
+    bv02 = await parse_store.get_video_subtitle_payload("BV02")
+    assert bv02 is not None
+    assert bv02["pages"][0]["lan"] == "zh-CN"

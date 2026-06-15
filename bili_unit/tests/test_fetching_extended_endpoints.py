@@ -1,9 +1,15 @@
-# tests for the expanded fetching endpoint surface.
+# tests for the expanded fetching endpoint surface (Phase 6 rewrite).
+#
+# Catalog / adapter / pagination tests are unchanged in spirit; the legacy
+# Query + _item_fetch_key writer probe is replaced with direct SQL inspection
+# of the new SQLite raw_payload table.
 
+from __future__ import annotations
+
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
+from bili_unit._db import UidContext
 from bili_unit._env import BiliSettings
 from bili_unit.fetching import EndpointStatus
 from bili_unit.fetching._bilibili_adapter import (
@@ -11,8 +17,8 @@ from bili_unit.fetching._bilibili_adapter import (
     fetch_endpoint,
 )
 from bili_unit.fetching._endpoint_catalog import ENDPOINTS, get_endpoint
-from bili_unit.fetching.keys import _item_fetch_key
-from bili_unit.fetching.query import Query
+from bili_unit.fetching._store import FetchingStore
+from bili_unit.fetching.rate_limit import RateLimitController
 from bili_unit.fetching.runner import Runner
 
 USER_EXTENDED_ENDPOINTS = {
@@ -58,6 +64,23 @@ VIDEO_EXTENDED_ENDPOINTS = {
 }
 
 
+def _settings(tmp_path: Path) -> BiliSettings:
+    return BiliSettings(bili_db_dir=str(tmp_path))
+
+
+def _rate_limit() -> RateLimitController:
+    return RateLimitController(
+        global_qps=1000.0,
+        endpoint_qps=1000.0,
+        video_detail_qps=1000.0,
+        pause_seconds=0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# catalog static checks
+# ---------------------------------------------------------------------------
+
 def test_extended_endpoint_surface_registered():
     names = {ep.name for ep in ENDPOINTS}
     assert names >= USER_EXTENDED_ENDPOINTS
@@ -83,7 +106,10 @@ def test_upower_qa_detail_fanout_registered():
     assert ep.extract_items is not None
 
 
-@pytest.mark.asyncio
+# ---------------------------------------------------------------------------
+# fetch_endpoint pagination strategies
+# ---------------------------------------------------------------------------
+
 async def test_fetch_endpoint_legacy_offset_pagination():
     spec = get_endpoint("dynamics_legacy")
     assert spec is not None
@@ -111,7 +137,6 @@ async def test_fetch_endpoint_legacy_offset_pagination():
         assert r2.is_last_page
 
 
-@pytest.mark.asyncio
 async def test_fetch_endpoint_oid_pagination():
     spec = get_endpoint("media_list")
     assert spec is not None
@@ -137,7 +162,10 @@ async def test_fetch_endpoint_oid_pagination():
         assert r2.is_last_page
 
 
-@pytest.mark.asyncio
+# ---------------------------------------------------------------------------
+# per-page helper plumbing (subtitle / danmakus serialisation)
+# ---------------------------------------------------------------------------
+
 async def test_video_per_page_helper_serialises_pages():
     spec = get_endpoint("video_subtitle")
     assert spec is not None
@@ -160,7 +188,6 @@ async def test_video_per_page_helper_serialises_pages():
     assert result["pages"][1]["part"] == "p2"
 
 
-@pytest.mark.asyncio
 async def test_video_danmaku_objects_are_json_safe():
     from bilibili_api.utils.danmaku import Danmaku
 
@@ -179,7 +206,6 @@ async def test_video_danmaku_objects_are_json_safe():
     assert row["dm_time"] == 1.5
 
 
-@pytest.mark.asyncio
 async def test_upower_qa_detail_item_uses_parent_uid():
     spec = get_endpoint("upower_qa_detail")
     assert spec is not None
@@ -195,44 +221,23 @@ async def test_upower_qa_detail_item_uses_parent_uid():
     instance.get_upower_qa_detail.assert_awaited_once_with(42)
 
 
-@pytest.mark.asyncio
-async def test_generic_query_item_access(stores):
-    ds, es = stores
-    uid = 1
-    await ds.put(_item_fetch_key(uid, "video_subtitle", "BV1"), {
-        "uid": uid,
-        "endpoint": "video_subtitle",
-        "item_id": "BV1",
-        "status": "SUCCESS",
-        "raw_payload": {"subtitle": []},
-        "fetched_at": 100,
-    })
+# ---------------------------------------------------------------------------
+# Runner fan-out integration: a video-level item endpoint actually persists
+# per-item raw payloads via the SQLite store.
+# ---------------------------------------------------------------------------
 
-    qry = Query(ds, es)
-    listed = await qry.list_items(uid, "video_subtitle")
-    assert listed == [("BV1", EndpointStatus.SUCCESS)]
-
-    dto = await qry.get_item(uid, "video_subtitle", "BV1")
-    assert dto is not None
-    assert dto.available
-    assert dto.raw_payload == {"subtitle": []}
-
-    payloads = await qry.list_fanout_payloads(uid, "video_subtitle")
-    assert payloads == {"BV1": {"subtitle": []}}
-
-
-@pytest.mark.asyncio
-async def test_runner_can_fanout_new_video_endpoint(stores, rl_ctl):
-    ds, es = stores
+async def test_runner_can_fanout_new_video_endpoint(tmp_path: Path):
+    settings = _settings(tmp_path)
+    rl = _rate_limit()
     uid = 2
 
     async def fake_item(bvid, cred, **kw):
         return {"subtitle": [{"bvid": bvid}]}
 
-    async def fake_fetch_endpoint(uid, spec, credential, request_params, **kw):
+    async def fake_fetch_endpoint(uid_arg, spec, credential, request_params, **kw):
         assert spec.name == "videos"
         return FetchPageResult(
-            uid=uid,
+            uid=uid_arg,
             endpoint="videos",
             raw_payload={
                 "list": {"vlist": [{"bvid": "BV1"}, {"bvid": "BV2"}]},
@@ -244,11 +249,27 @@ async def test_runner_can_fanout_new_video_endpoint(stores, rl_ctl):
     spec = get_endpoint("video_subtitle")
     assert spec is not None
 
-    with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_item)):
-        result = await Runner(ds, es, rl_ctl, BiliSettings(), fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint)).run_or_resume(
-            uid, endpoints=["video_subtitle"], mode="incremental",
-        )
+    ctx = UidContext(uid=uid, root=tmp_path)
+    await ctx.open()
+    try:
+        store = FetchingStore(ctx)
+        with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_item)):
+            runner = Runner(
+                store, rl, settings,
+                fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint),
+            )
+            result = await runner.run_or_resume(
+                uid, endpoints=["video_subtitle"], mode="incremental",
+            )
 
-    assert result.endpoints["video_subtitle"] == EndpointStatus.SUCCESS
-    assert await ds.get(_item_fetch_key(uid, "video_subtitle", "BV1")) is not None
-    assert await ds.get(_item_fetch_key(uid, "video_subtitle", "BV2")) is not None
+        assert result.endpoints["video_subtitle"] == EndpointStatus.SUCCESS
+
+        # raw_payload table now has BV1 and BV2 entries for video_subtitle.
+        items = await store.list_completed_items("video_subtitle")
+        assert items == ["BV1", "BV2"]
+        bv1 = await store.get_raw_payload("video_subtitle", "BV1")
+        bv2 = await store.get_raw_payload("video_subtitle", "BV2")
+        assert bv1 == {"subtitle": [{"bvid": "BV1"}]}
+        assert bv2 == {"subtitle": [{"bvid": "BV2"}]}
+    finally:
+        await ctx.close()

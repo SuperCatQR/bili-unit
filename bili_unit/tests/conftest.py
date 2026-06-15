@@ -1,14 +1,10 @@
-# shared fixtures for bili_unit/fetching tests.
+# shared fixtures for bili_unit tests.
 #
-# Phase 3 transition: the per-stage SQLite stores are now request-scoped (one
-# UidContext per fetch_uid call), so the legacy ``(ds, es)`` tuple fixture is
-# gone. The test files that constructed Runner/Command directly with old
-# DataStore / ErrorStore are listed in ``collect_ignore_glob`` below; they are
-# rewritten in Phase 6 against the new store API.
-#
-# What still works at the unit level: pytest-asyncio loop policy, the global
-# retry-sleep mock (which keeps every retry-bearing test fast), and the global
-# credential mock (so no .env is needed).
+# After Phase 6 every test file targets the SQLite stores; the legacy
+# (ds, es) tuple fixture is gone for good. What still lives here:
+#   * pytest-asyncio loop policy (default_loop_scope = 'function' — set in pyproject)
+#   * a global retry-sleep mock (keeps retry-bearing tests fast)
+#   * a global credential mock (so no .env is needed)
 
 from unittest.mock import AsyncMock, patch
 
@@ -19,37 +15,8 @@ from bilibili_api import Credential
 from bili_unit._env import BiliSettings  # noqa: F401 — exposed for downstream tests via import
 
 # ---------------------------------------------------------------------------
-# Phase 3 transition: cross-stage / unit-level test files that exercise the
-# now-deprecated read API (BiliQuery, manifest, KV storage contract) OR test
-# the old per-stage DataStore / ErrorStore directly. They are temporarily
-# skipped wholesale; Phase 4/6 will rewrite or delete them.
-# ---------------------------------------------------------------------------
-collect_ignore_glob = [
-    # Phase 6 — cross-stage / SDK-facing tests (rewrite against unit-level facade):
-    "test_delete_uid.py",
-    "test_sdk_assemble_settings.py",
-    "test_sdk_session.py",
-    "test_sdk_public_surface.py",
-    "test_task_failed_item_ids.py",
-    # Phase 6 — runner / command tests (rewrite against new SQLite stores):
-    "test_fetching_runner.py",
-    "test_fetching_video_detail.py",
-    "test_fetching_command.py",
-    "test_fetching_integration.py",
-    "test_fetching_media_list_and_runner_safety.py",
-    "test_fetching_extended_endpoints.py",
-    "test_processing_runner.py",
-    "test_processing_cost.py",
-    "test_processing_cli_filters.py",
-    "test_processing_subtitle_priority.py",
-    "test_parsing_command.py",
-    "test_parsing_infra.py",
-    "test_parsing_video_subtitle.py",
-]
-
-# ---------------------------------------------------------------------------
-# Global mocks (still used by the surviving fetching/parsing/processing tests
-# that don't touch storage directly — auth flow, retry timing, etc.)
+# Global mocks (used by every fetching/parsing/processing test that doesn't
+# need an authenticated request — auth flow, retry timing, etc.)
 # ---------------------------------------------------------------------------
 
 # fake credential for auth-free tests

@@ -694,10 +694,8 @@ async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path):
     assert not (tmp_path / "proc-asr-cache").exists()
 
 
-# ---------- video_full aggregate view ----------------------------------------
-# This used the deleted-in-Phase-4 BiliQuery / ProcessingQuery surface; the
-# Phase 6 rewrite will replace it with SQL view assertions.
-
-@pytest.mark.skip(reason="moved to Phase 6 rewrite — uses deprecated BiliQuery surface")
-def test_processing_video_full_view_legacy_placeholder():
-    """Placeholder: see git history for the old test contents."""
+# NOTE: the legacy ``test_processing_video_full_view_legacy_placeholder`` skip
+# stub (which referenced the deleted ``BiliQuery``/``ProcessingQuery`` surface)
+# was dropped in the Phase 6 rewrite. Aggregate-view assertions now live in
+# the SQLite-store contract tests (see test_processing_store_sqlite.py and
+# the per-stage SQL view tests).
