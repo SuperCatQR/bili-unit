@@ -1,22 +1,22 @@
-# bili_unit/processing — common DTOs, exceptions.
+# bili_unit/processing — common enums, exceptions, write-side result DTO.
 #
 # Phase 3.3: ``ProcessingStore`` (SQLite) replaces the old file-directory
 # ``ProcessingDataStore`` + ``ProcessingErrorStore`` pair.  ``assemble()``
 # now returns a single ``ProcessingCommand``; per-uid stores are constructed
 # inside ``ProcessingCommand.process_uid``.
 #
-# DTOs (``ProcessingItemDTO`` / ``ProcessingTaskDTO`` / ...) and the legacy
-# ``ProcessingErrorDTO`` are still imported by tests and the legacy
-# ``ProcessingQuery``; Phase 4 prunes them. They are kept here as inert
-# shape definitions.
+# Phase 4.3: the legacy read-side DTOs (``ProcessingItemDTO`` /
+# ``ProcessingTaskDTO`` / ``ProcessingPipelineDTO`` / ``ProcessingErrorDTO``)
+# and the ``DataError`` hybrid exception are gone -- consumers either query
+# the SQLite database directly or use the write-side ``ProcessingCommandResult``.
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
 
 # ---------------------------------------------------------------------------
 # Status enums
 # ---------------------------------------------------------------------------
+
 
 class ProcessingTaskStatus(StrEnum):
     PENDING = "PENDING"
@@ -91,68 +91,9 @@ class QueueError(ProcessingError):
     """队列操作错误。"""
 
 
-class DataError(ProcessingError):
-    """存储 / 序列化失败。
-
-    The legacy file-directory stores (``data.py`` / ``error.py``, still on
-    disk for old tests) need a multi-inheritance hybrid with
-    :class:`bili_unit._storage.DecodeError`. To keep the import graph clean
-    we register that hybrid lazily; this base class stays a plain
-    ``ProcessingError`` subclass.
-    """
-
-
 # ---------------------------------------------------------------------------
-# DTOs (Phase 4 will prune these; kept here for ProcessingQuery compatibility)
+# Write-side result DTO (returned by ProcessingCommand.process_uid)
 # ---------------------------------------------------------------------------
-
-@dataclass
-class ProcessingErrorDTO:
-    """Read-only error record returned by ProcessingQuery.list_errors()."""
-
-    id: int
-    uid: int | None
-    pipeline: str | None
-    item_type: str | None
-    item_id: str | None
-    error_type: str
-    message: str
-    retryable: bool | None  # True / False / None when unknown (legacy "unknown")
-    detail: dict[str, Any] | None = None
-    timestamp: int | None = None
-
-
-@dataclass
-class ProcessingItemDTO:
-    uid: int
-    pipeline: str
-    item_type: str
-    item_id: str
-    status: ProcessingItemStatus
-    result: dict[str, Any] | None = None
-    processed_at: int | None = None
-    errors: list[ProcessingErrorDTO] = field(default_factory=list)
-
-
-@dataclass
-class ProcessingPipelineDTO:
-    name: str
-    status: ProcessingPipelineStatus
-    items: dict[str, dict[str, int]] = field(default_factory=dict)
-    """items[item_type] → {total, completed, failed, skipped}."""
-
-
-@dataclass
-class ProcessingTaskDTO:
-    uid: int
-    status: ProcessingTaskStatus
-    pipelines: dict[str, ProcessingPipelineDTO] = field(default_factory=dict)
-    created_at: int | None = None
-    updated_at: int | None = None
-    failed_item_ids: list[str] = field(default_factory=list)
-    """Aggregated identifiers of failed work units; entries encoded as
-    ``"pipeline:item_type:item_id"`` (e.g. ``"audio:transcription:BV1abc"``)."""
-
 
 @dataclass
 class ProcessingCommandResult:
@@ -211,16 +152,11 @@ __all__ = [
     "AudioError",
     "AudioSizeError",
     "ConvertError",
-    "DataError",
     "DownloadError",
     "ProcessingCommandResult",
     "ProcessingError",
-    "ProcessingErrorDTO",
-    "ProcessingItemDTO",
     "ProcessingItemStatus",
-    "ProcessingPipelineDTO",
     "ProcessingPipelineStatus",
-    "ProcessingTaskDTO",
     "ProcessingTaskStatus",
     "QueueError",
     "assemble",

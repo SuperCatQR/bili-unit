@@ -2,9 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
-
-from .._storage import DecodeError as _DecodeError
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .._env import BiliSettings
@@ -71,50 +69,6 @@ class ResourceUnavailableError(FetchingError):
     retry (item-level fan-out).  Distinct from :class:`AuthError` so it does NOT abort
     a whole fan-out — only the single failing item / endpoint.
     """
-
-
-class DataError(_DecodeError, FetchingError):
-    """Storage / serialisation failure."""
-
-
-# ---------------------------------------------------------------------------
-# Query DTOs (cf. fetching_engineering.md §11)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class EndpointDTO:
-    uid: int
-    endpoint: str
-    status: EndpointStatus
-    available: bool
-    raw_payload: dict[str, Any] | None = None
-    fetched_at: int | None = None
-    progress: dict[str, Any] | None = None
-    errors: list["FetchingErrorDTO"] = field(default_factory=list)
-
-
-@dataclass
-class TaskDTO:
-    uid: int
-    status: TaskStatus
-    endpoints: dict[str, EndpointDTO] = field(default_factory=dict)
-    created_at: int | None = None
-    updated_at: int | None = None
-    failed_item_ids: list[str] = field(default_factory=list)
-    """Aggregated identifiers of failed work units (``"endpoint"`` or
-    ``"endpoint:item_id"``). Empty when nothing failed."""
-
-
-@dataclass
-class FetchingErrorDTO:
-    id: int
-    uid: int | None
-    endpoint: str | None
-    error_type: str
-    message: str
-    retryable: bool | None  # True / False / None when unknown (legacy "unknown")
-    detail: dict[str, Any] | None = None
-    timestamp: int | None = None
 
 
 # ---------------------------------------------------------------------------

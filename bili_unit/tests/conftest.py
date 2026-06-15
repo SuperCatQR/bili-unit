@@ -41,6 +41,8 @@ collect_ignore_glob = [
     "test_fetching_video_detail.py",
     "test_fetching_command.py",
     "test_fetching_query.py",
+    "test_fetching_protocol.py",
+    "test_fetching_task.py",
     "test_fetching_rate_limit.py",
     "test_fetching_integration.py",
     "test_fetching_media_list_and_runner_safety.py",
@@ -54,6 +56,10 @@ collect_ignore_glob = [
     "test_processing_subtitle_priority.py",
     "test_processing_data_error.py",
     "test_parsing_data.py",
+    "test_parsing_command.py",
+    "test_parsing_infra.py",
+    "test_parsing_protocol.py",
+    "test_parsing_video_subtitle.py",
 ]
 
 # ---------------------------------------------------------------------------

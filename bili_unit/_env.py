@@ -35,8 +35,7 @@ class BiliSettings(BaseSettings):
     bili_ac_time_value: str = ""
 
     # === storage root (SQLite layout) ===
-    # Replaces the per-stage data_dir / error_dir / manifest_dir trio. One uid
-    # maps to three locations under this root:
+    # One uid maps to three locations under this root:
     #   {bili_db_dir}/{uid}.db        ← consumer contract  (parsing + processing tables, task state, errors)
     #   {bili_db_dir}/{uid}.raw.db    ← producer-private   (raw fetching payloads + cursor)
     #   {bili_db_dir}/{uid}/          ← workdir            (downloaded images, audio caches; DB stores rel paths)
@@ -44,15 +43,7 @@ class BiliSettings(BaseSettings):
     bili_db_dir: str = "data/bili"
 
     # === fetching stage ===
-    # fetching config (engineering doc §14)
-    bili_fetching_data_dir: str = "data/bili/fetching/data"
-    bili_fetching_error_dir: str = "data/bili/fetching/error"
-
-    # === manifest (cross-stage aggregate) ===
-    # Per-uid summary blob written by BiliCommand after each stage run; CLI
-    # ``manifest <uid>`` reads it back. Lives outside any single stage so it
-    # can survive when individual stage stores are wiped.
-    bili_manifest_dir: str = "data/bili/manifest"
+    # Network / runner config. Storage paths are derived from bili_db_dir above.
     bili_fetching_http_backend: str = "aiohttp"
     bili_fetching_impersonate: str = "chrome131"
     bili_fetching_global_qps: float = 1.0  # was 0.5 (issue #2)
@@ -67,18 +58,14 @@ class BiliSettings(BaseSettings):
     bili_fetching_stale_running_threshold_seconds: int = 900  # issue #3: RUNNING task with updated_at older than this is treated as PARTIAL (process killed/timeout)
 
     # === parsing stage ===
-    # Storage path
-    bili_parsing_data_dir: str = "data/bili/parsing"
-
     # Image downloading
     bili_parsing_image_concurrency: int = 8
     bili_parsing_image_timeout: float = 30.0
 
     # === processing stage ===
-    # Storage paths
-    bili_processing_data_dir: str = "data/bili/processing/data"
+    # Storage path for ASR audio cache and ffmpeg temp dirs (these are large
+    # binary blobs that don't belong in the SQLite databases).
     bili_processing_temp_dir: str = "data/bili/processing/temp"
-    bili_processing_error_dir: str = "data/bili/processing/error"
 
     # Worker pools
     bili_processing_audio_workers: int = 2

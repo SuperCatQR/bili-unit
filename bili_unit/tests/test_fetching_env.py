@@ -49,7 +49,7 @@ def test_env_reads_from_env_vars(monkeypatch):
 def test_env_fetching_defaults():
     """Fetching config has expected defaults."""
     s = get_settings()
-    assert s.bili_fetching_data_dir == "data/bili/fetching/data"
+    assert s.bili_db_dir == "data/bili"
     assert s.bili_fetching_http_backend == "aiohttp"
     assert s.bili_fetching_global_qps == 1.0
     assert s.bili_fetching_max_retries == 3
