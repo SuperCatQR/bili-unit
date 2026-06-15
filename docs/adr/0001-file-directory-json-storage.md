@@ -1,6 +1,6 @@
 # File-directory JSON as the storage backend
 
-Status: accepted (2026-06-14, unified across stages in commit `1499f4c`)
+Status: superseded (2026-06-14, unified across stages in commit `1499f4c`; superseded 2026-06-15 by [0005](0005-sqlite-as-deliverable.md))
 
 ## Context
 
