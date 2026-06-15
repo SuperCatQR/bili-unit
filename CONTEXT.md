@@ -43,16 +43,8 @@ fetching 信封内的未加工字段。非分页端点 = B 站 API 原始响应 
 _Avoid_: response, data, result。
 
 **typed object / parsed object**:
-parsing 产物的统称。落盘为 JSON dict，按 `uid:{uid}:parse:{model}:{item_id}` 寻址。当前 6 个 model：5 legacy typed dataclass + ContentPost。
+parsing 产物的统称。落盘为 JSON dict，按 `uid:{uid}:parse:{model}:{item_id}` 寻址。当前 6 个 model：`UpProfile` / `VideoDetail` / `VideoSubtitle` / `Article` / `OpusPost` / `DynamicPost`。
 _Avoid_: entity, record, document。
-
-**ContentPost**:
-Article / Opus / Dynamic 的统一内容视图；processing 与 index.ingestion 消费 article / opus / dynamic 类内容的唯一入口。canonical key 形如 `article:{cvid}` / `opus:{opus_id}` / `dynamic:{dynamic_id}`。
-_Avoid_: post, content entity, normalized content。
-
-**legacy typed dataclass**:
-`UpProfile` / `VideoDetail` / `Article` / `OpusPost` / `DynamicPost` 五个早期 typed model。与 ContentPost 并行落盘；当前继续保留是因为它们是 ContentPost 的 candidate 来源（`article_posts_from_parsed` 等），不可删除。
-_Avoid_: old model, deprecated model（它们不废弃）。
 
 ### 端点与抓取
 

@@ -133,16 +133,20 @@ class SubtitlePage:
     cid: int
     lan: str                     # 选中的默认 lang；"" 表示无可用 body
     lan_doc: str
+    is_ai: bool                  # lan.startswith("ai-")
     segments: list[SubtitleSegment]
 
 @dataclass
 class VideoSubtitle:
+    _schema_version: int = 2     # v1: 无 is_ai；from_dict 按 lan 前缀回填
     bvid: str
     pages: list[SubtitlePage]    # 仅包含至少一种 lang 命中 body 的 page
     available_languages: list[str]  # 跨 page 出现过 body 的 lang 全集（去重，发现序）
 
     @property
     def is_complete(self) -> bool: ...   # 所有 page 都至少有一种 lang
+    @property
+    def is_ai_only(self) -> bool: ...    # 至少 1 个 page 且每个 page 都是 AI
 ```
 
 每个 page 的 lang 选择优先级（按 `lan` 字符串前缀匹配）：
@@ -152,6 +156,8 @@ zh-CN > zh-Hans > zh-HK > ai-zh > en > 第一个有 body 的非空
 ```
 
 `_fetch_error` 标记的项在选择前被排除；body 为空也跳过。当一个 page 的所有 lang 都不可用时，该 page 不会出现在 `pages` 里，`is_complete` 即为 `False`。
+
+`is_ai` 标记单 page 的字幕是否由 B 站 AI 自动生成（`lan` 以 `ai-` 开头）；`is_ai_only` 表示整个视频只有 AI 字幕（无人工字幕兜底）。下游消费方据此可决定是否信任字幕短路或要求 ASR 复核。`to_dict()` 同时落 `is_ai_only` 顶层字段（derived，不被 `from_dict()` 读回）。
 
 `is_complete` 是 processing audio runner 的字幕短路开关：完整字幕的 bvid 直接由字幕段拼出 audio result（`transcription_source: "subtitle"`），跳过 ASR。
 
@@ -191,31 +197,37 @@ class Article:
 ```python
 @dataclass
 class OpusPost:
+    _schema_version: int = 2     # v1: list_images / detail_images / image_locals 三字段；from_dict 自动迁移
     id: str                      # str(opus list item opus_id)
     title: str                   # 列表级 title
     summary: str                 # 列表级 summary（fallback: modules 内 opus.summary.text）
-    cover: str                   # 列表级 cover
+    cover: str                   # 列表级 cover；dict 形态（{url, width, height}）由 _url_from_value 取出 url
     jump_url: str                # 列表级 jump_url
     stats: OpusStats             # {view, favorite, like, reply, share, coin}
     ctime: int | None            # pub_time（fallback: ctime）
-    list_images: list[str]       # modules.module_dynamic.major.opus.pics[*].url
-    markdown: str                # opus_detail.markdown（可选）
-    detail_images: list[dict]    # opus_detail.images（可选；[{url, width, height}]）
+    markdown: str                # opus_detail.markdown 去掉 YAML frontmatter 后的正文
+    images: list[dict]           # [{url, width?, height?, local_path?}, ...]；优先 opus_detail.images，
+                                 # 缺失时回落到 modules.module_dynamic.major.opus.pics[*].url
     cover_local: str = ""        # 图片下载后填充：images/opus/{id}_cover.jpg
-    image_locals: list[str]      # 正文图片本地路径列表
 ```
 
 嵌套 dataclass：`OpusStats`（6 个 int 指标）。
 
-辅助函数：`_modules_dict(raw)` 归一化 modules 块（dict / list 双形态）；`_extract_opus_summary_text(modules)` 深层路径提取；`_extract_opus_pic_urls(modules)` 图片 URL 提取。
+辅助函数：
+- `_strip_yaml_frontmatter(md)` 剥掉 `bilibili-api` 的 `Opus.markdown()` 默认前置的 raw modules YAML（avatar 层 / vip 徽章 / layer_config 等渲染元数据，实测占 markdown 字节 ~90%；defensive，找不到闭合 `---` 时原样返回）。
+- `_url_from_value(v)` 把 `cover` 字段在「字符串 URL」与「`{url, width, height}` dict」两种形态间归一化（B 站 listing 端点偶发返回 dict 形态）。
+- `_merge_images(detail_images, listing_pic_urls)` 合并 detail（rich `{url, width, height}`）与 listing 的 pic URL，URL 去重保序，键白名单 `{url, width, height}`。
+- `_modules_dict(raw)` 归一化 modules 块（dict / list 双形态）；`_extract_opus_summary_text(modules)`、`_extract_opus_pic_urls(modules)` 深层路径提取。
 
-图片：cover → `"opus/{id}_cover.jpg"` + detail_images（优先）或 list_images → `"opus/{id}_{i:02d}.jpg"`。
+图片：cover → `"opus/{id}_cover.jpg"`（仅当 cover 非空），后接 `images[i].url` → `"opus/{id}_{i:02d}.jpg"`。`apply_image_results` 按 URL 配对（不再按下标）：cover 下载失败时不会把第一张正文图错配为 `cover_local`；每张正文图的 `local_path` 写回 `images[i]["local_path"]`。
 
 `is_complete`：source_refs 含 `opus_detail` → True。仅有列表端点（`opus`）的 OpusPost 缺正文 markdown，视为不完整。
 
 ### DynamicPost（per-dynamic_id）
 
 来源端点：`dynamics`
+
+> 动态本质上是「信封」：`DYNAMIC_TYPE_AV` / `DYNAMIC_TYPE_OPUS` / `DYNAMIC_TYPE_ARTICLE` / `DYNAMIC_TYPE_DRAW` 等类型 `text` 通常为空，正文体在 `target_ref` 指向的 `video_work` / `opus_post` / `article_post` 里。`DYNAMIC_TYPE_FORWARD` 转发：用户重发的 caption 在 `text`，原作者的 caption 在 `forwarded.text`。视频复用类型上游 feed 不带 `archive.desc`，要看视频说明需走 `video_detail`。空 `text` 不代表数据丢失，是上游真相。
 
 ```python
 @dataclass
@@ -284,7 +296,7 @@ def apply_image_results(self, results: list[ImageDownloadResult]) -> None:
 | UpProfile | `[(avatar, "avatar.jpg")]` | `avatar_local` |
 | VideoDetail | `[(pic, "video/{bvid}_cover.jpg")]` | `pic_local` |
 | Article | `[(url, "article/{cvid}_{i:02d}.jpg") ...]` | `image_locals` |
-| OpusPost | `[(cover, "opus/{id}_cover.jpg")]` + 正文图片 | `cover_local` + `image_locals` |
+| OpusPost | `[(cover, "opus/{id}_cover.jpg")]` + `(images[i].url, "opus/{id}_{i:02d}.jpg")` | `cover_local` + `images[i].local_path`（按 URL 配对） |
 | DynamicPost | `[(url, "dynamic/{id}_{i:02d}.jpg") ...]` | `image_locals` |
 
 ## ImageDownloader（`_images.py`）
