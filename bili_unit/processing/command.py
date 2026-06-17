@@ -24,6 +24,7 @@ from .runner import (
     CredentialProvider,
     DownloaderFactory,
     ProcessingRunner,
+    default_progress_factory,
 )
 
 if TYPE_CHECKING:
@@ -59,6 +60,7 @@ class ProcessingCommand:
             credential_provider=credential_provider,
             downloader_factory=downloader_factory,
             convert_fn=convert_fn,
+            progress_factory=default_progress_factory,
         )
 
     async def process_uid(
@@ -121,6 +123,7 @@ class ProcessingCommand:
                 ``budget_exceeded``.
         """
         from .._db import UidContext
+        from ..observability import RunContext, RunReporter, SqliteSink
         from ..parsing._store import ParsingStore
         from ._store import ProcessingStore
 
@@ -144,10 +147,26 @@ class ProcessingCommand:
         try:
             proc_store = ProcessingStore(ctx)
             parse_store = ParsingStore(ctx)
+            run_context = RunContext.create(
+                uid=uid,
+                command="asr",
+                args={
+                    "mode": mode,
+                    "limit": limit,
+                    "only_bvids": only_bvids,
+                    "exclude_bvids": exclude_bvids,
+                    "retry_failed_only": retry_failed_only,
+                    "dry_run": dry_run,
+                    "max_audio_seconds": max_audio_seconds,
+                    "max_audio_tokens": max_audio_tokens,
+                },
+            )
+            reporter = RunReporter(run_context, SqliteSink(ctx.main))
             status, candidates, estimate, budget_exceeded, coverage = await self._runner.run(
                 uid,
                 proc_store=proc_store,
                 parse_store=parse_store,
+                reporter=reporter,
                 mode=mode,
                 limit=limit,
                 only_bvids=only_bvids,
@@ -162,6 +181,7 @@ class ProcessingCommand:
         return ProcessingCommandResult(
             uid=uid,
             status=status,
+            run_id=run_context.run_id,
             dry_run_candidates=candidates if dry_run or budget_exceeded else None,
             estimate=estimate,
             budget_exceeded=budget_exceeded or None,

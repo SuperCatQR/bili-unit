@@ -22,6 +22,7 @@ from bili_unit.fetching._endpoint_catalog import get_endpoint
 from bili_unit.fetching._store import FetchingStore
 from bili_unit.fetching.rate_limit import RateLimitController
 from bili_unit.fetching.runner import Runner, _extract_item_ids
+from bili_unit.observability import RunContext, RunReporter, SqliteSink
 
 # ---------------------------------------------------------------------------
 # Helpers (intentionally inline — conftest.py is frozen during Phase 6).
@@ -48,6 +49,67 @@ async def _open_store(tmp_path: Path, uid: int) -> tuple[UidContext, FetchingSto
 
 def _runner(store: FetchingStore, settings: BiliSettings, *, fetch_fn=None, **kw) -> Runner:
     return Runner(store, _fast_rate_limit(), settings, fetch_fn=fetch_fn, **kw)
+
+
+async def _list_stage_events(ctx: UidContext) -> list[dict]:
+    rows = await ctx.main.fetch_all(
+        "SELECT event, level, stage, endpoint, item_type, item_id, data_json "
+        "FROM stage_event ORDER BY id",
+    )
+    return [
+        {
+            "event": row["event"],
+            "level": row["level"],
+            "stage": row["stage"],
+            "endpoint": row["endpoint"],
+            "item_type": row["item_type"],
+            "item_id": row["item_id"],
+            "data": json.loads(row["data_json"] or "{}"),
+        }
+        for row in rows
+    ]
+
+
+async def _list_stage_runs(ctx: UidContext) -> list[dict]:
+    rows = await ctx.main.fetch_all(
+        "SELECT command, status, args_json, summary_json "
+        "FROM stage_run ORDER BY started_at_ms",
+    )
+    return [
+        {
+            "command": row["command"],
+            "status": row["status"],
+            "args": json.loads(row["args_json"] or "{}"),
+            "summary": json.loads(row["summary_json"] or "{}"),
+        }
+        for row in rows
+    ]
+
+
+def _reporter(ctx: UidContext, uid: int, **args) -> RunReporter:
+    run_context = RunContext.create(uid=uid, command="fetch", args=args)
+    return RunReporter(run_context, SqliteSink(ctx.main))
+
+
+class _NullProgress:
+    def __init__(self, *, total: int, label: str, **kwargs) -> None:
+        self.total = total
+        self.label = label
+        self.kwargs = kwargs
+        self.updates: list[tuple[int, str | None]] = []
+        self.closed = False
+
+    def __enter__(self) -> _NullProgress:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def update(self, n: int = 1, *, postfix: str | None = None) -> None:
+        self.updates.append((n, postfix))
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _fake_page(uid: int, payload: dict, *, endpoint: str = "user_info") -> FetchPageResult:
@@ -1042,7 +1104,11 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(tmp_path: Pa
 
         spec = get_endpoint("video_detail")
         assert spec is not None
-        runner = _runner(store, _settings(tmp_path))
+        runner = _runner(
+            store,
+            _settings(tmp_path),
+            reporter=_reporter(ctx, 702, mode="full", endpoints=["video_detail"]),
+        )
         with patch.object(spec, "callable", fake_item):
             await runner._run_item_endpoint(702, spec, credential=None, mode="full")
 
@@ -1068,6 +1134,28 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(tmp_path: Pa
         dead_errs = [e for e in errs if (e.get("detail") or {}).get("item_id") == "BV_dead"]
         assert len(dead_errs) == 1
         assert dead_errs[0]["retryable"] is False
+
+        events = await _list_stage_events(ctx)
+        event_names = [event["event"] for event in events]
+        assert event_names[0] == "fetch.endpoint.started"
+        assert event_names[-1] == "fetch.endpoint.completed"
+        assert sorted(event_names[1:-1]) == [
+            "fetch.item.saved",
+            "fetch.item.unavailable",
+        ]
+        unavailable = next(e for e in events if e["event"] == "fetch.item.unavailable")
+        assert unavailable["level"] == "WARNING"
+        assert unavailable["endpoint"] == "video_detail"
+        assert unavailable["item_id"] == "BV_dead"
+        saved = next(e for e in events if e["event"] == "fetch.item.saved")
+        assert saved["item_id"] == "BV_ok"
+        completed = events[-1]
+        assert completed["data"] == {
+            "status": "PARTIAL_ITEM",
+            "completed": 1,
+            "failed": 1,
+            "total": 2,
+        }
     finally:
         await ctx.close()
 
@@ -1115,6 +1203,77 @@ async def test_parallel_item_phase_suppresses_nested_progress(tmp_path: Path):
             "mode": "full",
             "show_progress": False,
         }]
+    finally:
+        await ctx.close()
+
+
+async def test_runner_records_fetch_run_observability(tmp_path: Path):
+    ctx, store = await _open_store(tmp_path, 11)
+    try:
+        runner = _runner(
+            store,
+            _settings(tmp_path),
+            fetch_fn=AsyncMock(return_value=_fake_page(11, {"ok": True})),
+            reporter=_reporter(
+                ctx,
+                11,
+                mode="incremental",
+                endpoints=["user_info"],
+            ),
+        )
+        result = await runner.run_task(11, endpoints=["user_info"])
+        assert result.status == TaskStatus.SUCCESS
+
+        runs = await _list_stage_runs(ctx)
+        assert len(runs) == 1
+        assert runs[0]["command"] == "fetch"
+        assert runs[0]["status"] == "SUCCESS"
+        assert runs[0]["args"] == {
+            "mode": "incremental",
+            "endpoints": ["user_info"],
+        }
+        assert runs[0]["summary"]["status"] == "SUCCESS"
+        assert runs[0]["summary"]["endpoints"] == {"user_info": "SUCCESS"}
+
+        events = await _list_stage_events(ctx)
+        assert [event["event"] for event in events] == [
+            "fetch.run.started",
+            "fetch.endpoint.started",
+            "fetch.endpoint.completed",
+            "fetch.run.completed",
+        ]
+        completed = events[2]
+        assert completed["endpoint"] == "user_info"
+        assert completed["data"]["status"] == "SUCCESS"
+    finally:
+        await ctx.close()
+
+
+async def test_runner_uses_injected_progress_factory(tmp_path: Path):
+    ctx, store = await _open_store(tmp_path, 12)
+    progress_instances: list[_NullProgress] = []
+
+    def progress_factory(*, total: int, label: str, **kwargs) -> _NullProgress:
+        progress = _NullProgress(total=total, label=label, **kwargs)
+        progress_instances.append(progress)
+        return progress
+
+    try:
+        runner = _runner(
+            store,
+            _settings(tmp_path),
+            fetch_fn=AsyncMock(return_value=_fake_page(12, {"ok": True})),
+            progress_factory=progress_factory,
+        )
+        result = await runner.run_task(12, endpoints=["user_info"])
+        assert result.status == TaskStatus.SUCCESS
+
+        assert len(progress_instances) == 1
+        progress = progress_instances[0]
+        assert progress.total == 1
+        assert progress.label == "fetch uid=12 endpoints"
+        assert progress.updates == [(1, None)]
+        assert progress.closed is True
     finally:
         await ctx.close()
 

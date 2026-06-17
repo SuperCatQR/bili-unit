@@ -1,23 +1,28 @@
-# runner — orchestrates fetch execution, retries, and progress tracking.
+﻿# runner 鈥?orchestrates fetch execution, retries, and progress tracking.
 #
 # Split into sub-modules for maintainability:
-#   _item_ids.py    — item ID extraction (pure functions)
-#   _endpoint.py    — _EndpointMixin._run_endpoint (uid-level single endpoint)
-#   _item_fanout.py — _ItemFanoutMixin._run_item_endpoint / _process_single_item
+#   _item_ids.py    鈥?item ID extraction (pure functions)
+#   _endpoint.py    鈥?_EndpointMixin._run_endpoint (uid-level single endpoint)
+#   _item_fanout.py 鈥?_ItemFanoutMixin._run_item_endpoint / _process_single_item
 #
 # This module retains: orchestration (run_task, _run), helpers, and the Runner
 # class that composes the mixins.
 #
 # fetch_endpoint is injected via Runner constructor (fetch_fn=).
 
-import asyncio
+import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..._env import BiliSettings
-from ..._logging import Progress
+from ..._progress import (
+    ProgressFactory,
+    default_progress_factory,
+    gather_with_progress,
+)
+from ...observability import RunReporter, RunStatus
 from .. import (
     AuthError,
     EndpointStatus,
@@ -61,11 +66,15 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         settings: BiliSettings,
         stale_running_threshold_ms: int = 15 * 60 * 1000,
         fetch_fn: FetchEndpointFn | None = None,
+        reporter: RunReporter | None = None,
+        progress_factory: ProgressFactory | None = None,
     ) -> None:
         self._store = store
         self._rl = rate_limit
         self._settings = settings
         self._fetch_fn = fetch_fn if fetch_fn is not None else _real_fetch_endpoint
+        self._reporter = reporter
+        self._progress_factory = progress_factory or default_progress_factory
         self._run_planner = FetchRunPlanner(
             store,
             stale_running_threshold_ms=stale_running_threshold_ms,
@@ -77,39 +86,47 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
     async def run_task(
         self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental",
     ) -> TaskResult:
-        await self._bind_uid(uid)
-        scope = await self._run_planner.new_scope(uid, endpoints, mode=mode)
-        return await self._run(scope)
+        return await self._run_with_reporting(
+            uid,
+            endpoints,
+            mode=mode,
+            scope_loader=lambda: self._run_planner.new_scope(
+                uid, endpoints, mode=mode,
+            ),
+            scope_result=lambda scope: self._run(scope),
+        )
 
     async def resume_task(
         self, uid: int, endpoints: list[str] | None = None,
     ) -> TaskResult:
-        await self._bind_uid(uid)
-        decision = await self._run_planner.resume_scope(uid, endpoints)
-        if decision.result is not None:
-            return decision.result
-        assert decision.scope is not None
-        return await self._run(decision.scope)
+        return await self._run_with_reporting(
+            uid,
+            endpoints,
+            mode="resume",
+            scope_loader=lambda: self._run_planner.resume_scope(uid, endpoints),
+            scope_result=self._result_from_scope_decision,
+        )
 
     async def run_or_resume(
         self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental",
     ) -> TaskResult:
         """Entry point for command: new task or resume existing.
 
-        Handles idempotency internally — command need not check task state.
+        Handles idempotency internally 鈥?command need not check task state.
 
         Mode behaviour:
-          incremental — SUCCESS task enters incremental scan (not skipped).
-          full        — SUCCESS task triggers full re-fetch.
+          incremental 鈥?SUCCESS task enters incremental scan (not skipped).
+          full        鈥?SUCCESS task triggers full re-fetch.
         """
-        await self._bind_uid(uid)
-        decision = await self._run_planner.run_or_resume_scope(
-            uid, endpoints, mode=mode,
+        return await self._run_with_reporting(
+            uid,
+            endpoints,
+            mode=mode,
+            scope_loader=lambda: self._run_planner.run_or_resume_scope(
+                uid, endpoints, mode=mode,
+            ),
+            scope_result=self._result_from_scope_decision,
         )
-        if decision.result is not None:
-            return decision.result
-        assert decision.scope is not None
-        return await self._run(decision.scope)
 
     # -- internal hub ------------------------------------------------------
 
@@ -117,7 +134,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         uid = scope.uid
         endpoints = scope.endpoints
         mode = scope.mode
-        # auth — always required; fetching does not operate without credential
+        # auth 鈥?always required; fetching does not operate without credential
         try:
             credential = await get_credential()
         except AuthError as exc:
@@ -168,7 +185,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                         spec.source_endpoint,
                     )
                     if src_state is None:
-                        # source not seeded → seed and run in Phase 1
+                        # source not seeded 鈫?seed and run in Phase 1
                         await self._store.init_task([spec.source_endpoint])
                         src_spec = get_endpoint(spec.source_endpoint)
                         if src_spec is not None:
@@ -180,11 +197,12 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                             )
 
         if uid_tasks:
-            with Progress(
+            await gather_with_progress(
+                uid_tasks,
                 total=len(uid_tasks),
                 label=f"fetch uid={uid} endpoints",
-            ) as bar:
-                await self._gather_with_progress(uid_tasks, bar)
+                progress_factory=self._progress_factory,
+            )
 
         # ---- Phase 2: item-level fan-out endpoints ----
         if item_specs:
@@ -222,6 +240,14 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                                 "source_endpoint": spec.source_endpoint,
                             },
                         )
+                        if self._reporter is not None:
+                            await self._reporter.emit(
+                                "fetch.endpoint.source_failed",
+                                stage="fetching",
+                                level="ERROR",
+                                endpoint=ep_name,
+                                data={"source_endpoint": spec.source_endpoint},
+                            )
                         continue
                 item_tasks.append(
                     self._run_item_endpoint(
@@ -230,11 +256,12 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                 )
 
             if item_tasks:
-                with Progress(
+                await gather_with_progress(
+                    item_tasks,
                     total=len(item_tasks),
                     label=f"fetch uid={uid} items",
-                ) as bar:
-                    await self._gather_with_progress(item_tasks, bar)
+                    progress_factory=self._progress_factory,
+                )
 
         # final summary
         endpoint_statuses = await _load_endpoint_statuses(self._store, endpoints)
@@ -252,33 +279,80 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
 
     # -- helpers -----------------------------------------------------------
 
+    async def _run_with_reporting(
+        self,
+        uid: int,
+        endpoints: list[str] | None,
+        *,
+        mode: str,
+        scope_loader,
+        scope_result,
+    ) -> TaskResult:
+        await self._bind_uid(uid)
+        reporter = self._reporter
+        if reporter is not None:
+            await reporter.start()
+            await reporter.emit(
+                "fetch.run.started",
+                stage="fetching",
+                data={"mode": mode, "endpoints": endpoints},
+            )
+        try:
+            loaded = await scope_loader()
+            result_or_awaitable = scope_result(loaded)
+            if inspect.isawaitable(result_or_awaitable):
+                result = await result_or_awaitable
+            else:
+                result = result_or_awaitable
+            if reporter is not None:
+                summary = {
+                    "status": result.status.value,
+                    "endpoints": {
+                        key: value.value for key, value in result.endpoints.items()
+                    },
+                }
+                await reporter.emit(
+                    "fetch.run.completed",
+                    stage="fetching",
+                    data=summary,
+                )
+                await reporter.complete(
+                    _run_status_from_task_status(result.status),
+                    summary=summary,
+                )
+            return result
+        except Exception as exc:
+            if reporter is not None:
+                await reporter.emit(
+                    "fetch.run.failed",
+                    stage="fetching",
+                    level="ERROR",
+                    data={"error_type": type(exc).__name__, "error": str(exc)},
+                )
+                await reporter.complete(
+                    "FAILED",
+                    summary={
+                        "status": "FAILED",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+            raise
+
     async def _bind_uid(self, uid: int) -> None:
         """Hook for multi-uid proxy stores; the real FetchingStore ignores it."""
         bind = getattr(self._store, "_bind_uid", None)
         if bind is not None:
             res = bind(uid)
-            if asyncio.iscoroutine(res):
+            if inspect.isawaitable(res):
                 await res
 
-    @staticmethod
-    async def _gather_with_progress(coros: list, bar: Progress) -> None:
-        """gather() variant that ticks ``bar`` once per coro completion.
+    def _result_from_scope_decision(self, decision) -> TaskResult | Awaitable[TaskResult]:
+        if decision.result is not None:
+            return decision.result
+        assert decision.scope is not None
+        return self._run(decision.scope)
 
-        Wraps each coroutine in a small shim so we don't depend on
-        ``asyncio.as_completed`` (which loses task identity on cancel).
-        Exceptions are swallowed at this layer — endpoints already record
-        their own errors via ``self._store.record_error``; this matches the
-        prior ``return_exceptions=True`` behaviour.
-        """
-        async def _wrap(coro):
-            try:
-                return await coro
-            except Exception as exc:  # noqa: BLE001 — preserve gather semantics
-                return exc
-            finally:
-                bar.update(1)
-
-        await asyncio.gather(*[_wrap(c) for c in coros])
 
     @staticmethod
     def _derive_status_from_statuses(
@@ -313,9 +387,21 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
 
     @staticmethod
     def _derive_status(tv) -> TaskStatus:
-        """Compatibility shim — derive task status from a legacy TaskValue.
+        """Compatibility shim 鈥?derive task status from a legacy TaskValue.
 
         New code uses :meth:`_derive_status_from_statuses` directly.
         """
         statuses = [v.status for v in tv.endpoints.values()]
         return Runner._derive_status_from_statuses(statuses)
+
+
+def _run_status_from_task_status(status: TaskStatus) -> RunStatus:
+    if status == TaskStatus.SUCCESS:
+        return "SUCCESS"
+    if status == TaskStatus.PARTIAL:
+        return "PARTIAL"
+    if status == TaskStatus.RUNNING:
+        return "RUNNING"
+    if status == TaskStatus.PENDING:
+        return "PENDING"
+    return "FAILED"

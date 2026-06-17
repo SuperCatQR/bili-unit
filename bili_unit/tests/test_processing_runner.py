@@ -28,7 +28,11 @@ from bili_unit.processing import (
 from bili_unit.processing._store import ProcessingStore
 from bili_unit.processing.command import ProcessingCommand
 from bili_unit.processing.runner import ProcessingRunner
-from bili_unit.processing.runner._pipeline_executor import WorkItem
+from bili_unit.processing.runner._pipeline_executor import (
+    WorkerOutcome,
+    WorkItem,
+    run_item_workers,
+)
 
 
 def _make_settings(tmp_path, max_retries=3, retry_delays="30,60,120") -> BiliSettings:
@@ -180,6 +184,69 @@ async def _list_processing_errors(settings: BiliSettings, uid: int) -> list[dict
         await ctx.close()
 
 
+async def _list_stage_events(settings: BiliSettings, uid: int) -> list[dict]:
+    ctx = UidContext(uid, settings.bili_db_dir)
+    await ctx.open(raw=False)
+    try:
+        rows = await ctx.main.fetch_all(
+            "SELECT e.event, e.level, e.stage, e.pipeline, e.item_type, "
+            "       e.item_id, e.data_json "
+            "FROM stage_event e "
+            "JOIN stage_run r ON r.run_id = e.run_id "
+            "WHERE r.uid = ? ORDER BY e.id",
+            (uid,),
+        )
+        return [
+            {
+                "event": row["event"],
+                "level": row["level"],
+                "stage": row["stage"],
+                "pipeline": row["pipeline"],
+                "item_type": row["item_type"],
+                "item_id": row["item_id"],
+                "data": json.loads(row["data_json"] or "{}"),
+            }
+            for row in rows
+        ]
+    finally:
+        await ctx.close()
+
+
+async def _list_stage_runs(settings: BiliSettings, uid: int) -> list[dict]:
+    ctx = UidContext(uid, settings.bili_db_dir)
+    await ctx.open(raw=False)
+    try:
+        rows = await ctx.main.fetch_all(
+            "SELECT run_id, command, status, args_json, summary_json "
+            "FROM stage_run WHERE uid = ? ORDER BY started_at_ms",
+            (uid,),
+        )
+        return [
+            {
+                "run_id": row["run_id"],
+                "command": row["command"],
+                "status": row["status"],
+                "args": json.loads(row["args_json"] or "{}"),
+                "summary": json.loads(row["summary_json"] or "{}"),
+            }
+            for row in rows
+        ]
+    finally:
+        await ctx.close()
+
+
+class _NullProgress:
+    def __init__(self) -> None:
+        self.updates: list[tuple[int, str | None]] = []
+        self.closed = False
+
+    def update(self, n: int = 1, *, postfix: str | None = None) -> None:
+        self.updates.append((n, postfix))
+
+    def close(self) -> None:
+        self.closed = True
+
+
 # -- fixtures ---------------------------------------------------------------
 
 @pytest_asyncio.fixture
@@ -219,6 +286,85 @@ async def test_audio_pipeline_discovers_and_processes(cmd, settings):
         assert r["status"] == "success"
         assert r["payload"]["result"]["bvid"] == r["bvid"]
         assert len(r["payload"]["result"]["pages"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_run_item_workers_uses_injected_progress_factory():
+    items = [
+        WorkItem(item_type="audio", item_id="BV1", item_data={}),
+        WorkItem(item_type="audio", item_id="BV2", item_data={}),
+    ]
+    rollup: dict[str, dict[str, int]] = {}
+    progress = _NullProgress()
+
+    async def process_item(item: WorkItem) -> WorkerOutcome:
+        return WorkerOutcome(
+            bucket="transcription",
+            completed=1,
+            postfix=f"bvid={item.item_id} ok",
+        )
+
+    def progress_factory(*, total: int, label: str) -> _NullProgress:
+        assert total == 2
+        assert label == "audio uid=1"
+        return progress
+
+    await run_item_workers(
+        items=items,
+        worker_count=1,
+        queue_maxsize=2,
+        label="audio uid=1",
+        rollup=rollup,
+        process_item=process_item,
+        progress_factory=progress_factory,
+    )
+
+    assert rollup == {
+        "transcription": {
+            "total": 0,
+            "completed": 2,
+            "failed": 0,
+            "skipped": 0,
+        },
+    }
+    assert progress.updates == [
+        (1, "bvid=BV1 ok"),
+        (1, "bvid=BV2 ok"),
+    ]
+    assert progress.closed is True
+
+
+@pytest.mark.asyncio
+async def test_audio_pipeline_records_run_observability(cmd, settings):
+    uid = 805
+    bvids = ["BVobs1"]
+    await _seed_video_pages(settings, uid, bvids)
+
+    result = await cmd.process_uid(uid, mode="incremental")
+    assert result.status == ProcessingTaskStatus.SUCCESS
+    assert result.run_id
+
+    runs = await _list_stage_runs(settings, uid)
+    assert len(runs) == 1
+    assert runs[0]["run_id"] == result.run_id
+    assert runs[0]["command"] == "asr"
+    assert runs[0]["status"] == "SUCCESS"
+    assert runs[0]["args"]["mode"] == "incremental"
+    assert runs[0]["summary"]["status"] == "SUCCESS"
+    assert runs[0]["summary"]["candidate_count"] == 1
+
+    events = await _list_stage_events(settings, uid)
+    event_names = [event["event"] for event in events]
+    assert event_names == [
+        "asr.run.started",
+        "asr.discovery.completed",
+        "asr.item.completed",
+        "asr.run.completed",
+    ]
+    completed = next(e for e in events if e["event"] == "asr.item.completed")
+    assert completed["pipeline"] == "audio"
+    assert completed["item_type"] == "transcription"
+    assert completed["item_id"] == "BVobs1"
 
 
 @pytest.mark.asyncio
@@ -329,6 +475,17 @@ async def test_audio_retry_exhausts_then_fails(tmp_path):
     assert audio_errs_chrono[0]["retryable"] is True
     assert audio_errs_chrono[1]["retryable"] is True
     assert audio_errs_chrono[2]["retryable"] is False
+
+    events = await _list_stage_events(s, uid)
+    retry_events = [e for e in events if e["event"] == "asr.item.retry_scheduled"]
+    failed_events = [e for e in events if e["event"] == "asr.item.failed"]
+    assert [e["data"]["retry"] for e in retry_events] == [1, 2]
+    assert len(failed_events) == 1
+    assert failed_events[0]["item_id"] == "BVretry"
+    assert failed_events[0]["data"]["error_type"] == "DownloadError"
+
+    runs = await _list_stage_runs(s, uid)
+    assert runs[0]["status"] == "FAILED"
     await cmd.close()
 
 

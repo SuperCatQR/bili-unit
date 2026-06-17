@@ -452,7 +452,8 @@ async def delete_uid(uid: int) -> dict[str, int]    # no-op；BiliCommand 层做
 async def close() -> None                            # no-op；store 是请求级
 ```
 
-`CommandResult` 字段：`uid: int`、`status: TaskStatus`。
+`CommandResult` 字段：`uid: int`、`status: TaskStatus`、`run_id: str | None`。
+CLI 使用 `run_id` 精确读取本次 run 的 Run Summary；缺失时才退回 uid 最新 run。
 
 ### Runner 接口
 

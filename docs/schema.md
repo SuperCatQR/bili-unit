@@ -159,7 +159,36 @@ PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error
 
 `id INTEGER PK AUTOINCREMENT`，CHECK `stage IN ('fetching','processing')`。列：`endpoint` / `pipeline` / `item_type` / `item_id` / `error_type` / `message` / `retryable` / `detail` / `occurred_at_ms`。索引 `idx_stage_error_stage(stage, occurred_at_ms)`。
 
-`parsing` 阶段不写错误行——parsing 失败粒度到 model，且整体只读 raw DB，错误直接抛回 `ParsingError`。
+`parsing` 阶段不写错误行——parsing 失败粒度到 model，记录在
+`stage_task.payload.models[*].status` 与 `stage_event` 的 `parse.model.failed`
+/ `parse.run.failed` 中。
+
+### 4.4 `stage_run`
+
+内部 run-history 表，供 observability 层使用。一行代表一次写侧命令运行。
+
+列：`run_id`（TEXT PK）/ `uid` / `command` / `status` /
+`started_at_ms` / `ended_at_ms` / `args_json` / `summary_json`。
+
+索引：`idx_stage_run_uid_started(uid, started_at_ms DESC)`。
+
+### 4.5 `stage_event`
+
+`stage_run` 的 append-only 语义事件时间线。
+
+列：`id` / `run_id` / `ts_ms` / `level` / `stage` / `event` /
+`endpoint` / `pipeline` / `item_type` / `item_id` / `message` /
+`data_json`。
+
+稳定事件前缀为 `fetch.*` / `parse.*` / `asr.*`。实现细节留在结构化字段中，例如
+`event='asr.item.failed'` 搭配 `pipeline='audio'`。
+
+索引：
+
+- `idx_stage_event_run_id(run_id, id)`
+- `idx_stage_event_item(stage, endpoint, pipeline, item_type, item_id)`
+
+Run Summary 和 CLI 使用方式见 [observability.md](observability.md)。
 
 ## 5. Views（manifest 替代品）
 

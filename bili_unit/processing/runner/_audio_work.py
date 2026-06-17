@@ -25,6 +25,7 @@ from ..audio._stitch import stitch_transcripts
 
 if TYPE_CHECKING:
     from ..._env import BiliSettings
+    from ...observability import RunReporter
     from ..audio._asr_backend import ASRBackend
     from ..audio._downloader import AudioDownloader
 
@@ -103,6 +104,7 @@ async def audio_transcribe_page(
     rate_limit_max_attempts: int = 3,
     rate_limit_retry_delays: tuple[float, ...] = (10.0, 30.0, 60.0),
     ffmpeg_setting: str = "auto",
+    reporter: RunReporter | None = None,
 ) -> dict[str, Any]:
     """Run ASR on each segment, threading results through the resume cache.
 
@@ -175,6 +177,10 @@ async def audio_transcribe_page(
             rate_limit_max_attempts=rate_limit_max_attempts,
             rate_limit_retry_delays=rate_limit_retry_delays,
             ffmpeg_setting=ffmpeg_setting,
+            reporter=reporter,
+            uid=uid,
+            bvid=bvid,
+            page_index=page_index,
         )
         for item in seg_results:
             segment_texts.append(item["text"])
@@ -356,6 +362,10 @@ async def _transcribe_segment_once_with_rate_limit_retry(
     *,
     max_attempts: int,
     retry_delays: tuple[float, ...],
+    reporter: RunReporter | None = None,
+    uid: int | None = None,
+    bvid: str | None = None,
+    page_index: int | None = None,
 ) -> dict[str, Any]:
     attempts = max(1, int(max_attempts))
     delays = tuple(max(float(delay), 0.0) for delay in retry_delays) or (0.0,)
@@ -380,6 +390,26 @@ async def _transcribe_segment_once_with_rate_limit_retry(
                     "error": str(exc),
                 },
             )
+            if reporter is not None:
+                await reporter.emit(
+                    "asr.segment.rate_limited",
+                    stage="processing",
+                    pipeline="audio",
+                    item_type="transcription",
+                    item_id=bvid,
+                    data={
+                        "uid": uid,
+                        "bvid": bvid,
+                        "page_index": page_index,
+                        "segment": str(seg.path),
+                        "start_s": seg.start_s,
+                        "end_s": seg.end_s,
+                        "attempt": attempt,
+                        "max_attempts": attempts,
+                        "delay_s": delay,
+                        "error": str(exc),
+                    },
+                )
             if delay > 0:
                 await asyncio.sleep(delay)
     raise ASRAPIError("ASR segment retry exhausted unexpectedly")
@@ -399,6 +429,10 @@ async def _transcribe_segment_with_high_risk_fallback(
     rate_limit_max_attempts: int,
     rate_limit_retry_delays: tuple[float, ...],
     ffmpeg_setting: str,
+    reporter: RunReporter | None = None,
+    uid: int | None = None,
+    bvid: str | None = None,
+    page_index: int | None = None,
 ) -> list[dict[str, Any]]:
     high_risk_exc: Exception | None = None
     try:
@@ -407,6 +441,10 @@ async def _transcribe_segment_with_high_risk_fallback(
                 asr_backend, asr_cache, page_cache, seg, asr_language,
                 max_attempts=rate_limit_max_attempts,
                 retry_delays=rate_limit_retry_delays,
+                reporter=reporter,
+                uid=uid,
+                bvid=bvid,
+                page_index=page_index,
             )
         ]
     except Exception as exc:
@@ -423,6 +461,23 @@ async def _transcribe_segment_with_high_risk_fallback(
                     "duration_s": seg.end_s - seg.start_s,
                 },
             )
+            if reporter is not None:
+                await reporter.emit(
+                    "asr.segment.empty_skipped",
+                    stage="processing",
+                    pipeline="audio",
+                    item_type="transcription",
+                    item_id=bvid,
+                    data={
+                        "uid": uid,
+                        "bvid": bvid,
+                        "page_index": page_index,
+                        "segment": str(seg.path),
+                        "start_s": seg.start_s,
+                        "end_s": seg.end_s,
+                        "duration_s": seg.end_s - seg.start_s,
+                    },
+                )
             return [{
                 **_skipped_segment(seg, reason="empty"),
                 "model": getattr(asr_backend, "model", ""),
@@ -446,6 +501,26 @@ async def _transcribe_segment_with_high_risk_fallback(
                         "min_segment_seconds": float(min_segment_seconds),
                     },
                 )
+                if reporter is not None:
+                    await reporter.emit(
+                        "asr.segment.high_risk_skipped",
+                        stage="processing",
+                        level="WARNING",
+                        pipeline="audio",
+                        item_type="transcription",
+                        item_id=bvid,
+                        data={
+                            "uid": uid,
+                            "bvid": bvid,
+                            "page_index": page_index,
+                            "segment": str(seg.path),
+                            "start_s": seg.start_s,
+                            "end_s": seg.end_s,
+                            "duration_s": seg.end_s - seg.start_s,
+                            "min_segment_seconds": float(min_segment_seconds),
+                            "error": str(exc),
+                        },
+                    )
                 return [{
                     **_skipped_segment(seg, reason="high_risk", error=exc),
                     "model": getattr(asr_backend, "model", ""),
@@ -471,6 +546,24 @@ async def _transcribe_segment_with_high_risk_fallback(
             "split_seconds": next_split_seconds,
         },
     )
+    if reporter is not None:
+        await reporter.emit(
+            "asr.segment.high_risk_split",
+            stage="processing",
+            pipeline="audio",
+            item_type="transcription",
+            item_id=bvid,
+            data={
+                "uid": uid,
+                "bvid": bvid,
+                "page_index": page_index,
+                "segment": str(seg.path),
+                "start_s": seg.start_s,
+                "end_s": seg.end_s,
+                "pieces": len(points),
+                "split_seconds": next_split_seconds,
+            },
+        )
     out_dir = seg.path.parent / f"{seg.path.stem}_high_risk_split"
     local_points = [
         (start_s - seg.start_s, end_s - seg.start_s)
@@ -510,5 +603,9 @@ async def _transcribe_segment_with_high_risk_fallback(
             rate_limit_max_attempts=int(rate_limit_max_attempts),
             rate_limit_retry_delays=tuple(rate_limit_retry_delays),
             ffmpeg_setting=ffmpeg_setting,
+            reporter=reporter,
+            uid=uid,
+            bvid=bvid,
+            page_index=page_index,
         ))
     return out

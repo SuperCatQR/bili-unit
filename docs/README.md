@@ -19,6 +19,7 @@
 | 路径 | 内容 | 适用场景 |
 | --- | --- | --- |
 | [`schema.md`](schema.md) | SQLite 表、视图、索引和常用 SQL | consumer 读侧契约 |
+| [`observability.md`](observability.md) | run events、Run Summary、CLI 最终摘要 | CLI / TUI / 长跑任务排查 |
 | [`structure/bili.md`](structure/bili.md) | module 职责、import 规则、项目边界 | 架构和重构前阅读 |
 | [`structure/fetching-contract.md`](structure/fetching-contract.md) | 64 个 endpoint 的 raw payload 形状 | parser / endpoint 维护 |
 | [`feature/fetching.md`](feature/fetching.md) | endpoint catalog、profile、mode、runner、store、CLI | fetching 实现真相 |
@@ -35,4 +36,15 @@
 | [`history/refactor-phase3-conventions.md`](history/refactor-phase3-conventions.md) | Phase 3 约定留档 |
 
 当当前真相与历史背景冲突时，以当前真相为准。
+
+## Windows 编码提示
+
+文档按 UTF-8 保存。若 PowerShell 里中文显示成乱码，先设置控制台输出编码：
+
+```powershell
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Get-Content -Encoding UTF8 docs\README.md
+```
+
+不要因为终端显示乱码就批量转码仓库文件。
 

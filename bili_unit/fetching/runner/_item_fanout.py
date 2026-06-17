@@ -8,7 +8,6 @@ import time
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from ..._logging import Progress
 from ..._retry import RetryDriver, RetryOutcome, RetryPolicy
 from .. import (
     AuthError,
@@ -40,6 +39,7 @@ class _ItemFanoutMixin:
     _store: FetchingStore
     _rl: Any
     _settings: BiliSettings
+    _progress_factory: Any
 
     # -- item-level fan-out endpoint ------------------------------------
 
@@ -59,6 +59,18 @@ class _ItemFanoutMixin:
         results per item_id.
         """
         ep_name = spec.name
+        reporter = getattr(self, "_reporter", None)
+        if reporter is not None:
+            await reporter.emit(
+                "fetch.endpoint.started",
+                stage="fetching",
+                endpoint=ep_name,
+                data={
+                    "kind": spec.kind,
+                    "mode": mode,
+                    "source_endpoint": spec.source_endpoint,
+                },
+            )
         await self._store.update_endpoint_state(
             ep_name,
             status=EndpointStatus.RUNNING.value,
@@ -83,6 +95,18 @@ class _ItemFanoutMixin:
                 status=EndpointStatus.FAILED_PERMANENT.value,
                 last_error_id=err_id,
             )
+            if reporter is not None:
+                await reporter.emit(
+                    "fetch.endpoint.failed",
+                    stage="fetching",
+                    level="ERROR",
+                    endpoint=ep_name,
+                    data={
+                        "status": EndpointStatus.FAILED_PERMANENT.value,
+                        "source_endpoint": spec.source_endpoint,
+                        "last_error_id": err_id,
+                    },
+                )
             return
 
         # 2. Extract items
@@ -101,6 +125,13 @@ class _ItemFanoutMixin:
                 ep_name,
                 {"cursor": None, "total": 0, "fetched": 0},
             )
+            if reporter is not None:
+                await reporter.emit(
+                    "fetch.endpoint.completed",
+                    stage="fetching",
+                    endpoint=ep_name,
+                    data={"status": EndpointStatus.SUCCESS.value, "total": 0},
+                )
             return
 
         total_items = len(items)
@@ -111,7 +142,7 @@ class _ItemFanoutMixin:
         max_concurrent = max(settings.bili_fetching_item_concurrency, 1)
         semaphore = asyncio.Semaphore(max_concurrent)
 
-        bar = Progress(
+        bar = self._progress_factory(
             total=total_items,
             label=f"fetch uid={uid} {ep_name}",
             enabled=show_progress,
@@ -167,6 +198,14 @@ class _ItemFanoutMixin:
                     ep_name,
                     status=EndpointStatus.FAILED_PERMANENT.value,
                 )
+                if reporter is not None:
+                    await reporter.emit(
+                        "fetch.endpoint.failed",
+                        stage="fetching",
+                        level="ERROR",
+                        endpoint=ep_name,
+                        data={"status": EndpointStatus.FAILED_PERMANENT.value},
+                    )
                 return
         finally:
             bar.close()
@@ -208,6 +247,28 @@ class _ItemFanoutMixin:
                 "total": total_items,
             },
         )
+        if reporter is not None:
+            event = (
+                "fetch.endpoint.completed"
+                if final_status in (EndpointStatus.SUCCESS, EndpointStatus.PARTIAL_ITEM)
+                else "fetch.endpoint.failed"
+            )
+            await reporter.emit(
+                event,
+                stage="fetching",
+                level=(
+                    "INFO"
+                    if final_status == EndpointStatus.SUCCESS
+                    else "WARNING"
+                ),
+                endpoint=ep_name,
+                data={
+                    "status": final_status.value,
+                    "completed": completed_items,
+                    "failed": failed_items,
+                    "total": total_items,
+                },
+            )
 
     async def _process_single_item(
         self: Any,
@@ -251,6 +312,7 @@ class _ItemFanoutMixin:
         async def _on_attempt_failed(
             exc: Exception, outcome: RetryOutcome,
         ) -> int | None:
+            reporter = getattr(self, "_reporter", None)
             if isinstance(exc, AuthError):
                 await self._store.record_error(
                     endpoint=ep_name,
@@ -275,6 +337,16 @@ class _ItemFanoutMixin:
                         "item_id": item_id, "reason": str(exc),
                     },
                 )
+                if reporter is not None:
+                    await reporter.emit(
+                        "fetch.item.unavailable",
+                        stage="fetching",
+                        level="WARNING",
+                        endpoint=ep_name,
+                        item_type=ep_name,
+                        item_id=item_id,
+                        message=str(exc),
+                    )
                 return None
 
             if isinstance(exc, Http412Error):
@@ -296,6 +368,20 @@ class _ItemFanoutMixin:
                             "item_id": item_id, "retry": retry_state["count"],
                         },
                     )
+                    if reporter is not None:
+                        await reporter.emit(
+                            "fetch.item.failed",
+                            stage="fetching",
+                            level="ERROR",
+                            endpoint=ep_name,
+                            item_type=ep_name,
+                            item_id=item_id,
+                            message=str(exc),
+                            data={
+                                "retry": retry_state["count"],
+                                "error_type": type(exc).__name__,
+                            },
+                        )
                     return None
                 wait = max(advice.get("wait_seconds", 0), outcome.delay_seconds)
                 logger.info(
@@ -306,6 +392,21 @@ class _ItemFanoutMixin:
                         "retry": retry_state["count"],
                     },
                 )
+                if reporter is not None:
+                    await reporter.emit(
+                        "fetch.item.retry_scheduled",
+                        stage="fetching",
+                        level="WARNING",
+                        endpoint=ep_name,
+                        item_type=ep_name,
+                        item_id=item_id,
+                        message=str(exc),
+                        data={
+                            "retry": retry_state["count"],
+                            "delay_s": wait,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
                 return wait
 
             if isinstance(exc, FetchingError):
@@ -326,6 +427,20 @@ class _ItemFanoutMixin:
                             "reason": str(exc),
                         },
                     )
+                    if reporter is not None:
+                        await reporter.emit(
+                            "fetch.item.failed",
+                            stage="fetching",
+                            level="ERROR",
+                            endpoint=ep_name,
+                            item_type=ep_name,
+                            item_id=item_id,
+                            message=str(exc),
+                            data={
+                                "retry": retry_state["count"],
+                                "error_type": type(exc).__name__,
+                            },
+                        )
                     return None
                 logger.info(
                     "item_endpoint_retry",
@@ -335,6 +450,21 @@ class _ItemFanoutMixin:
                         "retry": retry_state["count"], "reason": str(exc),
                     },
                 )
+                if reporter is not None:
+                    await reporter.emit(
+                        "fetch.item.retry_scheduled",
+                        stage="fetching",
+                        level="WARNING",
+                        endpoint=ep_name,
+                        item_type=ep_name,
+                        item_id=item_id,
+                        message=str(exc),
+                        data={
+                            "retry": retry_state["count"],
+                            "delay_s": outcome.delay_seconds,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
                 return None
 
             await self._store.record_error(
@@ -344,6 +474,17 @@ class _ItemFanoutMixin:
                 retryable=False,
                 detail={"item_id": item_id},
             )
+            if reporter is not None:
+                await reporter.emit(
+                    "fetch.item.failed",
+                    stage="fetching",
+                    level="ERROR",
+                    endpoint=ep_name,
+                    item_type=ep_name,
+                    item_id=item_id,
+                    message=str(exc),
+                    data={"error_type": type(exc).__name__},
+                )
             return None
 
         policy = RetryPolicy(
@@ -368,4 +509,13 @@ class _ItemFanoutMixin:
             "item_endpoint_item_saved",
             extra={"uid": uid, "endpoint": ep_name, "item_id": item_id},
         )
+        reporter = getattr(self, "_reporter", None)
+        if reporter is not None:
+            await reporter.emit(
+                "fetch.item.saved",
+                stage="fetching",
+                endpoint=ep_name,
+                item_type=ep_name,
+                item_id=item_id,
+            )
         return _ItemFanoutResult.SUCCESS

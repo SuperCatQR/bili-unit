@@ -58,6 +58,7 @@ class ImageDownloadError(ParsingError):
 class ParsingCommandResult:
     uid: int
     status: ParsingTaskStatus
+    run_id: str | None = None
 
 
 # ---------------------------------------------------------------------------

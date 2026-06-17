@@ -270,7 +270,7 @@ async def test_retry_failed_only_reports_missing_coverage(cmd, settings):
     assert audio["coverage"]["missing_bvids"] == ["BVmissing1"]
 
 
-async def test_dry_run_skips_worker_dispatch(cmd, settings, capsys):
+async def test_dry_run_skips_worker_dispatch(cmd, settings):
     """Dry-run still writes task / progress, but no worker is invoked."""
     uid = 8004
     bvids = ["BVdr1", "BVdr2", "BVdr3"]
@@ -289,9 +289,6 @@ async def test_dry_run_skips_worker_dispatch(cmd, settings, capsys):
     pipelines = task["payload"].get("pipelines", {})
     assert "audio" in pipelines
 
-    # Candidate list printed for human consumption.
-    out = capsys.readouterr().out
-    assert "dry_run candidates:" in out
     assert result.estimate == {
         "item_count": 3,
         "page_count": 3,

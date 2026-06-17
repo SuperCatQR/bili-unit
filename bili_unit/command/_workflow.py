@@ -25,6 +25,7 @@ class SyncCommandResult:
     status: str
     fetch: CommandResult
     parse: ParsingCommandResult | None
+    run_id: str | None = None
 
 
 async def sync_uid(
@@ -53,6 +54,7 @@ async def sync_uid(
             status=fetch_result.status.value,
             fetch=fetch_result,
             parse=None,
+            run_id=fetch_result.run_id,
         )
 
     parse_result = await command.parse(
@@ -72,6 +74,7 @@ async def sync_uid(
         status=status,
         fetch=fetch_result,
         parse=parse_result,
+        run_id=parse_result.run_id or fetch_result.run_id,
     )
 
 

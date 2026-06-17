@@ -73,6 +73,55 @@ async def _read_task(uid: int, settings: BiliSettings) -> dict | None:
         await ctx.close()
 
 
+async def _list_stage_events(uid: int, settings: BiliSettings) -> list[dict]:
+    ctx = UidContext(uid=uid, root=settings.bili_db_dir)
+    await ctx.open(raw=False)
+    try:
+        rows = await ctx.main.fetch_all(
+            "SELECT e.event, e.level, e.stage, e.item_type, e.item_id, e.data_json "
+            "FROM stage_event e "
+            "JOIN stage_run r ON r.run_id = e.run_id "
+            "WHERE r.uid = ? ORDER BY e.id",
+            (uid,),
+        )
+        return [
+            {
+                "event": row["event"],
+                "level": row["level"],
+                "stage": row["stage"],
+                "item_type": row["item_type"],
+                "item_id": row["item_id"],
+                "data": json.loads(row["data_json"] or "{}"),
+            }
+            for row in rows
+        ]
+    finally:
+        await ctx.close()
+
+
+async def _list_stage_runs(uid: int, settings: BiliSettings) -> list[dict]:
+    ctx = UidContext(uid=uid, root=settings.bili_db_dir)
+    await ctx.open(raw=False)
+    try:
+        rows = await ctx.main.fetch_all(
+            "SELECT run_id, command, status, args_json, summary_json "
+            "FROM stage_run WHERE uid = ? ORDER BY started_at_ms",
+            (uid,),
+        )
+        return [
+            {
+                "run_id": row["run_id"],
+                "command": row["command"],
+                "status": row["status"],
+                "args": json.loads(row["args_json"] or "{}"),
+                "summary": json.loads(row["summary_json"] or "{}"),
+            }
+            for row in rows
+        ]
+    finally:
+        await ctx.close()
+
+
 # ---------------------------------------------------------------------------
 # parse_uid — status rollup over per-model counts
 # ---------------------------------------------------------------------------
@@ -103,6 +152,7 @@ async def test_parse_uid_all_models_succeed_status_success(
     assert isinstance(result, ParsingCommandResult)
     assert result.uid == 1001
     assert result.status == ParsingTaskStatus.SUCCESS
+    assert result.run_id
 
     task = await _read_task(1001, settings)
     assert task is not None
@@ -113,6 +163,25 @@ async def test_parse_uid_all_models_succeed_status_success(
     for name in EXPECTED_MODEL_ORDER:
         assert models[name]["status"] == ParsingModelStatus.SUCCESS.value
         assert models[name]["count"] == counts[name]
+
+    runs = await _list_stage_runs(1001, settings)
+    assert len(runs) == 1
+    assert runs[0]["run_id"] == result.run_id
+    assert runs[0]["command"] == "parse"
+    assert runs[0]["status"] == "SUCCESS"
+    assert runs[0]["args"] == {
+        "mode": "full",
+        "models": None,
+        "download_images": False,
+    }
+    assert runs[0]["summary"]["status"] == "SUCCESS"
+
+    events = await _list_stage_events(1001, settings)
+    event_names = [event["event"] for event in events]
+    assert event_names[0] == "parse.run.started"
+    assert event_names[-1] == "parse.run.completed"
+    assert event_names.count("parse.model.started") == len(EXPECTED_MODEL_ORDER)
+    assert event_names.count("parse.model.completed") == len(EXPECTED_MODEL_ORDER)
 
 
 async def test_parse_uid_zero_count_in_full_mode_yields_partial(
@@ -182,6 +251,15 @@ async def test_parse_uid_model_failure_marks_failed_and_partial(
         if name == "article_post":
             continue
         assert task["models"][name]["status"] == ParsingModelStatus.SUCCESS.value
+
+    runs = await _list_stage_runs(3003, settings)
+    assert runs[0]["status"] == "PARTIAL"
+
+    events = await _list_stage_events(3003, settings)
+    failed = [event for event in events if event["event"] == "parse.model.failed"]
+    assert len(failed) == 1
+    assert failed[0]["item_id"] == "article_post"
+    assert failed[0]["data"]["error_type"] == "RuntimeError"
 
 
 async def test_parse_uid_incremental_mode_with_existing_rows_stays_success(

@@ -7,7 +7,7 @@ from .._env import BiliSettings
 from . import CommandResult
 from ._store import FetchingStore
 from .rate_limit import RateLimitController
-from .runner import FetchEndpointFn, Runner
+from .runner import FetchEndpointFn, Runner, default_progress_factory
 
 logger = logging.getLogger("bili.fetching.command")
 
@@ -48,16 +48,28 @@ class Command:
         ctx = UidContext(uid, self._settings.bili_db_dir)
         await ctx.open()
         try:
+            from ..observability import RunContext, RunReporter, SqliteSink
+
             store = FetchingStore(ctx)
+            run_context = RunContext.create(
+                uid=uid,
+                command="fetch",
+                args={
+                    "mode": mode,
+                    "endpoints": endpoints,
+                },
+            )
             runner = Runner(
                 store, self._rl, self._settings,
                 stale_running_threshold_ms=self._stale_running_threshold_ms,
                 fetch_fn=self._fetch_fn,
+                reporter=RunReporter(run_context, SqliteSink(ctx.main)),
+                progress_factory=default_progress_factory,
             )
             result = await runner.run_or_resume(uid, endpoints, mode=mode)
         finally:
             await ctx.close()
-        return CommandResult(uid=uid, status=result.status)
+        return CommandResult(uid=uid, status=result.status, run_id=run_context.run_id)
 
     async def delete_uid(self, uid: int) -> dict[str, int]:
         """No-op: the unit-level ``BiliCommand.delete_uid`` does file IO directly."""

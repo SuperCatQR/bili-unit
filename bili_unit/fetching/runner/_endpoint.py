@@ -15,8 +15,8 @@ from .. import (
     Http412Error,
     ResourceUnavailableError,
 )
-from .._endpoint_spec import EndpointSpec
 from .._adapter_core import extract_total_count
+from .._endpoint_spec import EndpointSpec
 from ._failure import (
     FetchFailureState,
     classify_fetching_exception,
@@ -87,6 +87,14 @@ class _EndpointMixin:
         mode: str = "incremental",
     ) -> None:
         """Run a uid-level endpoint with a safety net for unexpected errors."""
+        reporter = getattr(self, "_reporter", None)
+        if reporter is not None:
+            await reporter.emit(
+                "fetch.endpoint.started",
+                stage="fetching",
+                endpoint=ep_name,
+                data={"kind": spec.kind, "mode": mode},
+            )
         try:
             await self._run_endpoint_inner(uid, spec, ep_name, credential, mode)
         except Exception as exc:  # noqa: BLE001 — defensive catch-all
@@ -109,6 +117,45 @@ class _EndpointMixin:
                     status=EndpointStatus.FAILED_PERMANENT.value,
                     last_error_id=err_id,
                 )
+            if reporter is not None:
+                await reporter.emit(
+                    "fetch.endpoint.failed",
+                    stage="fetching",
+                    level="ERROR",
+                    endpoint=ep_name,
+                    data={
+                        "status": EndpointStatus.FAILED_PERMANENT.value,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "last_error_id": err_id,
+                    },
+                )
+            return
+
+        if reporter is None:
+            return
+        state = await self._store.get_endpoint_state(ep_name) or {}
+        status = state.get("status")
+        data = {
+            "status": status,
+            "retry_count": state.get("retry_count"),
+            "last_error_id": state.get("last_error_id"),
+        }
+        if status == EndpointStatus.SUCCESS.value:
+            await reporter.emit(
+                "fetch.endpoint.completed",
+                stage="fetching",
+                endpoint=ep_name,
+                data=data,
+            )
+        else:
+            await reporter.emit(
+                "fetch.endpoint.failed",
+                stage="fetching",
+                level="WARNING",
+                endpoint=ep_name,
+                data=data,
+            )
 
     async def _run_endpoint_inner(
         self: Any,
@@ -219,6 +266,15 @@ class _EndpointMixin:
                     "endpoint_unavailable",
                     extra={"uid": uid, "endpoint": ep_name, "reason": str(exc)},
                 )
+                reporter = getattr(self, "_reporter", None)
+                if reporter is not None:
+                    await reporter.emit(
+                        "fetch.endpoint.unavailable",
+                        stage="fetching",
+                        level="WARNING",
+                        endpoint=ep_name,
+                        message=str(exc),
+                    )
                 return None
 
             if isinstance(exc, Http412Error):
@@ -255,6 +311,20 @@ class _EndpointMixin:
                         "wait_s": wait, "retry": retry_state.count,
                     },
                 )
+                reporter = getattr(self, "_reporter", None)
+                if reporter is not None:
+                    await reporter.emit(
+                        "fetch.endpoint.retry_scheduled",
+                        stage="fetching",
+                        level="WARNING",
+                        endpoint=ep_name,
+                        message=str(exc),
+                        data={
+                            "retry": retry_state.count,
+                            "delay_s": wait,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
                 return wait
 
             if isinstance(exc, FetchingError):
@@ -283,6 +353,20 @@ class _EndpointMixin:
                         "retry": retry_count,
                     },
                 )
+                reporter = getattr(self, "_reporter", None)
+                if reporter is not None:
+                    await reporter.emit(
+                        "fetch.endpoint.retry_scheduled",
+                        stage="fetching",
+                        level="WARNING",
+                        endpoint=ep_name,
+                        message=str(exc),
+                        data={
+                            "retry": retry_count,
+                            "delay_s": outcome.delay_seconds,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
                 return None
 
             # Unexpected non-fetching error — wrap and treat as permanent.

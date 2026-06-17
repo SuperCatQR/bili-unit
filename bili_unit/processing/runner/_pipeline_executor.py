@@ -23,7 +23,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
-from ..._logging import Progress
+from ..._progress import (
+    ProgressFactory,
+    default_progress_factory,
+)
 from ..._retry import (
     RetryClassification,
     RetryDriver,
@@ -33,8 +36,8 @@ from ..._retry import (
 from .. import ProcessingItemStatus
 
 if TYPE_CHECKING:
+    from ...observability import RunReporter
     from .._store import ProcessingStore
-
 
 @dataclass(frozen=True)
 class WorkItem:
@@ -72,6 +75,7 @@ class ItemRetryContext:
 
     uid: int
     pipeline: str
+    event_prefix: str
     item_type: str
     item_id: str
     source_endpoints: tuple[str, ...]
@@ -185,6 +189,7 @@ async def run_item_with_retry(
     max_attempts: int,
     delays: list[int],
     logger: logging.Logger,
+    reporter: RunReporter | None = None,
 ) -> bool:
     """Process one work item: retry → record errors → persist status.
 
@@ -213,6 +218,20 @@ async def run_item_with_retry(
                        "retry": outcome.attempt,
                        "delay_s": outcome.delay_seconds, "error": str(exc)},
             )
+            if reporter is not None:
+                await reporter.emit(
+                    f"{ctx.event_prefix}.item.retry_scheduled",
+                    stage="processing",
+                    pipeline=ctx.pipeline,
+                    item_type=ctx.item_type,
+                    item_id=ctx.item_id,
+                    data={
+                        "retry": outcome.attempt,
+                        "delay_s": outcome.delay_seconds,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
             await store.record_error(
                 pipeline=ctx.pipeline,
                 item_type=ctx.item_type,
@@ -235,6 +254,21 @@ async def run_item_with_retry(
                 ctx.failed_event,
                 extra={"uid": ctx.uid, ctx.log_id_field: ctx.log_id_value,
                        "retry_count": outcome.attempt, "error": str(exc)},
+            )
+        if reporter is not None:
+            await reporter.emit(
+                f"{ctx.event_prefix}.item.failed",
+                stage="processing",
+                level="WARNING",
+                pipeline=ctx.pipeline,
+                item_type=ctx.item_type,
+                item_id=ctx.item_id,
+                data={
+                    "retry_count": outcome.attempt,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "retryable": False,
+                },
             )
         await store.record_error(
             pipeline=ctx.pipeline,
@@ -281,6 +315,7 @@ async def run_item_workers(
     label: str,
     rollup: dict[str, dict[str, int]],
     process_item: Callable[[WorkItem], Awaitable[WorkerOutcome]],
+    progress_factory: ProgressFactory = default_progress_factory,
 ) -> None:
     """Run a bounded worker pool and update ``rollup`` from item outcomes."""
     worker_count = max(1, worker_count)
@@ -288,7 +323,7 @@ async def run_item_workers(
         maxsize=max(1, queue_maxsize),
     )
     rollup_lock = asyncio.Lock()
-    bar = Progress(total=len(items), label=label)
+    bar = progress_factory(total=len(items), label=label)
 
     async def producer() -> None:
         for item in items:

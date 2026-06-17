@@ -455,7 +455,8 @@ async def delete_uid(uid: int) -> dict[str, int]    # no-op；BiliCommand 删 db
 async def close() -> None                            # no-op
 ```
 
-`ParsingCommandResult` 字段：`uid: int`、`status: ParsingTaskStatus`。
+`ParsingCommandResult` 字段：`uid: int`、`status: ParsingTaskStatus`、`run_id: str | None`。
+CLI 使用 `run_id` 精确读取本次 run 的 Run Summary；缺失时才退回 uid 最新 run。
 
 ### ParsingStore 关键方法
 

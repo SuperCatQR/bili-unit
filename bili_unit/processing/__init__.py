@@ -96,6 +96,7 @@ class QueueError(ProcessingError):
 class ProcessingCommandResult:
     uid: int
     status: ProcessingTaskStatus
+    run_id: str | None = None
     dry_run_candidates: list[str] | None = None
     """When dry_run was requested, the bvid list that *would* have been
     dispatched to the audio pipeline. ``None`` outside dry-run mode."""

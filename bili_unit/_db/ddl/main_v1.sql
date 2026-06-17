@@ -176,6 +176,38 @@ CREATE TABLE IF NOT EXISTS stage_error (
 CREATE INDEX IF NOT EXISTS idx_stage_error_stage
     ON stage_error(stage, occurred_at_ms);
 
+CREATE TABLE IF NOT EXISTS stage_run (
+    run_id        TEXT PRIMARY KEY,
+    uid           INTEGER NOT NULL,
+    command       TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    started_at_ms INTEGER NOT NULL,
+    ended_at_ms   INTEGER,
+    args_json     TEXT NOT NULL,
+    summary_json  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_stage_run_uid_started
+    ON stage_run(uid, started_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS stage_event (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id    TEXT NOT NULL,
+    ts_ms     INTEGER NOT NULL,
+    level     TEXT NOT NULL,
+    stage     TEXT NOT NULL,
+    event     TEXT NOT NULL,
+    endpoint  TEXT,
+    pipeline  TEXT,
+    item_type TEXT,
+    item_id   TEXT,
+    message   TEXT,
+    data_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_stage_event_run_id
+    ON stage_event(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_stage_event_item
+    ON stage_event(stage, endpoint, pipeline, item_type, item_id);
+
 -- ---------------------------------------------------------------------------
 -- Views (replace the old _manifest / _aggregates compute paths)
 -- ---------------------------------------------------------------------------

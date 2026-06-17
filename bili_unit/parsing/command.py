@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from .._db import UidContext
 from ..fetching._store import FetchingStore
+from ..observability import RunContext, RunReporter, RunStatus, SqliteSink
 from . import (
     ParsingCommandResult,
     ParsingModelStatus,
@@ -26,6 +27,18 @@ if TYPE_CHECKING:
     from .._env import BiliSettings
 
 logger = logging.getLogger("bili.parsing.command")
+
+
+def _run_status_from_task_status(status: ParsingTaskStatus) -> RunStatus:
+    if status == ParsingTaskStatus.SUCCESS:
+        return "SUCCESS"
+    if status == ParsingTaskStatus.PARTIAL:
+        return "PARTIAL"
+    if status == ParsingTaskStatus.RUNNING:
+        return "RUNNING"
+    if status == ParsingTaskStatus.PENDING:
+        return "PENDING"
+    return "FAILED"
 
 
 class ParsingCommand:
@@ -81,6 +94,28 @@ class ParsingCommand:
                 parse_store=parse_store,
                 fetch_store=fetch_store,
             )
+            reporter = RunReporter(
+                RunContext.create(
+                    uid=uid,
+                    command="parse",
+                    args={
+                        "mode": mode,
+                        "models": models,
+                        "download_images": download_images,
+                    },
+                ),
+                SqliteSink(ctx.main),
+            )
+            await reporter.start()
+            await reporter.emit(
+                "parse.run.started",
+                stage="parsing",
+                data={
+                    "mode": mode,
+                    "models": model_order,
+                    "download_images": download_images,
+                },
+            )
 
             # Initialise (or merge) the parsing stage_task row.
             await parse_store.init_task(model_order)
@@ -90,11 +125,28 @@ class ParsingCommand:
 
             for model_name in model_order:
                 try:
+                    await reporter.emit(
+                        "parse.model.started",
+                        stage="parsing",
+                        item_type="model",
+                        item_id=model_name,
+                        data={"mode": mode},
+                    )
                     count = await materializer.parse_model(uid, model_name, mode)
                     await parse_store.update_task_model_status(
                         model_name,
                         ParsingModelStatus.SUCCESS.value,
                         count,
+                    )
+                    await reporter.emit(
+                        "parse.model.completed",
+                        stage="parsing",
+                        item_type="model",
+                        item_id=model_name,
+                        data={
+                            "status": ParsingModelStatus.SUCCESS.value,
+                            "count": count,
+                        },
                     )
                     if count == 0 and not (
                         mode == "incremental"
@@ -116,17 +168,42 @@ class ParsingCommand:
                         model_name,
                         ParsingModelStatus.FAILED.value,
                     )
+                    await reporter.emit(
+                        "parse.model.failed",
+                        stage="parsing",
+                        level="ERROR",
+                        item_type="model",
+                        item_id=model_name,
+                        message=str(exc),
+                        data={"error_type": type(exc).__name__},
+                    )
                     overall_status = ParsingTaskStatus.PARTIAL
 
             # Optional image-download step.
             if download_images:
                 try:
+                    await reporter.emit(
+                        "parse.images.started",
+                        stage="parsing",
+                    )
                     images_summary = await materializer.download_images(uid)
                     await parse_store.update_task_images(images_summary)
+                    await reporter.emit(
+                        "parse.images.completed",
+                        stage="parsing",
+                        data=images_summary,
+                    )
                 except Exception as exc:
                     logger.error(
                         "image_download_failed",
                         extra={"uid": uid, "error": str(exc)},
+                    )
+                    await reporter.emit(
+                        "parse.images.failed",
+                        stage="parsing",
+                        level="ERROR",
+                        message=str(exc),
+                        data={"error_type": type(exc).__name__},
                     )
 
             # Finalise: persist the overall status. failed_item_ids is no
@@ -134,7 +211,39 @@ class ParsingCommand:
             # (see ParsingTaskValue docstring).
             await parse_store.update_task_status(overall_status.value)
 
-            return ParsingCommandResult(uid=uid, status=overall_status)
+            summary = {"status": overall_status.value, "models": model_order}
+            await reporter.emit(
+                "parse.run.completed",
+                stage="parsing",
+                data=summary,
+            )
+            await reporter.complete(
+                _run_status_from_task_status(overall_status),
+                summary=summary,
+            )
+
+            return ParsingCommandResult(
+                uid=uid,
+                status=overall_status,
+                run_id=reporter.context.run_id,
+            )
+        except Exception as exc:
+            if "reporter" in locals():
+                await reporter.emit(
+                    "parse.run.failed",
+                    stage="parsing",
+                    level="ERROR",
+                    data={"error_type": type(exc).__name__, "error": str(exc)},
+                )
+                await reporter.complete(
+                    "FAILED",
+                    summary={
+                        "status": "FAILED",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+            raise
         finally:
             await ctx.close()
 

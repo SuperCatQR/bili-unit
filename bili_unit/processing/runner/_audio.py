@@ -66,6 +66,7 @@ class _AudioMixin:
     _credential_provider: CredentialProvider | None
     _downloader_factory: Any
     _convert_fn: Any
+    _progress_factory: Any
 
     def _get_asr_cache(self) -> ASRCacheStore | None: ...  # pragma: no cover
 
@@ -118,6 +119,14 @@ class _AudioMixin:
                 "audio_discovery_failed",
                 extra={"uid": uid, "error": str(exc)},
             )
+            if self._reporter is not None:
+                await self._reporter.emit(
+                    "asr.discovery.failed",
+                    stage="processing",
+                    level="WARNING",
+                    pipeline=_AUDIO,
+                    data={"error_type": type(exc).__name__, "error": str(exc)},
+                )
             audio_items, skipped, subtitle_done = [], 0, 0
 
         candidates = [it.item_id for it in audio_items]
@@ -143,6 +152,18 @@ class _AudioMixin:
             _AUDIO, status=ProcessingPipelineStatus.RUNNING.value,
             items=rollup,
         )
+        if self._reporter is not None:
+            await self._reporter.emit(
+                "asr.discovery.completed",
+                stage="processing",
+                pipeline=_AUDIO,
+                data={
+                    "candidate_count": len(candidates),
+                    "skipped": skipped,
+                    "subtitle_done": subtitle_done,
+                    "estimate": estimate.to_dict(),
+                },
+            )
 
         if budget_exceeded:
             logger.warning(
@@ -154,6 +175,18 @@ class _AudioMixin:
                     "estimate": estimate.to_dict(),
                 },
             )
+            if self._reporter is not None:
+                await self._reporter.emit(
+                    "asr.budget.exceeded",
+                    stage="processing",
+                    level="WARNING",
+                    pipeline=_AUDIO,
+                    data={
+                        "candidate_count": len(candidates),
+                        "budget_exceeded": budget_exceeded,
+                        "estimate": estimate.to_dict(),
+                    },
+                )
             rollup["transcription"]["skipped"] += len(audio_items)
             rollup["transcription"]["total"] = subtitle_done + skipped + len(audio_items)
             final_status = ProcessingPipelineStatus.PARTIAL
@@ -172,7 +205,13 @@ class _AudioMixin:
                 "audio_dry_run",
                 extra={"uid": uid, "candidates": candidates, "skipped": skipped},
             )
-            print(f"dry_run candidates: {candidates}")
+            if self._reporter is not None:
+                await self._reporter.emit(
+                    "asr.dry_run.completed",
+                    stage="processing",
+                    pipeline=_AUDIO,
+                    data={"candidates": candidates, "skipped": skipped},
+                )
             rollup["transcription"] = {
                 "total": 0, "completed": 0, "failed": 0, "skipped": 0,
             }
@@ -514,7 +553,28 @@ class _AudioMixin:
                     extra={"uid": uid, "bvid": item.item_id,
                            "error": str(exc)},
                 )
+                if self._reporter is not None:
+                    await self._reporter.emit(
+                        "asr.worker.unexpected_error",
+                        stage="processing",
+                        level="ERROR",
+                        pipeline=_AUDIO,
+                        item_type="transcription",
+                        item_id=item.item_id,
+                        data={
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        },
+                    )
                 ok = False
+            if ok and self._reporter is not None:
+                await self._reporter.emit(
+                    "asr.item.completed",
+                    stage="processing",
+                    pipeline=_AUDIO,
+                    item_type="transcription",
+                    item_id=item.item_id,
+                )
             return WorkerOutcome(
                 bucket="transcription",
                 completed=1 if ok else 0,
@@ -529,6 +589,7 @@ class _AudioMixin:
             label=f"audio uid={uid}",
             rollup=rollup,
             process_item=process_item,
+            progress_factory=self._progress_factory,
         )
 
     async def _process_audio_one(
@@ -552,6 +613,7 @@ class _AudioMixin:
         ctx = ItemRetryContext(
             uid=uid,
             pipeline=_AUDIO,
+            event_prefix="asr",
             item_type="transcription",
             item_id=bvid,
             source_endpoints=("video_detail",),
@@ -569,6 +631,7 @@ class _AudioMixin:
             max_attempts=self._settings.bili_processing_max_retries + 1,
             delays=self._settings.get_processing_retry_delays(),
             logger=logger,
+            reporter=self._reporter,
         )
 
     async def _do_audio_work(
@@ -660,6 +723,7 @@ class _AudioMixin:
                         self._settings.get_asr_rate_limit_retry_delays()
                     ),
                     ffmpeg_setting=self._settings.bili_processing_ffmpeg_path,
+                    reporter=self._reporter,
                 )
 
                 segment_duration_sum = trans["segment_duration_sum"]

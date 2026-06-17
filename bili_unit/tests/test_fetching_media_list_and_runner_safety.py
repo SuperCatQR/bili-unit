@@ -7,8 +7,8 @@
    the enum is not JSON-serialisable, so the page-save step crashed with
    ``TypeError: Object of type MedialistOrder is not JSON serializable``.
    The exception escaped the retry-driver path entirely and got swallowed by
-   ``_gather_with_progress``, leaving ``media_list`` indefinitely RUNNING with
-   no error record and no terminal state.
+   the progress-aware gather layer, leaving ``media_list`` indefinitely
+   RUNNING with no error record and no terminal state.
 
 2. ``_run_endpoint`` silent-RUNNING leak — any exception escaping the
    endpoint runner's main body (storage failure, programmer error, etc.)

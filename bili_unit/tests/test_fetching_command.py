@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -52,6 +53,28 @@ async def _read_task_status(tmp_path: Path, uid: int) -> str | None:
         await ctx.close()
 
 
+async def _list_stage_runs(tmp_path: Path, uid: int) -> list[dict]:
+    ctx = UidContext(uid=uid, root=tmp_path)
+    await ctx.open(raw=False)
+    try:
+        rows = await ctx.main.fetch_all(
+            "SELECT run_id, command, status, args_json "
+            "FROM stage_run WHERE uid = ? ORDER BY started_at_ms",
+            (uid,),
+        )
+        return [
+            {
+                "run_id": row["run_id"],
+                "command": row["command"],
+                "status": row["status"],
+                "args": json.loads(row["args_json"] or "{}"),
+            }
+            for row in rows
+        ]
+    finally:
+        await ctx.close()
+
+
 # ======================================================================
 # command — idempotency
 # ======================================================================
@@ -63,9 +86,22 @@ async def test_command_new_uid_creates_task(tmp_path: Path):
 
     result = await cmd.fetch_uid(10, endpoints=["user_info"])
     assert result.status == TaskStatus.SUCCESS
+    assert result.run_id
 
     persisted = await _read_task_status(tmp_path, 10)
     assert persisted == TaskStatus.SUCCESS.value
+    runs = await _list_stage_runs(tmp_path, 10)
+    assert runs == [
+        {
+            "run_id": result.run_id,
+            "command": "fetch",
+            "status": "SUCCESS",
+            "args": {
+                "mode": "incremental",
+                "endpoints": ["user_info"],
+            },
+        },
+    ]
 
 
 async def test_command_success_incremental_reruns(tmp_path: Path):

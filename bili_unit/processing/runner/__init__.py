@@ -37,11 +37,13 @@ from ._audio_work import (
     audio_download_page,
     audio_transcribe_page,
 )
+from ._pipeline_executor import ProgressFactory, default_progress_factory
 
 DownloaderFactory = Callable[..., Any]  # AudioDownloader constructor, compatible with AudioDownloader.__init__
 
 if TYPE_CHECKING:
     from ..._env import BiliSettings
+    from ...observability import RunReporter
     from ...parsing._store import ParsingStore
     from .._store import ProcessingStore
     from ..audio._asr_backend import ASRBackend
@@ -63,6 +65,7 @@ class ProcessingRunner(_AudioMixin):
         credential_provider: CredentialProvider | None = None,
         downloader_factory: DownloaderFactory | None = None,
         convert_fn: ConvertFn | None = None,
+        progress_factory: ProgressFactory | None = None,
     ) -> None:
         self._settings = settings
         self._asr_backend = asr_backend
@@ -73,10 +76,12 @@ class ProcessingRunner(_AudioMixin):
         self._convert_fn = (
             convert_fn if convert_fn is not None else _real_convert_single
         )
+        self._progress_factory = progress_factory or default_progress_factory
         self._asr_cache: ASRCacheStore | None = None
         # Per-uid stores assigned for the duration of ``run``.
         self._store: ProcessingStore | None = None
         self._parse_store: ParsingStore | None = None
+        self._reporter: RunReporter | None = None
 
     # ``_temp_dir`` is derived from settings on demand (per-uid scoping is
     # done inside _do_audio_work). Exposed as a property so audio code can
@@ -107,6 +112,7 @@ class ProcessingRunner(_AudioMixin):
         *,
         proc_store: ProcessingStore,
         parse_store: ParsingStore,
+        reporter: RunReporter | None = None,
         mode: str = "incremental",
         limit: int | None = None,
         only_bvids: list[str] | None = None,
@@ -154,7 +160,26 @@ class ProcessingRunner(_AudioMixin):
         # Bind per-uid stores so the audio mixin can reach them through ``self``.
         self._store = proc_store
         self._parse_store = parse_store
+        self._reporter = reporter
         try:
+            if reporter is not None:
+                await reporter.start()
+                await reporter.emit(
+                    "asr.run.started",
+                    stage="processing",
+                    pipeline=_AUDIO,
+                    data={
+                        "mode": mode,
+                        "limit": limit,
+                        "only_bvids": only_bvids,
+                        "exclude_bvids": exclude_bvids,
+                        "retry_failed_only": retry_failed_only,
+                        "dry_run": dry_run,
+                        "max_audio_seconds": max_audio_seconds,
+                        "max_audio_tokens": max_audio_tokens,
+                    },
+                )
+
             # Phase 0 — seed (or merge) the processing task envelope.
             await proc_store.init_task([_AUDIO])
             await proc_store.update_task_status(
@@ -203,10 +228,46 @@ class ProcessingRunner(_AudioMixin):
                 "processing_completed",
                 extra={"uid": uid, "status": task_status.value, "coverage": coverage},
             )
+            if reporter is not None:
+                summary = {
+                    "status": task_status.value,
+                    "candidate_count": len(candidates),
+                    "budget_exceeded": budget_exceeded,
+                    "coverage": coverage,
+                }
+                await reporter.emit(
+                    "asr.run.completed",
+                    stage="processing",
+                    pipeline=_AUDIO,
+                    data=summary,
+                )
+                await reporter.complete(
+                    _run_status_from_task_status(task_status),
+                    summary=summary,
+                )
             return task_status, candidates, estimate, budget_exceeded, coverage
+        except Exception as exc:
+            if reporter is not None:
+                await reporter.emit(
+                    "asr.run.failed",
+                    stage="processing",
+                    level="ERROR",
+                    pipeline=_AUDIO,
+                    data={"error_type": type(exc).__name__, "error": str(exc)},
+                )
+                await reporter.complete(
+                    "FAILED",
+                    summary={
+                        "status": "FAILED",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+            raise
         finally:
             self._store = None
             self._parse_store = None
+            self._reporter = None
 
     # -- helpers -----------------------------------------------------------
 
@@ -288,9 +349,10 @@ class ProcessingRunner(_AudioMixin):
         pipeline_status = ProcessingPipelineStatus.SUCCESS
         if current_status == ProcessingPipelineStatus.FAILED_PERMANENT.value:
             pipeline_status = ProcessingPipelineStatus.FAILED_PERMANENT
-        elif current_status == ProcessingPipelineStatus.PARTIAL.value:
-            pipeline_status = ProcessingPipelineStatus.PARTIAL
-        elif not coverage["complete"]:
+        elif (
+            current_status == ProcessingPipelineStatus.PARTIAL.value
+            or not coverage["complete"]
+        ):
             pipeline_status = ProcessingPipelineStatus.PARTIAL
         await proc_store.update_task_pipeline(
             _AUDIO,
@@ -310,6 +372,15 @@ class ProcessingRunner(_AudioMixin):
                     "failed_bvids": failed,
                 },
             )
+            reporter = self._reporter
+            if reporter is not None:
+                await reporter.emit(
+                    "asr.coverage.partial",
+                    stage="processing",
+                    level="WARNING",
+                    pipeline=_AUDIO,
+                    data=coverage,
+                )
         return coverage
 
     @staticmethod
@@ -377,7 +448,21 @@ __all__ = [
     "ConvertFn",
     "DownloaderFactory",
     "ProcessingRunner",
+    "ProgressFactory",
     "audio_convert_page",
     "audio_download_page",
     "audio_transcribe_page",
+    "default_progress_factory",
 ]
+
+
+def _run_status_from_task_status(status: ProcessingTaskStatus) -> str:
+    if status == ProcessingTaskStatus.SUCCESS:
+        return "SUCCESS"
+    if status == ProcessingTaskStatus.PARTIAL:
+        return "PARTIAL"
+    if status == ProcessingTaskStatus.RUNNING:
+        return "RUNNING"
+    if status == ProcessingTaskStatus.PENDING:
+        return "PENDING"
+    return "FAILED"

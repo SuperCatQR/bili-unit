@@ -18,7 +18,10 @@ import argparse
 import asyncio
 from pathlib import Path
 
+from ._cli_render import CliRenderer
+from ._env import get_settings
 from ._logging import configure_logging
+from .observability import RunSummary, load_run_summary
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -80,9 +83,14 @@ async def _handle_fetch(args: argparse.Namespace) -> None:
 
     endpoints = _resolve_fetch_endpoints(args)
 
+    renderer = CliRenderer()
     async with session() as cmd:
         result = await cmd.fetch(args.uid, endpoints=endpoints, mode=args.mode)
-        print(f"uid={args.uid}  status={result.status.value}")
+    summary = await _load_cli_summary(args.uid, run_id=result.run_id)
+    if summary is None:
+        renderer.fetch_result(uid=args.uid, status=result.status)
+    else:
+        renderer.fetch_summary(summary, fallback_status=result.status)
 
 
 def _resolve_fetch_endpoints(args: argparse.Namespace) -> list[str] | None:
@@ -106,6 +114,7 @@ async def _handle_parse(args: argparse.Namespace) -> None:
 
     models = _resolve_parse_models(args)
 
+    renderer = CliRenderer()
     async with session() as cmd:
         result = await cmd.parse(
             args.uid,
@@ -113,7 +122,11 @@ async def _handle_parse(args: argparse.Namespace) -> None:
             models=models,
             download_images=args.download_images,
         )
-        print(f"uid={args.uid}  status={result.status.value}")
+    summary = await _load_cli_summary(args.uid, run_id=result.run_id)
+    if summary is None:
+        renderer.parse_result(uid=args.uid, status=result.status)
+    else:
+        renderer.parse_summary(summary, fallback_status=result.status)
 
 
 def _resolve_parse_models(args: argparse.Namespace) -> list[str] | None:
@@ -133,6 +146,7 @@ async def _handle_sync(args: argparse.Namespace) -> None:
 
     endpoints = _resolve_fetch_endpoints(args)
 
+    renderer = CliRenderer()
     async with session() as cmd:
         result = await cmd.sync(
             args.uid,
@@ -142,9 +156,20 @@ async def _handle_sync(args: argparse.Namespace) -> None:
             download_images=args.download_images,
         )
         parse_status = result.parse.status.value if result.parse else "SKIPPED"
-        print(
-            f"uid={args.uid}  status={result.status}  "
-            f"fetch={result.fetch.status.value}  parse={parse_status}",
+    summary = await _load_cli_summary(args.uid, run_id=result.run_id)
+    if summary is None:
+        renderer.sync_result(
+            uid=args.uid,
+            status=result.status,
+            fetch_status=result.fetch.status,
+            parse_status=parse_status,
+        )
+    else:
+        renderer.sync_summary(
+            summary,
+            fallback_status=result.status,
+            fallback_fetch_status=result.fetch.status,
+            fallback_parse_status=parse_status,
         )
 
 
@@ -159,6 +184,7 @@ async def _handle_asr(args: argparse.Namespace) -> None:
         )
     effective_mode = "incremental" if args.retry_failed_only else args.mode
 
+    renderer = CliRenderer()
     async with session(asr_backend_override=getattr(args, "asr_backend", None)) as cmd:
         result = await cmd.asr(
             args.uid,
@@ -172,48 +198,41 @@ async def _handle_asr(args: argparse.Namespace) -> None:
             max_audio_tokens=args.max_audio_tokens,
         )
 
-        if args.dry_run or result.budget_exceeded:
-            candidates = result.dry_run_candidates or []
-            print(
-                f"uid={args.uid}  status={result.status.value}  "
-                f"({len(candidates)} candidates)",
-            )
-            if result.estimate:
-                estimate = result.estimate
-                print(
-                    "  estimate: "
-                    f"items={estimate.get('item_count', 0)} "
-                    f"pages={estimate.get('page_count', 0)} "
-                    f"seconds={estimate.get('audio_seconds', 0):.1f} "
-                    f"tokens={estimate.get('audio_tokens', 0)}",
-                )
-            if result.budget_exceeded:
-                print(f"  budget exceeded: {', '.join(result.budget_exceeded)}")
-            if candidates:
-                print(f"  candidates: {', '.join(candidates)}")
-            _print_asr_coverage(result.coverage)
-            return
+        candidates = (
+            result.dry_run_candidates or []
+            if args.dry_run or result.budget_exceeded
+            else None
+        )
+    summary = await _load_cli_summary(args.uid, run_id=result.run_id)
+    if summary is None:
+        renderer.asr_result(
+            uid=args.uid,
+            status=result.status,
+            candidates=candidates,
+            estimate=result.estimate,
+            budget_exceeded=result.budget_exceeded,
+            coverage=result.coverage,
+        )
+    else:
+        renderer.asr_summary(
+            summary,
+            fallback_status=result.status,
+            candidates=candidates,
+            estimate=result.estimate,
+            budget_exceeded=result.budget_exceeded,
+        )
 
-        print(f"uid={args.uid}  status={result.status.value}")
-        _print_asr_coverage(result.coverage)
 
-
-def _print_asr_coverage(coverage: dict | None) -> None:
-    if not coverage:
-        return
-    print(
-        "  coverage: "
-        f"success={coverage.get('success', 0)}/"
-        f"{coverage.get('expected', 0)} "
-        f"missing={coverage.get('missing', 0)} "
-        f"failed={coverage.get('failed', 0)}",
-    )
-    missing = coverage.get("missing_bvids") or []
-    failed = coverage.get("failed_bvids") or []
-    if missing:
-        print(f"  missing: {', '.join(missing)}")
-    if failed:
-        print(f"  failed: {', '.join(failed)}")
+async def _load_cli_summary(uid: int, *, run_id: str | None = None) -> RunSummary | None:
+    try:
+        return await load_run_summary(
+            uid=uid,
+            root=get_settings().bili_db_dir,
+            run_id=run_id,
+            recent_limit=12,
+        )
+    except Exception:
+        return None
 
 
 async def _handle_delete_uid(args: argparse.Namespace) -> None:
@@ -222,26 +241,26 @@ async def _handle_delete_uid(args: argparse.Namespace) -> None:
 
     main = db_path(args.uid)
     raw = raw_db_path(args.uid)
+    renderer = CliRenderer()
     if not main.exists() and not raw.exists():
-        print(f"uid={args.uid}: no data found")
+        renderer.delete_missing(uid=args.uid)
         return
 
     if not args.yes:
-        print(
-            f"About to delete all data for uid={args.uid}:"
-            f"\n  {main}"
-            f"\n  {raw}"
-            f"\n  {main.parent / str(args.uid)}/  (images / audio caches)",
+        renderer.delete_plan(
+            uid=args.uid,
+            main=main,
+            raw=raw,
+            workdir=main.parent / str(args.uid),
         )
         answer = input("Confirm delete? [y/N] ").strip().lower()
         if answer not in ("y", "yes"):
-            print("Cancelled")
+            renderer.delete_cancelled()
             return
 
     async with session() as cmd:
         stats = await cmd.delete_uid(args.uid)
-    parts = ", ".join(f"{k}={v}" for k, v in stats.items())
-    print(f"  {parts}")
+    renderer.delete_stats(stats)
 
 async def _handle_login(_args: argparse.Namespace) -> None:
     """QR code login."""

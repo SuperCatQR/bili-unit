@@ -79,6 +79,7 @@ class ResourceUnavailableError(FetchingError):
 class CommandResult:
     uid: int
     status: TaskStatus
+    run_id: str | None = None
 
 
 @dataclass

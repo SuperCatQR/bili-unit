@@ -381,7 +381,9 @@ async def delete_uid(uid: int) -> dict[str, int]    # no-op；BiliCommand 删 db
 async def close() -> None                            # 关 ASR 后端 HTTP 会话
 ```
 
-`ProcessingCommandResult` 字段：`uid: int`、`status: ProcessingTaskStatus`、`dry_run_candidates: list[str] | None`（仅 dry_run 时填充）。
+`ProcessingCommandResult` 字段：`uid: int`、`status: ProcessingTaskStatus`、`run_id: str | None`、
+`dry_run_candidates: list[str] | None`（仅 dry_run 时填充）。
+CLI 使用 `run_id` 精确读取本次 run 的 Run Summary；缺失时才退回 uid 最新 run。
 
 ### ProcessingStore 关键方法
 
