@@ -1072,6 +1072,53 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(tmp_path: Pa
         await ctx.close()
 
 
+async def test_parallel_item_phase_suppresses_nested_progress(tmp_path: Path):
+    """The outer item progress bar owns terminal output during parallel fanout."""
+    ctx, store = await _open_store(tmp_path, 703)
+    try:
+        await store.init_task(["videos", "video_detail"])
+        await store.save_raw_payload("videos", "", {
+            "pages": [{"list": {"vlist": [{"bvid": "BV1"}]}}],
+        })
+        await store.update_endpoint_state("videos", status=EndpointStatus.SUCCESS.value)
+        await store.update_endpoint_state(
+            "video_detail", status=EndpointStatus.PENDING.value,
+        )
+
+        runner = _runner(store, _settings(tmp_path))
+        calls: list[dict] = []
+
+        async def fake_run_item_endpoint(uid, spec, credential, mode, *, show_progress=True):
+            calls.append({
+                "uid": uid,
+                "endpoint": spec.name,
+                "mode": mode,
+                "show_progress": show_progress,
+            })
+            await store.update_endpoint_state(
+                spec.name,
+                status=EndpointStatus.SUCCESS.value,
+                item_progress={"total": 1, "completed": 1, "failed": 0},
+            )
+
+        with patch.object(
+            runner, "_run_item_endpoint", new=fake_run_item_endpoint,
+        ):
+            result = await runner.run_or_resume(
+                703, endpoints=["video_detail"], mode="full",
+            )
+
+        assert result.status == TaskStatus.SUCCESS
+        assert calls == [{
+            "uid": 703,
+            "endpoint": "video_detail",
+            "mode": "full",
+            "show_progress": False,
+        }]
+    finally:
+        await ctx.close()
+
+
 # ======================================================================
 # Stale RUNNING takeover (issue #3)
 # ======================================================================

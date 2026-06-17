@@ -23,8 +23,8 @@ class _ParseCommand:
         self.status = status
         self.calls = []
 
-    async def parse_uid(self, uid, mode="full", download_images=False):
-        self.calls.append((uid, mode, download_images))
+    async def parse_uid(self, uid, mode="full", models=None, download_images=False):
+        self.calls.append((uid, mode, models, download_images))
         return ParsingCommandResult(uid=uid, status=self.status)
 
     async def close(self):
@@ -41,6 +41,7 @@ async def test_sync_runs_fetch_then_parse_with_modes():
         endpoints=["user_info"],
         fetch_mode="refresh",
         parse_mode="incremental",
+        parse_models=["video_work"],
         download_images=True,
     )
 
@@ -49,7 +50,7 @@ async def test_sync_runs_fetch_then_parse_with_modes():
     assert result.parse is not None
     assert result.parse.status == ParsingTaskStatus.SUCCESS
     assert fetch.calls == [(123, ["user_info"], "refresh")]
-    assert parse.calls == [(123, "incremental", True)]
+    assert parse.calls == [(123, "incremental", ["video_work"], True)]
 
 
 async def test_sync_continues_parse_after_partial_fetch():
@@ -62,7 +63,7 @@ async def test_sync_continues_parse_after_partial_fetch():
     assert result.status == "PARTIAL"
     assert result.fetch.status == TaskStatus.PARTIAL
     assert result.parse is not None
-    assert parse.calls == [(123, "full", False)]
+    assert parse.calls == [(123, "full", None, False)]
 
 
 async def test_sync_skips_parse_after_hard_fetch_failure():

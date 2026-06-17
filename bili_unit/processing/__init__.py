@@ -103,6 +103,8 @@ class ProcessingCommandResult:
     """Estimated processing cost for the discovered candidate set."""
     budget_exceeded: list[str] | None = None
     """Budget labels exceeded before dispatch, if the run was stopped."""
+    coverage: dict | None = None
+    """Audio coverage audit for uid-level ASR runs."""
 
 
 # ---------------------------------------------------------------------------

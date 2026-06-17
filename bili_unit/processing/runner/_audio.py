@@ -86,6 +86,7 @@ class _AudioMixin:
         *,
         limit: int | None = None,
         only_bvids: list[str] | None = None,
+        exclude_bvids: list[str] | None = None,
         retry_failed_only: bool = False,
         dry_run: bool = False,
         max_audio_seconds: float | None = None,
@@ -107,6 +108,7 @@ class _AudioMixin:
             audio_items, skipped, subtitle_done = await self._discover_audio_items(
                 uid, mode,
                 only_bvids=only_bvids,
+                exclude_bvids=exclude_bvids,
                 retry_failed_only=retry_failed_only,
                 limit=limit,
                 dry_run=dry_run,
@@ -208,6 +210,7 @@ class _AudioMixin:
         mode: str,
         *,
         only_bvids: list[str] | None = None,
+        exclude_bvids: list[str] | None = None,
         retry_failed_only: bool = False,
         limit: int | None = None,
         dry_run: bool = False,
@@ -237,11 +240,14 @@ class _AudioMixin:
         only_set: set[str] | None = (
             set(only_bvids) if only_bvids is not None else None
         )
+        exclude_set: set[str] = set(exclude_bvids or [])
 
         items: list[WorkItem] = []
         # Sorted iteration → stable discovery order across runs.
         for bvid in sorted(payloads.keys()):
             if only_set is not None and bvid not in only_set:
+                continue
+            if bvid in exclude_set:
                 continue
             payload = payloads[bvid]
             if not isinstance(payload, list) or not payload:

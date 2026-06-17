@@ -178,6 +178,13 @@ class ProcessingStore:
         """Return bvids whose audio transcription is in the ``'failed'`` state."""
         return await self.list_audio_bvids(status="failed")
 
+    async def list_audio_statuses(self) -> dict[str, str]:
+        """Return current audio transcription status keyed by bvid."""
+        rows = await self._ctx.main.fetch_all(
+            "SELECT bvid, status FROM audio_transcription ORDER BY bvid",
+        )
+        return {str(r["bvid"]): str(r["status"]) for r in rows}
+
     # ------------------------------------------------------------------
     # task state (stage_task[stage='processing'])
     # ------------------------------------------------------------------
@@ -240,6 +247,7 @@ class ProcessingStore:
         pipeline: str,
         status: str,
         items: dict[str, dict[str, int]] | None = None,
+        coverage: dict | None = None,
     ) -> None:
         """Atomically replace one pipeline entry's status (and optionally items).
 
@@ -266,6 +274,8 @@ class ProcessingStore:
             entry["status"] = status
             if items is not None:
                 entry["items"] = items
+            if coverage is not None:
+                entry["coverage"] = coverage
             await self._ctx.main.execute(
                 "UPDATE stage_task SET payload = ?, updated_at_ms = ? "
                 "WHERE stage = ?",

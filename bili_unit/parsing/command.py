@@ -42,6 +42,7 @@ class ParsingCommand:
         self,
         uid: int,
         mode: str = "full",
+        models: list[str] | None = None,
         download_images: bool = False,
     ) -> ParsingCommandResult:
         """Parse all raw payloads for a uid into typed objects.
@@ -50,10 +51,25 @@ class ParsingCommand:
             uid: Target Bilibili user uid.
             mode: ``"full"`` re-parses everything; ``"incremental"`` skips
                 items that already have a row in the main DB.
+            models: optional explicit parsing model list. ``None`` means all
+                registered models in ``MODEL_ORDER``.
             download_images: if True, downloads images for every parsed
                 object after model parsing finishes.
         """
-        logger.info("parse_uid_received", extra={"uid": uid, "mode": mode})
+        if models is None:
+            model_order = list(MODEL_ORDER)
+        else:
+            model_order = list(models)
+            unknown = [name for name in model_order if name not in MODEL_ORDER]
+            if unknown:
+                raise ValueError(f"unknown parsing model(s): {', '.join(unknown)}")
+            if not model_order:
+                raise ValueError("models must not be empty")
+
+        logger.info(
+            "parse_uid_received",
+            extra={"uid": uid, "mode": mode, "models": model_order},
+        )
 
         ctx = UidContext(uid, self._settings.bili_db_dir)
         await ctx.open()
@@ -67,12 +83,12 @@ class ParsingCommand:
             )
 
             # Initialise (or merge) the parsing stage_task row.
-            await parse_store.init_task(list(MODEL_ORDER))
+            await parse_store.init_task(model_order)
             await parse_store.update_task_status(ParsingTaskStatus.RUNNING.value)
 
             overall_status = ParsingTaskStatus.SUCCESS
 
-            for model_name in MODEL_ORDER:
+            for model_name in model_order:
                 try:
                     count = await materializer.parse_model(uid, model_name, mode)
                     await parse_store.update_task_model_status(

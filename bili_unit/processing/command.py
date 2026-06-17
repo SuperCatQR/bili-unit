@@ -68,6 +68,7 @@ class ProcessingCommand:
         *,
         limit: int | None = None,
         only_bvids: list[str] | None = None,
+        exclude_bvids: list[str] | None = None,
         retry_failed_only: bool = False,
         dry_run: bool = False,
         max_audio_seconds: float | None = None,
@@ -79,6 +80,7 @@ class ProcessingCommand:
             mode=mode,
             limit=limit,
             only_bvids=only_bvids,
+            exclude_bvids=exclude_bvids,
             retry_failed_only=retry_failed_only,
             dry_run=dry_run,
             max_audio_seconds=max_audio_seconds,
@@ -92,6 +94,7 @@ class ProcessingCommand:
         *,
         limit: int | None = None,
         only_bvids: list[str] | None = None,
+        exclude_bvids: list[str] | None = None,
         retry_failed_only: bool = False,
         dry_run: bool = False,
         max_audio_seconds: float | None = None,
@@ -107,6 +110,7 @@ class ProcessingCommand:
             mode: "incremental" (default) | "full".
             limit: cap discovered bvids to the first N after other filters.
             only_bvids: restrict processing to this explicit set of bvids.
+            exclude_bvids: skip this explicit set of bvids.
             retry_failed_only: only re-process bvids whose existing status is
                 FAILED (incremental-mode extension).
             dry_run: discover candidates and write task / progress markers,
@@ -127,6 +131,7 @@ class ProcessingCommand:
                 "mode": mode,
                 "limit": limit,
                 "only_bvids": only_bvids,
+                "exclude_bvids": exclude_bvids,
                 "retry_failed_only": retry_failed_only,
                 "dry_run": dry_run,
                 "max_audio_seconds": max_audio_seconds,
@@ -139,13 +144,14 @@ class ProcessingCommand:
         try:
             proc_store = ProcessingStore(ctx)
             parse_store = ParsingStore(ctx)
-            status, candidates, estimate, budget_exceeded = await self._runner.run(
+            status, candidates, estimate, budget_exceeded, coverage = await self._runner.run(
                 uid,
                 proc_store=proc_store,
                 parse_store=parse_store,
                 mode=mode,
                 limit=limit,
                 only_bvids=only_bvids,
+                exclude_bvids=exclude_bvids,
                 retry_failed_only=retry_failed_only,
                 dry_run=dry_run,
                 max_audio_seconds=max_audio_seconds,
@@ -159,6 +165,7 @@ class ProcessingCommand:
             dry_run_candidates=candidates if dry_run or budget_exceeded else None,
             estimate=estimate,
             budget_exceeded=budget_exceeded or None,
+            coverage=coverage,
         )
 
     async def delete_uid(self, uid: int) -> dict[str, int]:

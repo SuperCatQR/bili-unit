@@ -344,6 +344,39 @@ async def test_parse_uid_passes_mode_through_to_materializer(
     assert [entry[1] for entry in seen] == list(EXPECTED_MODEL_ORDER)
 
 
+async def test_parse_uid_can_run_explicit_model_subset(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    seen: list[str] = []
+
+    async def fake_parse_model(self, uid, model_name, mode):
+        seen.append(model_name)
+        return 1
+
+    with patch(
+        "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+        new=fake_parse_model,
+    ):
+        result = await parsing_command.parse_uid(
+            uid=7107,
+            models=["video_work", "opus_post"],
+        )
+
+    assert result.status == ParsingTaskStatus.SUCCESS
+    assert seen == ["video_work", "opus_post"]
+
+    task = await _read_task(7107, settings)
+    assert task is not None
+    assert tuple(task["models"].keys()) == ("video_work", "opus_post")
+
+
+async def test_parse_uid_rejects_unknown_model(
+    parsing_command: ParsingCommand,
+):
+    with pytest.raises(ValueError):
+        await parsing_command.parse_uid(uid=7108, models=["video_work", "typo"])
+
+
 # ---------------------------------------------------------------------------
 # End-to-end — real materializer over seeded raw payloads
 # ---------------------------------------------------------------------------

@@ -51,13 +51,14 @@ class BiliCommand:
         self,
         uid: int,
         mode: str = "full",
+        models: list[str] | None = None,
         download_images: bool = False,
     ) -> ParsingCommandResult:
         """Run parsing for one uid."""
         if self._parsing is None:
             raise RuntimeError("parsing command was not assembled")
         return await self._parsing.parse_uid(
-            uid, mode=mode, download_images=download_images,
+            uid, mode=mode, models=models, download_images=download_images,
         )
 
     async def sync(
@@ -67,6 +68,7 @@ class BiliCommand:
         *,
         fetch_mode: str = "incremental",
         parse_mode: str = "full",
+        parse_models: list[str] | None = None,
         download_images: bool = False,
     ) -> SyncCommandResult:
         """Run fetching followed by parsing."""
@@ -76,6 +78,7 @@ class BiliCommand:
             endpoints=endpoints,
             fetch_mode=fetch_mode,
             parse_mode=parse_mode,
+            parse_models=parse_models,
             download_images=download_images,
         )
 
@@ -86,6 +89,7 @@ class BiliCommand:
         *,
         limit: int | None = None,
         only_bvids: list[str] | None = None,
+        exclude_bvids: list[str] | None = None,
         retry_failed_only: bool = False,
         dry_run: bool = False,
         max_audio_seconds: float | None = None,
@@ -99,6 +103,7 @@ class BiliCommand:
             mode=mode,
             limit=limit,
             only_bvids=only_bvids,
+            exclude_bvids=exclude_bvids,
             retry_failed_only=retry_failed_only,
             dry_run=dry_run,
             max_audio_seconds=max_audio_seconds,
@@ -112,6 +117,7 @@ class BiliCommand:
         *,
         limit: int | None = None,
         only_bvids: list[str] | None = None,
+        exclude_bvids: list[str] | None = None,
         retry_failed_only: bool = False,
         dry_run: bool = False,
         max_audio_seconds: float | None = None,
@@ -123,6 +129,7 @@ class BiliCommand:
             mode=mode,
             limit=limit,
             only_bvids=only_bvids,
+            exclude_bvids=exclude_bvids,
             retry_failed_only=retry_failed_only,
             dry_run=dry_run,
             max_audio_seconds=max_audio_seconds,

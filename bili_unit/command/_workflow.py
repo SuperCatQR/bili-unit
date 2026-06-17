@@ -34,6 +34,7 @@ async def sync_uid(
     *,
     fetch_mode: str = "incremental",
     parse_mode: str = "full",
+    parse_models: list[str] | None = None,
     download_images: bool = False,
 ) -> SyncCommandResult:
     """Run the common write-side workflow: fetching followed by parsing.
@@ -57,6 +58,7 @@ async def sync_uid(
     parse_result = await command.parse(
         uid,
         mode=parse_mode,
+        models=parse_models,
         download_images=download_images,
     )
     status = "SUCCESS"

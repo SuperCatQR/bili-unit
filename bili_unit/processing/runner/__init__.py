@@ -110,11 +110,12 @@ class ProcessingRunner(_AudioMixin):
         mode: str = "incremental",
         limit: int | None = None,
         only_bvids: list[str] | None = None,
+        exclude_bvids: list[str] | None = None,
         retry_failed_only: bool = False,
         dry_run: bool = False,
         max_audio_seconds: float | None = None,
         max_audio_tokens: int | None = None,
-    ) -> tuple[ProcessingTaskStatus, list[str], dict | None, list[str]]:
+    ) -> tuple[ProcessingTaskStatus, list[str], dict | None, list[str], dict | None]:
         """Run the audio processing pipeline for a uid.
 
         Args:
@@ -124,14 +125,14 @@ class ProcessingRunner(_AudioMixin):
             parse_store: per-uid parsing store (read-only here — video pages
                 and subtitle payloads from main DB).
             mode: "incremental" (default) or "full".
-            limit / only_bvids / retry_failed_only / dry_run: see
+            limit / only_bvids / exclude_bvids / retry_failed_only / dry_run: see
                 :meth:`ProcessingCommand.process_uid`.
             max_audio_seconds / max_audio_tokens: optional pre-dispatch budget
                 caps. When exceeded, the runner writes a PARTIAL task state
                 and returns without dispatching workers.
 
         Returns:
-            ``(status, candidates, estimate, budget_exceeded)``.
+            ``(status, candidates, estimate, budget_exceeded, coverage)``.
             ``candidates`` is the bvid list that entered (or *would have
             entered*) the audio worker after all CLI-level filters.
         """
@@ -143,6 +144,7 @@ class ProcessingRunner(_AudioMixin):
             extra={
                 "uid": uid, "mode": mode, "pipelines": [_AUDIO],
                 "limit": limit, "only_bvids": only_bvids,
+                "exclude_bvids": exclude_bvids,
                 "retry_failed_only": retry_failed_only, "dry_run": dry_run,
                 "max_audio_seconds": max_audio_seconds,
                 "max_audio_tokens": max_audio_tokens,
@@ -164,17 +166,34 @@ class ProcessingRunner(_AudioMixin):
                 uid, mode,
                 limit=limit,
                 only_bvids=only_bvids,
+                exclude_bvids=exclude_bvids,
                 retry_failed_only=retry_failed_only,
                 dry_run=dry_run,
                 max_audio_seconds=max_audio_seconds,
                 max_audio_tokens=max_audio_tokens,
             )
+            coverage = None
+            if self._should_audit_audio_coverage(
+                limit=limit,
+                only_bvids=only_bvids,
+                exclude_bvids=exclude_bvids,
+                retry_failed_only=retry_failed_only,
+                dry_run=dry_run,
+                budget_exceeded=budget_exceeded,
+            ):
+                coverage = await self._audit_audio_coverage(proc_store, parse_store)
 
             # Phase 2 — finalise: derive task status from current pipeline rollup.
             task = await proc_store.get_task() or {}
             payload = task.get("payload") or {}
             pipelines = payload.get("pipelines") or {}
             task_status = self._derive_task_status(pipelines)
+            if (
+                coverage is not None
+                and not coverage.get("complete", True)
+                and task_status == ProcessingTaskStatus.SUCCESS
+            ):
+                task_status = ProcessingTaskStatus.PARTIAL
             await proc_store.update_task_status(task_status.value)
 
             # Phase 2 — cleanup temp
@@ -182,9 +201,9 @@ class ProcessingRunner(_AudioMixin):
 
             logger.info(
                 "processing_completed",
-                extra={"uid": uid, "status": task_status.value},
+                extra={"uid": uid, "status": task_status.value, "coverage": coverage},
             )
-            return task_status, candidates, estimate, budget_exceeded
+            return task_status, candidates, estimate, budget_exceeded, coverage
         finally:
             self._store = None
             self._parse_store = None
@@ -218,6 +237,80 @@ class ProcessingRunner(_AudioMixin):
         if temp_uid_dir.exists():
             shutil.rmtree(str(temp_uid_dir), ignore_errors=True)
             logger.debug("temp_cleaned", extra={"uid": uid})
+
+    @staticmethod
+    def _should_audit_audio_coverage(
+        *,
+        limit: int | None,
+        only_bvids: list[str] | None,
+        exclude_bvids: list[str] | None,
+        retry_failed_only: bool,
+        dry_run: bool,
+        budget_exceeded: list[str],
+    ) -> bool:
+        """Return True when the result should report uid-level ASR coverage."""
+        _ = retry_failed_only
+        return (
+            limit is None
+            and only_bvids is None
+            and exclude_bvids is None
+            and not dry_run
+            and not budget_exceeded
+        )
+
+    async def _audit_audio_coverage(
+        self,
+        proc_store: ProcessingStore,
+        parse_store: ParsingStore,
+    ) -> dict[str, Any]:
+        """Compare parsed videos with current successful audio rows."""
+        page_items = await parse_store.list_video_page_work_items()
+        expected = sorted(page_items.keys())
+        statuses = await proc_store.list_audio_statuses()
+        missing = [bvid for bvid in expected if bvid not in statuses]
+        failed = [bvid for bvid in expected if statuses.get(bvid) == "failed"]
+        success = sum(1 for bvid in expected if statuses.get(bvid) == "success")
+        coverage = {
+            "expected": len(expected),
+            "success": success,
+            "missing": len(missing),
+            "failed": len(failed),
+            "complete": not missing and not failed,
+            "missing_bvids": missing,
+            "failed_bvids": failed,
+        }
+        task = await proc_store.get_task() or {}
+        payload = task.get("payload") or {}
+        pipelines = payload.get("pipelines") or {}
+        audio_entry = pipelines.get(_AUDIO) or {}
+        items = audio_entry.get("items") or {}
+        current_status = audio_entry.get("status")
+        pipeline_status = ProcessingPipelineStatus.SUCCESS
+        if current_status == ProcessingPipelineStatus.FAILED_PERMANENT.value:
+            pipeline_status = ProcessingPipelineStatus.FAILED_PERMANENT
+        elif current_status == ProcessingPipelineStatus.PARTIAL.value:
+            pipeline_status = ProcessingPipelineStatus.PARTIAL
+        elif not coverage["complete"]:
+            pipeline_status = ProcessingPipelineStatus.PARTIAL
+        await proc_store.update_task_pipeline(
+            _AUDIO,
+            status=pipeline_status.value,
+            items=items,
+            coverage=coverage,
+        )
+        if not coverage["complete"]:
+            logger.warning(
+                "audio_coverage_incomplete",
+                extra={
+                    "expected": coverage["expected"],
+                    "success": success,
+                    "missing": len(missing),
+                    "failed": len(failed),
+                    "missing_bvids": missing,
+                    "failed_bvids": failed,
+                },
+            )
+        return coverage
 
     @staticmethod
     def _derive_pipeline_status(

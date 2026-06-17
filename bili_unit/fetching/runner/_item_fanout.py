@@ -49,6 +49,8 @@ class _ItemFanoutMixin:
         spec: EndpointSpec,
         credential: Any,
         mode: str = "incremental",
+        *,
+        show_progress: bool = True,
     ) -> None:
         """Execute an item-level fan-out endpoint (e.g. video_detail).
 
@@ -109,7 +111,12 @@ class _ItemFanoutMixin:
         max_concurrent = max(settings.bili_fetching_item_concurrency, 1)
         semaphore = asyncio.Semaphore(max_concurrent)
 
-        bar = Progress(total=total_items, label=f"fetch uid={uid} {ep_name}")
+        bar = Progress(
+            total=total_items,
+            label=f"fetch uid={uid} {ep_name}",
+            enabled=show_progress,
+            emit_summary=show_progress,
+        )
 
         async def process_item(item_id: str) -> str:
             nonlocal completed_items, failed_items

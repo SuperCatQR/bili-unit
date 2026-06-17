@@ -221,6 +221,17 @@ async def test_only_bvids_then_limit(cmd, settings):
     assert set(_dispatched_bvids).issubset({"BVb2", "BVd4", "BVe5"})
 
 
+async def test_exclude_bvids_filters_out_explicit_set(cmd, settings):
+    uid = 8007
+    all_bvids = ["BVa1", "BVb2", "BVc3"]
+    await _seed_video_pages(settings, uid, all_bvids)
+
+    result = await cmd.process_uid(uid, exclude_bvids=["BVb2"])
+
+    assert result.status == ProcessingTaskStatus.SUCCESS
+    assert sorted(_dispatched_bvids) == ["BVa1", "BVc3"]
+
+
 async def test_retry_failed_only_picks_failed_records(cmd, settings):
     """3 success + 2 failed �?only the 2 failed enter the worker."""
     uid = 8003
@@ -236,6 +247,27 @@ async def test_retry_failed_only_picks_failed_records(cmd, settings):
 
     assert result.status == ProcessingTaskStatus.SUCCESS
     assert sorted(_dispatched_bvids) == ["BVfail1", "BVfail2"]
+
+
+async def test_retry_failed_only_reports_missing_coverage(cmd, settings):
+    uid = 8008
+    await _seed_video_pages(settings, uid, ["BVok1", "BVmissing1"])
+    await _seed_audio_status(settings, uid, "BVok1", "success")
+
+    result = await cmd.process_uid(uid, retry_failed_only=True)
+
+    assert result.status == ProcessingTaskStatus.PARTIAL
+    assert _dispatched_bvids == []
+    assert result.coverage is not None
+    assert result.coverage["success"] == 1
+    assert result.coverage["expected"] == 2
+    assert result.coverage["missing_bvids"] == ["BVmissing1"]
+
+    task = await _read_processing_task(settings, uid)
+    assert task is not None
+    audio = task["payload"]["pipelines"]["audio"]
+    assert audio["status"] == "PARTIAL"
+    assert audio["coverage"]["missing_bvids"] == ["BVmissing1"]
 
 
 async def test_dry_run_skips_worker_dispatch(cmd, settings, capsys):
@@ -315,7 +347,7 @@ def test_cli_argparse_accepts_asr_flags():
     args = parser.parse_args([
         "asr", "1234",
         "--limit", "5",
-        "--only-bvids", "BV1", "BV2",
+        "--include", "BV1", "BV2",
         "--dry-run",
         "--max-audio-seconds", "60",
         "--max-audio-tokens", "500",
@@ -327,6 +359,22 @@ def test_cli_argparse_accepts_asr_flags():
     assert args.max_audio_seconds == 60
     assert args.max_audio_tokens == 500
     assert args.retry_failed_only is False
+
+
+def test_cli_argparse_accepts_legacy_only_bvids_and_exclude_bvids():
+    from bili_unit.__main__ import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args(["asr", "1234", "--only-bvids", "BV1", "BV2"])
+    assert args.only_bvids == ["BV1", "BV2"]
+    assert args.exclude_bvids is None
+
+    args = parser.parse_args(["asr", "1234", "--exclude", "BV3"])
+    assert args.only_bvids is None
+    assert args.exclude_bvids == ["BV3"]
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["asr", "1234", "-e", "BV1", "-x", "BV2"])
 
 
 def test_cli_argparse_retry_failed_only_flag():

@@ -104,13 +104,27 @@ async def _handle_parse(args: argparse.Namespace) -> None:
     """Run parsing via the unit-level BiliCommand."""
     from bili_unit import session
 
+    models = _resolve_parse_models(args)
+
     async with session() as cmd:
         result = await cmd.parse(
             args.uid,
             mode=args.mode,
+            models=models,
             download_images=args.download_images,
         )
         print(f"uid={args.uid}  status={result.status.value}")
+
+
+def _resolve_parse_models(args: argparse.Namespace) -> list[str] | None:
+    from bili_unit.parsing.specs import MODEL_ORDER
+
+    return _resolve_subset(
+        flag_label="model",
+        all_names=list(MODEL_ORDER),
+        include=args.models,
+        exclude=args.exclude_models,
+    )
 
 
 async def _handle_sync(args: argparse.Namespace) -> None:
@@ -151,6 +165,7 @@ async def _handle_asr(args: argparse.Namespace) -> None:
             mode=effective_mode,
             limit=args.limit,
             only_bvids=args.only_bvids,
+            exclude_bvids=args.exclude_bvids,
             retry_failed_only=args.retry_failed_only,
             dry_run=args.dry_run,
             max_audio_seconds=args.max_audio_seconds,
@@ -176,9 +191,29 @@ async def _handle_asr(args: argparse.Namespace) -> None:
                 print(f"  budget exceeded: {', '.join(result.budget_exceeded)}")
             if candidates:
                 print(f"  candidates: {', '.join(candidates)}")
+            _print_asr_coverage(result.coverage)
             return
 
         print(f"uid={args.uid}  status={result.status.value}")
+        _print_asr_coverage(result.coverage)
+
+
+def _print_asr_coverage(coverage: dict | None) -> None:
+    if not coverage:
+        return
+    print(
+        "  coverage: "
+        f"success={coverage.get('success', 0)}/"
+        f"{coverage.get('expected', 0)} "
+        f"missing={coverage.get('missing', 0)} "
+        f"failed={coverage.get('failed', 0)}",
+    )
+    missing = coverage.get("missing_bvids") or []
+    failed = coverage.get("failed_bvids") or []
+    if missing:
+        print(f"  missing: {', '.join(missing)}")
+    if failed:
+        print(f"  failed: {', '.join(failed)}")
 
 
 async def _handle_delete_uid(args: argparse.Namespace) -> None:
@@ -309,6 +344,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run parsing for a uid (converts raw payloads to typed objects)",
     )
     p_parse.add_argument("uid", type=int, help="Target Bilibili user uid")
+    _add_parse_selection_args(p_parse)
     p_parse.add_argument(
         "--mode", "-m",
         choices=["full", "incremental"],
@@ -348,10 +384,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=None, metavar="N",
         help="Process only the first N discovered bvids (after other filters).",
     )
-    p_proc.add_argument(
-        "--only-bvids", nargs="+", default=None, metavar="BVID",
-        help="Process only the given bvid(s); combinable with --limit.",
-    )
+    _add_asr_selection_args(p_proc)
     p_proc.add_argument(
         "--retry-failed-only", action="store_true",
         help=(
@@ -405,14 +438,22 @@ def _build_parser() -> argparse.ArgumentParser:
 def _add_fetch_selection_args(parser: argparse.ArgumentParser) -> None:
     fetch_group = parser.add_mutually_exclusive_group()
     fetch_group.add_argument(
-        "--exclude-endpoints", "-x", nargs="+", default=None, metavar="EP",
+        "--exclude", "--exclude-endpoints", "-x",
+        dest="exclude_endpoints",
+        nargs="+",
+        default=None,
+        metavar="EP",
         help=(
             "Endpoint names to skip; everything else is fetched. "
             "Useful for dropping heavy endpoints (e.g. -x video_detail)."
         ),
     )
     fetch_group.add_argument(
-        "--endpoints", "-e", nargs="+", default=None, metavar="EP",
+        "--include", "--endpoints", "-e",
+        dest="endpoints",
+        nargs="+",
+        default=None,
+        metavar="EP",
         help="Endpoint names to fetch (debug; mutually exclusive with -x).",
     )
     fetch_group.add_argument(
@@ -421,10 +462,50 @@ def _add_fetch_selection_args(parser: argparse.ArgumentParser) -> None:
         default="all",
         help=(
             "Endpoint set preset (mutually exclusive with -e/-x):\n"
-            "  all     閳?閹碘偓閺堝鍑″▔銊ュ斀缁旑垳鍋ｉ敍鍫ョ帛鐠併倧绱歕n"
-            "  parsing 閳?parsing 鐏炲倸鐤勯梽鍛Х鐠愬湱娈戠粩顖滃仯閿涘牐绶濊箛顐礆\n"
-            "  minimal 閳?listing 缁旑垳鍋ｉ敍宀€鏁ゆ禍?smoke / CI"
+            "  all      all registered endpoints\n"
+            "  parsing  endpoints consumed by parsing models\n"
+            "  minimal  lightweight listing endpoints for smoke / CI"
         ),
+    )
+
+
+def _add_parse_selection_args(parser: argparse.ArgumentParser) -> None:
+    model_group = parser.add_mutually_exclusive_group()
+    model_group.add_argument(
+        "--include", "--models", "-e",
+        dest="models",
+        nargs="+",
+        default=None,
+        metavar="MODEL",
+        help="Parsing model names to run (e.g. -e video_work opus_post).",
+    )
+    model_group.add_argument(
+        "--exclude", "--exclude-models", "-x",
+        dest="exclude_models",
+        nargs="+",
+        default=None,
+        metavar="MODEL",
+        help="Parsing model names to skip; everything else is parsed.",
+    )
+
+
+def _add_asr_selection_args(parser: argparse.ArgumentParser) -> None:
+    bvid_group = parser.add_mutually_exclusive_group()
+    bvid_group.add_argument(
+        "--include", "--only-bvids", "-e",
+        dest="only_bvids",
+        nargs="+",
+        default=None,
+        metavar="BVID",
+        help="Process only the given bvid(s); combinable with --limit.",
+    )
+    bvid_group.add_argument(
+        "--exclude", "--exclude-bvids", "-x",
+        dest="exclude_bvids",
+        nargs="+",
+        default=None,
+        metavar="BVID",
+        help="Skip the given bvid(s); combinable with --limit.",
     )
 
 

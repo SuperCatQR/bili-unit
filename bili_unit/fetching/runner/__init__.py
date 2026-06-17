@@ -224,7 +224,9 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                         )
                         continue
                 item_tasks.append(
-                    self._run_item_endpoint(uid, spec, credential, mode),
+                    self._run_item_endpoint(
+                        uid, spec, credential, mode, show_progress=False,
+                    ),
                 )
 
             if item_tasks:
