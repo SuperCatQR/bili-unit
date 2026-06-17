@@ -57,7 +57,7 @@ rate_limit → 仅 stdlib + aiolimiter（不再持久化）
 ```text
 uid-level（34 个）
   user_info videos access_id relation_info up_stat overview_stat articles
-  subscribed_bangumi opus dynamics dynamics_legacy audios channel_list
+  subscribed_bangumi opus dynamics audios channel_list
   channels media_list user_medal live_info user_relation reservation
   uplikeimg top_followers space_notice all_followings followings followers
   same_followers top_videos masterpiece article_list cheese elec_monthly
@@ -96,7 +96,6 @@ credential_required
 | channels | none | channels | — | |
 | cheese | none | cheese | — | |
 | dynamics | cursor (offset) | dynamics | items[*].id_str | |
-| dynamics_legacy | legacy_offset | dynamics_legacy | cards[*].desc.dynamic_id | |
 | elec_monthly | none | elec_monthly | — | ✓ |
 | followers | page (pn/ps) | followers | list[*].mid | |
 | followings | page (pn/ps) | followings | list[*].mid | |

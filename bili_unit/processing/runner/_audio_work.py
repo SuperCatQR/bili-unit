@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from collections.abc import Awaitable, Callable
@@ -99,6 +100,8 @@ async def audio_transcribe_page(
     high_risk_split_seconds: float = 30.0,
     high_risk_min_segment_seconds: float = 10.0,
     empty_segment_skip_seconds: float = 5.0,
+    rate_limit_max_attempts: int = 3,
+    rate_limit_retry_delays: tuple[float, ...] = (10.0, 30.0, 60.0),
     ffmpeg_setting: str = "auto",
 ) -> dict[str, Any]:
     """Run ASR on each segment, threading results through the resume cache.
@@ -133,6 +136,7 @@ async def audio_transcribe_page(
     asr_seconds_total: float = 0.0
     fresh_segment_count: int = 0
     empty_segment_skips: int = 0
+    high_risk_segment_skips: int = 0
 
     for seg in segments:
         cached: CachedSegment | None = (
@@ -168,12 +172,16 @@ async def audio_transcribe_page(
             split_seconds=high_risk_split_seconds,
             min_segment_seconds=high_risk_min_segment_seconds,
             empty_segment_skip_seconds=empty_segment_skip_seconds,
+            rate_limit_max_attempts=rate_limit_max_attempts,
+            rate_limit_retry_delays=rate_limit_retry_delays,
             ffmpeg_setting=ffmpeg_setting,
         )
         for item in seg_results:
             segment_texts.append(item["text"])
             if item.get("empty_skip"):
                 empty_segment_skips += 1
+            elif item.get("high_risk_skip"):
+                high_risk_segment_skips += 1
             elif item.get("cache_hit"):
                 cache_hits += 1
             else:
@@ -194,6 +202,13 @@ async def audio_transcribe_page(
                     float(duration) if duration is not None else None
                 ),
                 "model": item.get("model") or backend_model,
+                **({
+                    "empty_skip": True,
+                } if item.get("empty_skip") else {}),
+                **({
+                    "high_risk_skip": True,
+                    "error": item.get("error"),
+                } if item.get("high_risk_skip") else {}),
             })
 
     if cache_hits > 0:
@@ -223,6 +238,7 @@ async def audio_transcribe_page(
         "asr_seconds_total": asr_seconds_total,
         "fresh_segment_count": fresh_segment_count,
         "empty_segment_skips": empty_segment_skips,
+        "high_risk_segment_skips": high_risk_segment_skips,
     }
 
 
@@ -238,6 +254,41 @@ def _is_empty_transcript_error(exc: Exception) -> bool:
         isinstance(exc, ASRAPIError)
         and "empty transcription text" in str(exc).lower()
     )
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    if not isinstance(exc, ASRAPIError):
+        return False
+    text = str(exc).lower()
+    return (
+        "429" in text
+        or "too many requests" in text
+        or "rate limit" in text
+        or "limitation" in text
+    )
+
+
+def _skipped_segment(
+    seg: Mp3Segment,
+    *,
+    reason: str,
+    error: Exception | None = None,
+) -> dict[str, Any]:
+    item = {
+        "start_s": seg.start_s,
+        "end_s": seg.end_s,
+        "text": "",
+        "duration": seg.end_s - seg.start_s,
+        "model": "",
+        "audio_tokens": 0,
+        "cache_hit": False,
+    }
+    if reason == "empty":
+        item["empty_skip"] = True
+    elif reason == "high_risk":
+        item["high_risk_skip"] = True
+        item["error"] = str(error) if error is not None else None
+    return item
 
 
 def _split_segment_ranges(
@@ -296,6 +347,44 @@ async def _transcribe_segment_once(
     return item
 
 
+async def _transcribe_segment_once_with_rate_limit_retry(
+    asr_backend: ASRBackend,
+    asr_cache: ASRCacheStore | None,
+    page_cache: Any,
+    seg: Mp3Segment,
+    asr_language: str,
+    *,
+    max_attempts: int,
+    retry_delays: tuple[float, ...],
+) -> dict[str, Any]:
+    attempts = max(1, int(max_attempts))
+    delays = tuple(max(float(delay), 0.0) for delay in retry_delays) or (0.0,)
+    for attempt in range(1, attempts + 1):
+        try:
+            return await _transcribe_segment_once(
+                asr_backend, asr_cache, page_cache, seg, asr_language,
+            )
+        except Exception as exc:
+            if not _is_rate_limit_error(exc) or attempt >= attempts:
+                raise
+            delay = delays[min(attempt - 1, len(delays) - 1)]
+            logger.info(
+                "asr_segment_rate_limit_retry",
+                extra={
+                    "segment": str(seg.path),
+                    "start_s": seg.start_s,
+                    "end_s": seg.end_s,
+                    "attempt": attempt,
+                    "max_attempts": attempts,
+                    "delay_s": delay,
+                    "error": str(exc),
+                },
+            )
+            if delay > 0:
+                await asyncio.sleep(delay)
+    raise ASRAPIError("ASR segment retry exhausted unexpectedly")
+
+
 async def _transcribe_segment_with_high_risk_fallback(
     asr_backend: ASRBackend,
     asr_cache: ASRCacheStore | None,
@@ -307,13 +396,17 @@ async def _transcribe_segment_with_high_risk_fallback(
     split_seconds: float,
     min_segment_seconds: float,
     empty_segment_skip_seconds: float,
+    rate_limit_max_attempts: int,
+    rate_limit_retry_delays: tuple[float, ...],
     ffmpeg_setting: str,
 ) -> list[dict[str, Any]]:
     high_risk_exc: Exception | None = None
     try:
         return [
-            await _transcribe_segment_once(
+            await _transcribe_segment_once_with_rate_limit_retry(
                 asr_backend, asr_cache, page_cache, seg, asr_language,
+                max_attempts=rate_limit_max_attempts,
+                retry_delays=rate_limit_retry_delays,
             )
         ]
     except Exception as exc:
@@ -331,14 +424,8 @@ async def _transcribe_segment_with_high_risk_fallback(
                 },
             )
             return [{
-                "start_s": seg.start_s,
-                "end_s": seg.end_s,
-                "text": "",
-                "duration": seg.end_s - seg.start_s,
+                **_skipped_segment(seg, reason="empty"),
                 "model": getattr(asr_backend, "model", ""),
-                "audio_tokens": 0,
-                "cache_hit": False,
-                "empty_skip": True,
             }]
         high_risk_exc = exc
         should_split = (
@@ -348,6 +435,21 @@ async def _transcribe_segment_with_high_risk_fallback(
             and (seg.end_s - seg.start_s) > max(float(min_segment_seconds), 0.0)
         )
         if not should_split:
+            if high_risk_split_enabled and _is_high_risk_error(exc):
+                logger.warning(
+                    "asr_high_risk_segment_skipped",
+                    extra={
+                        "segment": str(seg.path),
+                        "start_s": seg.start_s,
+                        "end_s": seg.end_s,
+                        "duration_s": seg.end_s - seg.start_s,
+                        "min_segment_seconds": float(min_segment_seconds),
+                    },
+                )
+                return [{
+                    **_skipped_segment(seg, reason="high_risk", error=exc),
+                    "model": getattr(asr_backend, "model", ""),
+                }]
             raise
 
     duration = seg.end_s - seg.start_s
@@ -405,6 +507,8 @@ async def _transcribe_segment_with_high_risk_fallback(
             split_seconds=max(float(min_segment_seconds), next_split_seconds / 2.0),
             min_segment_seconds=float(min_segment_seconds),
             empty_segment_skip_seconds=float(empty_segment_skip_seconds),
+            rate_limit_max_attempts=int(rate_limit_max_attempts),
+            rate_limit_retry_delays=tuple(rate_limit_retry_delays),
             ffmpeg_setting=ffmpeg_setting,
         ))
     return out

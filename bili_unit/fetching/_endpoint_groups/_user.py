@@ -112,16 +112,6 @@ def user_endpoints() -> list[EndpointSpec]:
             item_id_path="items[*].id_str",
             items_path="items",
         ),
-        EndpointSpec(
-            name="dynamics_legacy",
-            callable=_user_method("get_dynamics", offset=0, need_top=False),
-            credential_required=False,
-            params_strategy={"offset": 0, "need_top": False},
-            pagination_strategy="legacy_offset",
-            rate_limit_key="dynamics_legacy",
-            item_id_path="cards[*].desc.dynamic_id",
-            items_path="cards",
-        ),
         # --- extension: audios ---
         EndpointSpec(
             name="audios",

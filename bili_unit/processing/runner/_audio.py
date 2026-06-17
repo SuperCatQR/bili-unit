@@ -596,6 +596,7 @@ class _AudioMixin:
             total_asr_seconds: float = 0.0
             total_cache_hits: int = 0
             total_fresh_segments: int = 0
+            total_high_risk_segment_skips: int = 0
 
             for page in pages:
                 page_index = page["page_index"]
@@ -645,6 +646,13 @@ class _AudioMixin:
                     empty_segment_skip_seconds=(
                         self._settings.bili_processing_asr_empty_segment_skip_seconds
                     ),
+                    rate_limit_max_attempts=(
+                        self._settings
+                        .bili_processing_asr_rate_limit_max_attempts
+                    ),
+                    rate_limit_retry_delays=tuple(
+                        self._settings.get_asr_rate_limit_retry_delays()
+                    ),
                     ffmpeg_setting=self._settings.bili_processing_ffmpeg_path,
                 )
 
@@ -680,6 +688,9 @@ class _AudioMixin:
                 total_asr_seconds += float(trans.get("asr_seconds_total", 0.0))
                 total_cache_hits += int(trans.get("cache_hits", 0))
                 total_fresh_segments += int(trans.get("fresh_segment_count", 0))
+                total_high_risk_segment_skips += int(
+                    trans.get("high_risk_segment_skips", 0)
+                )
 
             result = {
                 "bvid": bvid,
@@ -693,6 +704,7 @@ class _AudioMixin:
                     "model": getattr(self._asr_backend, "model", ""),
                     "cache_hits": int(total_cache_hits),
                     "fresh_segments": int(total_fresh_segments),
+                    "high_risk_segment_skips": int(total_high_risk_segment_skips),
                 },
             }
             # Bvid completed successfully — drop its resume cache.  We only

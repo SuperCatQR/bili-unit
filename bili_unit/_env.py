@@ -139,6 +139,11 @@ class BiliSettings(BaseSettings):
     # Treat only short empty segments as skippable; longer empty responses
     # still fail so real audio problems remain visible.
     bili_processing_asr_empty_segment_skip_seconds: float = 5.0
+    # MiMo can throttle with 429 under bursty segment fan-out.  Retry 429 at
+    # the segment level so one throttled chunk does not force a whole-bvid
+    # retry; successful previous chunks remain cached.
+    bili_processing_asr_rate_limit_max_attempts: int = 4
+    bili_processing_asr_rate_limit_retry_delays: str = "15,30,60"
 
     # VAD-aware segmentation (improves transcript quality on long clips).
     #
@@ -205,6 +210,13 @@ class BiliSettings(BaseSettings):
     def get_processing_retry_delays(self) -> list[int]:
         """Parse ``bili_processing_retry_delays`` into a sorted list of seconds."""
         return _parse_retry_delays(self.bili_processing_retry_delays)
+
+    def get_asr_rate_limit_retry_delays(self) -> list[int]:
+        """Parse ASR segment-level 429 retry delays into seconds."""
+        return _parse_retry_delays(
+            self.bili_processing_asr_rate_limit_retry_delays,
+            default=[15, 30, 60],
+        )
 
 
 # Singleton — lazy-loaded on first call.

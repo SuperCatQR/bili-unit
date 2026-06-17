@@ -299,6 +299,90 @@ async def test_transcribe_page_segments_mixed_cache_and_fresh(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_transcribe_page_retries_segment_rate_limit(tmp_path):
+    cache = ASRCacheStore(tmp_path / "cache")
+    seg = _make_seg(tmp_path, "limited.mp3", 0.0, 30.0)
+
+    class _RateLimitThenOkBackend:
+        model = "stub-asr-v1"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def transcribe(self, audio_data, mime_type="audio/mp3", language="auto"):
+            self.calls += 1
+            if self.calls < 3:
+                raise ASRAPIError(
+                    "MiMo ASR returned 429: {'code': '429', "
+                    "'message': 'Too many requests', 'type': 'limitation'}"
+                )
+            return ASRResult(
+                text="after throttle",
+                duration=30.0,
+                model=self.model,
+                audio_tokens=9,
+            )
+
+        async def close(self):
+            return None
+
+    backend = _RateLimitThenOkBackend()
+    trans = await audio_transcribe_page(
+        backend,
+        cache,
+        uid=14,
+        bvid="BVlimited",
+        page_index=0,
+        segments=[seg],
+        asr_language="zh",
+        rate_limit_max_attempts=3,
+        rate_limit_retry_delays=(0.0, 0.0),
+    )
+
+    assert backend.calls == 3
+    assert trans["text"] == "after throttle"
+    assert trans["fresh_segment_count"] == 1
+    assert trans["audio_tokens_total"] == 9
+    page_cache = cache.load_page(14, "BVlimited", 0)
+    assert [(s.start_s, s.end_s, s.text) for s in page_cache.segments] == [
+        (0.0, 30.0, "after throttle"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_page_rate_limit_exhaustion_still_fails(tmp_path):
+    seg = _make_seg(tmp_path, "limited.mp3", 0.0, 30.0)
+
+    class _AlwaysRateLimitedBackend:
+        model = "stub-asr-v1"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def transcribe(self, audio_data, mime_type="audio/mp3", language="auto"):
+            self.calls += 1
+            raise ASRAPIError("MiMo ASR returned 429: Too many requests")
+
+        async def close(self):
+            return None
+
+    backend = _AlwaysRateLimitedBackend()
+    with pytest.raises(ASRAPIError, match="429"):
+        await audio_transcribe_page(
+            backend,
+            ASRCacheStore(tmp_path / "cache"),
+            uid=15,
+            bvid="BVlimitedFail",
+            page_index=0,
+            segments=[seg],
+            asr_language="zh",
+            rate_limit_max_attempts=3,
+            rate_limit_retry_delays=(0.0, 0.0),
+        )
+    assert backend.calls == 3
+
+
+@pytest.mark.asyncio
 async def test_transcribe_page_splits_high_risk_segment(monkeypatch, tmp_path):
     cache = ASRCacheStore(tmp_path / "cache")
     original = _make_seg(tmp_path, "orig.mp3", 100.0, 160.0)
@@ -367,6 +451,93 @@ async def test_transcribe_page_splits_high_risk_segment(monkeypatch, tmp_path):
         (100.0, 130.0, "piece-1"),
         (130.0, 160.0, "piece-2"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_page_skips_min_high_risk_piece(monkeypatch, tmp_path):
+    original = _make_seg(tmp_path, "orig.mp3", 0.0, 60.0)
+    async def fake_convert_at_points(input_path, output_dir, points, ffmpeg_setting):
+        out = []
+        for start_s, end_s in points:
+            seg = _make_seg(
+                tmp_path,
+                f"{input_path.stem}_{start_s:g}_{end_s:g}.mp3",
+                0.0,
+                0.0,
+            )
+            out.append(seg.path)
+        return out
+
+    monkeypatch.setattr(
+        "bili_unit.processing.runner._audio_work.convert_at_points",
+        fake_convert_at_points,
+    )
+
+    class _PersistentHighRiskBackend:
+        model = "stub-asr-v1"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def transcribe(self, audio_data, mime_type="audio/mp3", language="auto"):
+            self.calls += 1
+            if self.calls == 2:
+                return ASRResult(
+                    text="safe piece",
+                    duration=30.0,
+                    model=self.model,
+                    audio_tokens=7,
+                )
+            raise ASRAPIError(
+                "MiMo ASR rejected the request: The request was rejected "
+                "because it was considered high risk"
+            )
+
+        async def close(self):
+            return None
+
+    backend = _PersistentHighRiskBackend()
+    trans = await audio_transcribe_page(
+        backend,
+        ASRCacheStore(tmp_path / "cache"),
+        uid=13,
+        bvid="BVriskSkip",
+        page_index=0,
+        segments=[original],
+        asr_language="zh",
+        high_risk_split_enabled=True,
+        high_risk_split_seconds=30.0,
+        high_risk_min_segment_seconds=10.0,
+    )
+
+    assert backend.calls == 9
+    assert trans["text"] == "safe piece"
+    assert trans["fresh_segment_count"] == 1
+    assert trans["high_risk_segment_skips"] == 4
+    assert trans["audio_tokens_total"] == 7
+    assert [s["text"] for s in trans["segments"]] == [
+        "safe piece",
+        "",
+        "",
+        "",
+        "",
+    ]
+    assert [s["start_s"] for s in trans["segments"]] == [
+        0.0,
+        30.0,
+        40.0,
+        45.0,
+        55.0,
+    ]
+    assert [s["end_s"] for s in trans["segments"]] == [
+        30.0,
+        40.0,
+        45.0,
+        55.0,
+        60.0,
+    ]
+    assert all(s.get("high_risk_skip") for s in trans["segments"][1:])
+    assert "high risk" in trans["segments"][1]["error"]
 
 
 @pytest.mark.asyncio

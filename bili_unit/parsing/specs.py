@@ -78,7 +78,7 @@ PARSING_SPECS: tuple[ParsingSpec, ...] = (
         name="dynamic_event",
         model="dynamic_event",
         materializer_handler="_parse_dynamic_events",
-        source_endpoints=("dynamics", "dynamics_legacy"),
+        source_endpoints=("dynamics",),
         required_endpoints=("dynamics",),
         priority=50,
     ),

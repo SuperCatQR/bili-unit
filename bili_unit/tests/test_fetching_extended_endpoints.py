@@ -25,7 +25,6 @@ USER_EXTENDED_ENDPOINTS = {
     "access_id",
     "channels",
     "media_list",
-    "dynamics_legacy",
     "live_info",
     "user_relation",
     "reservation",
@@ -109,33 +108,6 @@ def test_upower_qa_detail_fanout_registered():
 # ---------------------------------------------------------------------------
 # fetch_endpoint pagination strategies
 # ---------------------------------------------------------------------------
-
-async def test_fetch_endpoint_legacy_offset_pagination():
-    spec = get_endpoint("dynamics_legacy")
-    assert spec is not None
-
-    async def fake_call(uid, cred=None, **kw):
-        offset = kw.get("offset", 0)
-        if offset == 0:
-            return {
-                "cards": [{"desc": {"dynamic_id": "1"}}],
-                "has_more": 1,
-                "next_offset": 99,
-            }
-        return {
-            "cards": [{"desc": {"dynamic_id": "2"}}],
-            "has_more": 0,
-            "next_offset": 0,
-        }
-
-    with patch.object(spec, "callable", fake_call):
-        r1 = await fetch_endpoint(1, spec, None, {"offset": 0, "need_top": False})
-        assert not r1.is_last_page
-        assert r1.next_request == {"offset": 99, "need_top": False}
-
-        r2 = await fetch_endpoint(1, spec, None, r1.next_request)
-        assert r2.is_last_page
-
 
 async def test_fetch_endpoint_oid_pagination():
     spec = get_endpoint("media_list")

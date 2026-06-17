@@ -1347,7 +1347,7 @@ processing 层通过这些父子关系，从列表端点获取 item ID 清单，
 **uid-level（12 个）**
 
 ```text
-access_id channels dynamics_legacy followers followings live_info
+access_id channels followers followings live_info
 media_list reservation same_followers top_followers uplikeimg user_relation
 ```
 
