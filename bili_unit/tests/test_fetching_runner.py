@@ -57,12 +57,18 @@ def _fake_page(uid: int, payload: dict, *, endpoint: str = "user_info") -> Fetch
     )
 
 
-def _fake_videos_page(bvids: list[str], *, is_last: bool = False, next_pn: int | None = None) -> FetchPageResult:
+def _fake_videos_page(
+    bvids: list[str],
+    *,
+    is_last: bool = False,
+    next_pn: int | None = None,
+    total_count: int | None = None,
+) -> FetchPageResult:
     return FetchPageResult(
         uid=0, endpoint="videos",
         raw_payload={
             "list": {"vlist": [{"bvid": bv} for bv in bvids]},
-            "page": {"count": 100},
+            "page": {"count": total_count if total_count is not None else len(bvids)},
         },
         is_last_page=is_last,
         next_request={"pn": next_pn, "ps": 30} if next_pn else None,
@@ -340,6 +346,113 @@ async def test_incremental_boundary_hit_stops_early(tmp_path: Path):
         stored = await store.get_raw_payload("videos")
         assert stored is not None
         # raw_payload.pages = only this run's pages.
+        assert len(stored["pages"]) == 2
+    finally:
+        await ctx.close()
+
+
+async def test_incremental_backfills_incomplete_page_listing(tmp_path: Path):
+    """If stored pages are only a prefix, page-1 boundary must not stop scan."""
+    ctx, store = await _open_store(tmp_path, 112)
+    try:
+        await _seed_videos_payload(store, ["BV1", "BV2"])
+
+        call_log: list[int] = []
+
+        async def fake_fetch(uid, spec, credential, request_params, **kw):
+            pn = request_params.get("pn", 1)
+            call_log.append(pn)
+            if pn == 1:
+                return _fake_videos_page(
+                    ["BV1", "BV2"],
+                    next_pn=2,
+                    total_count=5,
+                )
+            if pn == 2:
+                return _fake_videos_page(
+                    ["BV3", "BV4"],
+                    next_pn=3,
+                    total_count=5,
+                )
+            return _fake_videos_page(["BV5"], is_last=True, total_count=5)
+
+        runner = _runner(
+            store, _settings(tmp_path),
+            fetch_fn=AsyncMock(side_effect=fake_fetch),
+        )
+        result = await runner.run_or_resume(
+            112, endpoints=["videos"], mode="incremental",
+        )
+
+        assert result.status == TaskStatus.SUCCESS
+        assert call_log == [1, 2, 3]
+        stored = await store.get_raw_payload("videos")
+        assert stored is not None
+        assert len(stored["pages"]) == 3
+    finally:
+        await ctx.close()
+
+
+async def test_incremental_backfills_incomplete_cursor_listing(tmp_path: Path):
+    """Cursor endpoints with stored has_more=True must continue past boundary."""
+    ctx, store = await _open_store(tmp_path, 113)
+    try:
+        await store.init_task(["opus"])
+        await store.save_raw_payload("opus", "", {
+            "pages": [
+                {
+                    "items": [{"opus_id": "O1"}, {"opus_id": "O2"}],
+                    "has_more": True,
+                    "offset": "old-next",
+                },
+            ],
+        })
+        await store.update_endpoint_state("opus", status=EndpointStatus.SUCCESS.value)
+        await store.update_task_status(TaskStatus.SUCCESS.value)
+
+        spec = get_endpoint("opus")
+        assert spec is not None
+        call_log: list[str] = []
+
+        async def fake_fetch(uid, spec, credential, request_params, **kw):
+            offset = request_params.get("offset", "")
+            call_log.append(offset)
+            if offset == "":
+                return FetchPageResult(
+                    uid=uid,
+                    endpoint="opus",
+                    raw_payload={
+                        "items": [{"opus_id": "O1"}, {"opus_id": "O2"}],
+                        "has_more": True,
+                        "offset": "next-1",
+                    },
+                    is_last_page=False,
+                    next_request={"offset": "next-1"},
+                )
+            return FetchPageResult(
+                uid=uid,
+                endpoint="opus",
+                raw_payload={
+                    "items": [{"opus_id": "O3"}],
+                    "has_more": False,
+                    "offset": "",
+                },
+                is_last_page=True,
+                next_request=None,
+            )
+
+        runner = _runner(
+            store, _settings(tmp_path),
+            fetch_fn=AsyncMock(side_effect=fake_fetch),
+        )
+        result = await runner.run_or_resume(
+            113, endpoints=["opus"], mode="incremental",
+        )
+
+        assert result.status == TaskStatus.SUCCESS
+        assert call_log == ["", "next-1"]
+        stored = await store.get_raw_payload("opus")
+        assert stored is not None
         assert len(stored["pages"]) == 2
     finally:
         await ctx.close()

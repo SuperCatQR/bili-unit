@@ -16,6 +16,7 @@ from .. import (
     ResourceUnavailableError,
 )
 from .._endpoint_spec import EndpointSpec
+from .._adapter_core import extract_total_count
 from ._failure import (
     FetchFailureState,
     classify_fetching_exception,
@@ -34,6 +35,33 @@ logger = logging.getLogger("bili.fetching.runner")
 def _pagination_request_key(params: dict[str, Any]) -> tuple[tuple[str, str], ...]:
     """Stable enough key for detecting repeated pagination requests."""
     return tuple(sorted((str(key), repr(value)) for key, value in params.items()))
+
+
+def _stored_cursor_incomplete(
+    stored_pages: list[Any],
+    pagination_strategy: str,
+) -> bool:
+    if not stored_pages:
+        return False
+    last = stored_pages[-1]
+    if not isinstance(last, dict):
+        return False
+    if pagination_strategy == "cursor":
+        return bool(last.get("has_more"))
+    if pagination_strategy == "anchor":
+        return bool(last.get("anchor"))
+    if pagination_strategy == "legacy_offset":
+        return bool(last.get("has_more") == 1 and last.get("next_offset"))
+    return False
+
+
+def _stored_total_count(stored_pages: list[Any]) -> int:
+    for page in stored_pages:
+        if isinstance(page, dict):
+            total = extract_total_count(page)
+            if total > 0:
+                return int(total)
+    return 0
 
 
 class _EndpointMixin:
@@ -99,11 +127,20 @@ class _EndpointMixin:
 
         # -- incremental mode: build known_ids from stored data --
         known_ids: set[str] | None = None
+        stored_total_count = 0
+        stored_cursor_incomplete = False
         id_paths = spec.item_id_paths or ([spec.item_id_path] if spec.item_id_path else None)
         if mode in ("incremental", "refresh") and spec.pagination_strategy != "none":
             existing = await self._store.get_raw_payload(ep_name)
             if existing is not None and id_paths is not None:
                 stored_pages = existing.get("pages", [])
+                if isinstance(stored_pages, list):
+                    stored_total_count = _stored_total_count(stored_pages)
+                    stored_cursor_incomplete = _stored_cursor_incomplete(
+                        stored_pages, spec.pagination_strategy,
+                    )
+                else:
+                    stored_pages = []
                 known_ids = set()
                 for stored_page in stored_pages:
                     for item_id in _extract_item_ids_multi(stored_page, id_paths):
@@ -318,26 +355,46 @@ class _EndpointMixin:
                     },
                 )
                 if page_ids and not new_ids:
-                    boundary_hit = True
-                    logger.info(
-                        "incremental_boundary_hit",
-                        extra={"uid": uid, "endpoint": ep_name},
-                    )
-                    if not page.is_last_page:
-                        safety_params = page.next_request or request_params
-                        try:
-                            safety_page = await _fetch_one_page(safety_params)
-                            pages_this_run.append(safety_page.raw_payload)
-                            logger.info(
-                                "incremental_safety_page",
-                                extra={"uid": uid, "endpoint": ep_name},
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "incremental_safety_page_failed",
-                                extra={"uid": uid, "endpoint": ep_name, "error": str(exc)},
-                            )
-                    break
+                    page_total_count = extract_total_count(page.raw_payload)
+                    total_count = page_total_count or stored_total_count
+                    incomplete_listing = (
+                        total_count > 0 and len(known_ids) < total_count
+                    ) or stored_cursor_incomplete
+                    if incomplete_listing and not page.is_last_page:
+                        logger.info(
+                            "incremental_backfill_incomplete",
+                            extra={
+                                "uid": uid,
+                                "endpoint": ep_name,
+                                "known_id_count": len(known_ids),
+                                "total_count": total_count,
+                                "stored_cursor_incomplete": stored_cursor_incomplete,
+                            },
+                        )
+                    else:
+                        boundary_hit = True
+                        logger.info(
+                            "incremental_boundary_hit",
+                            extra={"uid": uid, "endpoint": ep_name},
+                        )
+                        if not page.is_last_page:
+                            safety_params = page.next_request or request_params
+                            try:
+                                safety_page = await _fetch_one_page(safety_params)
+                                pages_this_run.append(safety_page.raw_payload)
+                                logger.info(
+                                    "incremental_safety_page",
+                                    extra={"uid": uid, "endpoint": ep_name},
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "incremental_safety_page_failed",
+                                    extra={
+                                        "uid": uid, "endpoint": ep_name,
+                                        "error": str(exc),
+                                    },
+                                )
+                        break
 
                 known_ids.update(str(i) for i in new_ids)
 
