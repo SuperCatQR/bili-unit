@@ -1,0 +1,50 @@
+{
+  "_model_name": "opus_post",
+  "_schema_version": 1,
+  "id": "500001",
+  "opus_id": "500001",
+  "title": "Sketch of the day",
+  "summary": "Just a quick warm-up",
+  "cover": "https://i0.hdslb.com/bfs/opus/500001_cover.jpg",
+  "jump_url": "https://www.bilibili.com/opus/500001",
+  "stats": {
+    "view": 88,
+    "favorite": 4,
+    "like": 22,
+    "reply": 1,
+    "share": 0,
+    "coin": 0
+  },
+  "ctime": 1700100000,
+  "pub_time": 1700100000,
+  "list_images": [
+    "https://i0.hdslb.com/bfs/opus/500001_pic1.jpg",
+    "https://i0.hdslb.com/bfs/opus/500001_pic2.jpg"
+  ],
+  "markdown": "## Sketch\n\nQuick line work today.",
+  "detail_images": [
+    {
+      "url": "https://i0.hdslb.com/bfs/opus/500001_detail_a.jpg",
+      "width": 800,
+      "height": 600
+    }
+  ],
+  "cover_local": "",
+  "image_locals": [],
+  "_source_refs": [
+    {
+      "endpoint": "opus",
+      "item_id": "500001"
+    },
+    {
+      "endpoint": "opus_detail",
+      "item_id": "500001"
+    }
+  ],
+  "_cross_refs": {
+    "cvid": null,
+    "opus_id": "500001",
+    "dynamic_id": null,
+    "bvid": null
+  }
+}

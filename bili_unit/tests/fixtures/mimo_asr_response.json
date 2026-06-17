@@ -1,0 +1,32 @@
+{
+  "id": "bdf00cd7ab01422daae9f6593fdd8339",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Oh, it's the eye of the mountain. He kept watch of my brother's soul. And should the sky be building fire and smoke, he'll watch it over just the same. Is this the end? Sure is. Watch the flames. Is this the end? Sure is. Watch the flames. Is this the end? Sure is. Watch the flames. Is this the end? Sure is.",
+        "role": "assistant",
+        "audio": null,
+        "tool_calls": null,
+        "audio_tokens": []
+      }
+    }
+  ],
+  "created": 1781157542,
+  "model": "mimo-v2.5-asr",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 87,
+    "prompt_tokens": 858,
+    "total_tokens": 945,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 837,
+      "cached_tokens": 4
+    },
+    "seconds": 134
+  }
+}

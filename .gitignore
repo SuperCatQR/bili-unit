@@ -1,0 +1,42 @@
+# Secrets
+.env
+
+# Tool / IDE metadata
+.codegraph/
+.workbuddy/
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# Windows artifacts
+nul
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Runtime data (defaults to data/bili/... under cwd)
+data/
+output/
+temp/
+error/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Agent tool metadata (per-tool dotdirs created by Claude / Codex agents)
+.claude/
+.codex/
+
+# Pytest tmp_path artifacts (created when tests fail to clean up)
+.pytest-tmp/

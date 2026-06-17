@@ -1,0 +1,68 @@
+# command — fetching write-side entry point.
+
+import logging
+
+from .._db import UidContext
+from .._env import BiliSettings
+from . import CommandResult
+from ._store import FetchingStore
+from .rate_limit import RateLimitController
+from .runner import FetchEndpointFn, Runner
+
+logger = logging.getLogger("bili.fetching.command")
+
+
+class Command:
+    """External write-side entry.
+
+    Phase 3 contract:
+      * Holds only cross-request services (settings, rate limit). The store
+        layer is request-scoped — every ``fetch_uid`` opens its own
+        ``UidContext`` + ``FetchingStore``, then closes it on exit.
+      * ``delete_uid`` is a no-op; the unit-level ``BiliCommand.delete_uid``
+        deletes on-disk files directly.
+    """
+
+    def __init__(
+        self,
+        settings: BiliSettings,
+        rate_limit: RateLimitController,
+        *,
+        stale_running_threshold_ms: int = 15 * 60 * 1000,
+        fetch_fn: FetchEndpointFn | None = None,
+    ) -> None:
+        self._settings = settings
+        self._rl = rate_limit
+        self._stale_running_threshold_ms = stale_running_threshold_ms
+        self._fetch_fn = fetch_fn
+
+    async def fetch_uid(
+        self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental",
+    ) -> CommandResult:
+        """Trigger fetching for a uid.
+
+        Opens a per-uid ``UidContext`` for the duration of the run and closes
+        it before returning.
+        """
+        logger.info("command_received", extra={"uid": uid, "mode": mode})
+        ctx = UidContext(uid, self._settings.bili_db_dir)
+        await ctx.open()
+        try:
+            store = FetchingStore(ctx)
+            runner = Runner(
+                store, self._rl, self._settings,
+                stale_running_threshold_ms=self._stale_running_threshold_ms,
+                fetch_fn=self._fetch_fn,
+            )
+            result = await runner.run_or_resume(uid, endpoints, mode=mode)
+        finally:
+            await ctx.close()
+        return CommandResult(uid=uid, status=result.status)
+
+    async def delete_uid(self, uid: int) -> dict[str, int]:
+        """No-op: the unit-level ``BiliCommand.delete_uid`` does file IO directly."""
+        return {}
+
+    async def close(self) -> None:
+        """No-op: no per-stage stores to close any more."""
+        return None
