@@ -94,6 +94,23 @@ ASR coverage treats every row in `video` as expected work. A missing
 `candidate_count` is read from the latest `asr.discovery.completed` event for
 the selected run. It is intentionally independent from the recent-event window.
 
+## Dashboard Snapshot
+
+`bili_unit.observability.dashboard` provides a TUI-ready read model over the
+same SQLite facts:
+
+```python
+from bili_unit.observability import load_dashboard_snapshot
+
+snapshot = await load_dashboard_snapshot(root="output/bili")
+```
+
+The snapshot lists known uid DBs, resolves each uid's main/raw/workdir paths,
+reads `manifest_summary`, embeds the latest `RunSummary`, and derives
+recommended next actions such as retrying failed ASR rows or running missing
+bvids with `--only-bvids`. It is read-only and degrades per uid with
+`read_error` instead of failing the whole dashboard.
+
 ## CLI Final Summaries
 
 Write-side CLI commands run the command first, then read `RunSummary` and render
@@ -123,6 +140,8 @@ The observability tests cover:
 - Run Summary over latest and selected runs.
 - Current-state summary when no `stage_run` rows exist.
 - ASR candidate count independent from recent-event limits.
+- Dashboard snapshot reads over manifest/run facts, including concurrent
+  read-while-write polling.
 - CLI renderer summary output.
 - CLI handler fallback when summary loading is unavailable.
 - CLI handlers pass command result `run_id` into summary loading.

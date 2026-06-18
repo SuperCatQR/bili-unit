@@ -1,6 +1,7 @@
 -- bili_unit raw DB schema, version 2.
 --
--- One file per uid: data/bili/{uid}.raw.db.
+-- One file per uid: {BILI_DB_DIR}/{uid}.raw.db
+-- (default: output/bili/{uid}.raw.db).
 -- Holds B站 64 endpoint raw responses + fetch progress cursors.
 -- Producer-private — consumers do NOT need to attach this database.
 

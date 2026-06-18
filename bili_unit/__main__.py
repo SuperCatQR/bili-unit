@@ -22,6 +22,7 @@ from pathlib import Path
 from ._cli_render import CliRenderer
 from ._env import get_settings
 from ._logging import configure_logging
+from ._selection import SelectionError, resolve_subset
 from .observability import RunSummary, load_run_summary
 
 logger = logging.getLogger("bili.cli")
@@ -47,33 +48,15 @@ def _resolve_subset(
     Unknown names in either list raise SystemExit(2) with a helpful message; typos
     here would silently change which endpoints/handlers run.
     """
-    known = set(all_names)
-
-    if include is not None:
-        unknown = [n for n in include if n not in known]
-        if unknown:
-            raise SystemExit(
-                f"unknown {flag_label}(s): {', '.join(unknown)}. "
-                f"Known: {', '.join(all_names)}",
-            )
-        return list(include)
-
-    if exclude is not None:
-        unknown = [n for n in exclude if n not in known]
-        if unknown:
-            raise SystemExit(
-                f"unknown {flag_label}(s) in --exclude: {', '.join(unknown)}. "
-                f"Known: {', '.join(all_names)}",
-            )
-        excluded = set(exclude)
-        kept = [n for n in all_names if n not in excluded]
-        if not kept:
-            raise SystemExit(
-                f"--exclude removed every {flag_label}; nothing to run.",
-            )
-        return kept
-
-    return None
+    try:
+        return resolve_subset(
+            flag_label=flag_label,
+            all_names=all_names,
+            include=include,
+            exclude=exclude,
+        )
+    except SelectionError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

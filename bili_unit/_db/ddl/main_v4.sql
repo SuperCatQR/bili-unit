@@ -1,6 +1,6 @@
--- bili_unit main DB schema, version 3.
+-- bili_unit main DB schema, version 4.
 --
--- One file per uid: data/bili/{uid}.db.
+-- One file per uid: {BILI_DB_DIR}/{uid}.db (default: output/bili/{uid}.db).
 -- Consumer contract: anything in this file is part of the public SQL surface.
 -- Anything in {uid}.raw.db is producer-private (re-parse fuel).
 --

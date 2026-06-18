@@ -1,7 +1,7 @@
 # fetching 数据契约
 
 > 本文描述 fetching 层抓取到的数据及其存储结构。
-> parsing / processing 通过 `FetchingStore` 读取 raw DB；外部 consumer 默认只读 main DB。
+> parsing 通过 raw DB 物化 main DB；asr 只读 main DB。外部 consumer 默认只读 main DB。
 
 ## 目录
 

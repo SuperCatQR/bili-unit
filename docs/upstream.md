@@ -23,7 +23,9 @@ bilibili-api-python
   → EndpointSpec catalog
   → FetchingRunner
   → raw_payload SQLite rows
-  → parsing / processing
+  → parsing
+  → main.db
+  → asr
 ```
 
 - `bili_unit.fetching._endpoint_catalog` 是本项目的 endpoint 真相源。
@@ -32,7 +34,7 @@ bilibili-api-python
 
 ## 维护规则
 
-1. 上游接口可能变化；升级 `bilibili-api-python` 后优先跑 fetching / parsing / processing 全量测试。
+1. 上游接口可能变化；升级 `bilibili-api-python` 后优先跑 fetching / parsing / asr 全量测试（`processing` 是当前 ASR 实现包名）。
 2. 新增 endpoint 时，先在 `_endpoint_catalog.py` 注册，再补 `docs/feature/fetching.md` 和 `docs/structure/fetching-contract.md`。
 3. 不把上游文档再次整包镜像进本仓库；需要查完整 API 时直接访问上游 GitHub / 开发文档。
 4. 任何绕过 `bilibili-api-python` 的直接 HTTP 调用，都要在 feature 文档中说明原因和返回形状。

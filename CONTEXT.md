@@ -26,9 +26,10 @@ _Avoid_: parser, transform, mapper。
 
 **asr**:
 第三 stage。对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。当前仅 audio pipeline。落盘到 processing store。
-External command/API naming and the DB stage key are `asr`
-(`stage_task.stage`, `stage_error.stage`, and related payloads). `process` is
-only a backward-compatible CLI alias.
+External command naming and the DB stage key are `asr`
+(`stage_task.stage`, `stage_error.stage`, and related payloads). `process`
+remains only a Python/internal backward-compatible alias; the CLI does not
+expose it.
 _Avoid_: handler, worker, transformer。
 
 ### 数据形态
@@ -95,13 +96,13 @@ _Avoid_: list_id。
 ### 状态机
 
 **mode（incremental / refresh / full）**:
-fetching 与 processing 共享的三档执行语义。`incremental` 跳过已成功、重试失败；`refresh` 介于两者间（fetching 的 item-level 检查 7 天 freshness window；processing 不支持 refresh）；`full` 忽略已有数据全量重跑。parsing 只支持 `full` / `incremental` 两档。
+fetching 与 asr 共享部分执行语义。`incremental` 跳过已成功、重试失败；`refresh` 介于两者间（fetching 的 item-level 检查 7 天 freshness window；asr 不支持 refresh）；`full` 忽略已有数据全量重跑。parsing 只支持 `full` / `incremental` 两档。
 _Avoid_: strategy, run type。
 
 ### 出口面
 
 **command / SQL read side**:
-bili unit 以命令行和内部写侧 command 组织流程；`command`（`BiliCommand`）驱动 sync / asr（`process` 仅兼容 alias）。读侧由调用方直接 SQL 查询。stage 子模块（client / runner / materializer / audio）不对外，藏在 command 后。
+bili unit 以命令行和内部写侧 command 组织流程；`command`（`BiliCommand`）驱动 sync / asr（`process` 仅 Python/internal 兼容 alias）。读侧由调用方直接 SQL 查询。stage 子模块（client / runner / materializer / audio）不对外，藏在 command 后。
 _Avoid_: service, facade, api。
 
 ## Notes

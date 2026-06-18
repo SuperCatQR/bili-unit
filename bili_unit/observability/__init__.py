@@ -17,6 +17,14 @@ from ._sinks import (
     NullSink,
     SqliteSink,
 )
+from .dashboard import (
+    DashboardSnapshot,
+    ManifestSnapshot,
+    RecommendedAction,
+    UidDashboardSnapshot,
+    load_dashboard_snapshot,
+    load_uid_dashboard_snapshot,
+)
 from .summary import (
     AsrSummary,
     FetchEndpointSummary,
@@ -34,16 +42,19 @@ from .summary import (
 __all__ = [
     "AsrSummary",
     "CompositeSink",
+    "DashboardSnapshot",
     "EventLevel",
     "EventSink",
     "FetchEndpointSummary",
     "FetchSummary",
     "JsonlSink",
     "LoggingSink",
+    "ManifestSnapshot",
     "MemorySink",
     "NullSink",
     "ParseModelSummary",
     "ParseSummary",
+    "RecommendedAction",
     "RunContext",
     "RunEventSummary",
     "RunEvent",
@@ -53,7 +64,10 @@ __all__ = [
     "RunStatus",
     "StageTaskSummary",
     "SqliteSink",
+    "UidDashboardSnapshot",
     "build_run_summary",
+    "load_dashboard_snapshot",
     "load_run_summary",
+    "load_uid_dashboard_snapshot",
     "now_ms",
 ]
