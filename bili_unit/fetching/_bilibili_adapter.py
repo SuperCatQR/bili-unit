@@ -6,7 +6,6 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any
 
-import aiohttp
 from bilibili_api import Credential, request_settings, select_client, user
 from bilibili_api.article import Article, ArticleList
 from bilibili_api.channel_series import ChannelOrder
@@ -36,10 +35,20 @@ from ._adapter_core import (
 from ._adapter_core import (
     normalise_api_result as _normalise_api_result,
 )
-from ._adapter_core import (
-    resolve_dot_path as _resolve_dot_path,
-)
 from ._adapters import _video as _video_adapter
+from ._adapters._pagination import _PAGINATION_STRATEGIES as _PAGINATION_STRATEGIES
+from ._adapters._subtitle import (
+    _fetch_subtitle_body as _fetch_subtitle_body,
+)
+from ._adapters._subtitle import (
+    _missing_url_error as _missing_url_error,
+)
+from ._adapters._subtitle import (
+    _normalise_subtitle_url as _normalise_subtitle_url,
+)
+from ._adapters._subtitle import (
+    fetch_video_subtitle_item as fetch_video_subtitle_item,
+)
 from ._endpoint_spec import EndpointSpec
 
 logger = logging.getLogger("bili.fetching.adapter")
@@ -289,151 +298,6 @@ async def fetch_upower_qa_detail_item(
 
 
 # ---------------------------------------------------------------------------
-# Item-level fan-out helpers — video_subtitle (per-page subtitle index + body)
-# ---------------------------------------------------------------------------
-#
-# B 站字幕端点的两段抓取语义 (cf. PLAN.md W1.1):
-#   1. ``Video.get_subtitle(cid)`` 返回每个 page 的字幕索引；其中
-#      ``subtitles[*]`` 的每条记录里有 ``subtitle_url``、``lan``、``lan_doc``
-#      等元数据 —— url 通常是缺 scheme 的协议相对地址 (``//i0.hdslb.com/...``)。
-#   2. 索引拿到后还要再去 CDN 拉每个 url 的 JSON 正文，里面的 ``body`` 字段
-#      才是 ``[{from, to, content}, ...]`` 的真正字幕段。
-#
-# 失败处理：单条 lang 拉失败 (timeout / network / JSON parse) 不阻塞整个端点 ——
-# 只在该 lang 项里写 ``_fetch_error`` 字段，``content`` 不带 ``body``。
-# 整页无字幕时 ``content`` 是 ``[]``。
-
-_SUBTITLE_FETCH_TIMEOUT = 10.0
-
-
-def _normalise_subtitle_url(url: str) -> str:
-    """Make a B 站 subtitle URL absolute (B 站常返回 ``//host/...`` 缺 scheme)."""
-    if not url.startswith(("http://", "https://")):
-        return "https:" + url
-    return url
-
-
-async def _fetch_subtitle_body(
-    session: aiohttp.ClientSession,
-    url: str,
-) -> dict[str, Any]:
-    """Fetch one subtitle JSON URL. Returns ``{"body": [...]}`` or
-    ``{"_fetch_error": "<reason>"}`` — never raises."""
-    try:
-        normalised = _normalise_subtitle_url(url)
-        async with session.get(normalised) as resp:
-            if resp.status != 200:
-                return {"_fetch_error": f"http {resp.status}"}
-            data = await resp.json(content_type=None)
-    except TimeoutError:
-        return {"_fetch_error": "timeout"}
-    except aiohttp.ClientError as exc:
-        return {"_fetch_error": f"client error: {exc}"}
-    except (ValueError, TypeError) as exc:
-        return {"_fetch_error": f"json parse: {exc}"}
-
-    if not isinstance(data, dict):
-        return {"_fetch_error": "unexpected shape: not a dict"}
-    body = data.get("body")
-    if not isinstance(body, list):
-        return {"_fetch_error": "unexpected shape: missing body"}
-    return {"body": body}
-
-
-async def fetch_video_subtitle_item(
-    bvid: str,
-    credential: Credential | None,
-    timeout: float = 30.0,
-    **_kw: Any,
-) -> dict[str, Any]:
-    """Fetch subtitle index + body content for every page of a bvid.
-
-    Per-page step 1 calls ``Video.get_subtitle(cid)`` (the index, with
-    ``subtitles[*].subtitle_url / lan / lan_doc``); step 2 then GETs every
-    URL and stuffs the parsed JSON ``body`` into a sibling ``content`` list.
-    A single ``aiohttp.ClientSession`` is reused across all pages; ``content``
-    items for the same page are fetched concurrently via ``asyncio.gather``,
-    while different pages are walked sequentially to keep the connection
-    fan-out small.
-
-    Returned shape::
-
-        {
-          "pages": [...],
-          "subtitle": [
-            {
-              "page_index": 0, "cid": ..., "part": "...",
-              "result": {...},                      # raw get_subtitle output
-              "content": [
-                {"lan": "zh-CN", "lan_doc": "中文",
-                 "body": [{"from": 0.0, "to": 3.5, "content": "..."}]},
-                ...
-              ]
-            }, ...
-          ]
-        }
-
-    A single lang URL failing (HTTP / parse / timeout) is recorded in-place
-    on that lang entry as ``"_fetch_error": "<reason>"`` (without ``body``),
-    leaving sibling langs and other pages unaffected.  An entirely-missing
-    subtitle index for a page yields ``content: []``.
-    """
-    v = Video(bvid, credential=credential)
-    pages = await _video_pages(v, bvid, timeout)
-
-    rows: list[dict[str, Any]] = []
-    client_timeout = aiohttp.ClientTimeout(total=_SUBTITLE_FETCH_TIMEOUT)
-    async with aiohttp.ClientSession(timeout=client_timeout) as session:
-        for idx, page in enumerate(pages):
-            cid = page.get("cid") if isinstance(page, dict) else None
-            part = page.get("part", "") if isinstance(page, dict) else ""
-
-            async with _map_bilibili_errors(f"video_subtitle[{bvid}][{idx}]"):
-                index = await asyncio.wait_for(
-                    v.get_subtitle(cid=cid),
-                    timeout=timeout,
-                )
-            index_safe = _json_safe(index)
-
-            subtitles = []
-            if isinstance(index_safe, dict):
-                raw_subs = index_safe.get("subtitles")
-                if isinstance(raw_subs, list):
-                    subtitles = raw_subs
-
-            if subtitles:
-                tasks = [
-                    _fetch_subtitle_body(session, sub.get("subtitle_url", ""))
-                    if isinstance(sub, dict) and sub.get("subtitle_url")
-                    else _missing_url_error()
-                    for sub in subtitles
-                ]
-                fetched = await asyncio.gather(*tasks)
-                content: list[dict[str, Any]] = []
-                for sub, fetch_result in zip(subtitles, fetched, strict=False):
-                    entry: dict[str, Any] = {
-                        "lan": sub.get("lan") if isinstance(sub, dict) else None,
-                        "lan_doc": sub.get("lan_doc") if isinstance(sub, dict) else None,
-                    }
-                    entry.update(fetch_result)
-                    content.append(entry)
-            else:
-                content = []
-
-            rows.append({
-                "page_index": idx,
-                "cid": cid,
-                "part": part,
-                "result": index_safe,
-                "content": content,
-            })
-
-    return {"pages": pages, "subtitle": rows}
-
-
-async def _missing_url_error() -> dict[str, Any]:
-    """Awaitable stub returned when a subtitles entry has no ``subtitle_url``."""
-    return {"_fetch_error": "missing subtitle_url"}
 
 
 async def fetch_video_public_notes_item(
@@ -846,97 +710,8 @@ async def fetch_endpoint(
         )
 
     # determine pagination
-    is_last = False
-    next_req: dict[str, Any] | None = None
-
-    if spec.pagination_strategy == "none":
-        is_last = True
-        next_req = None
-    elif spec.pagination_strategy == "page":
-        # Generic page pagination: detect list items and total count.
-        # Supports multiple B站 response shapes:
-        #   videos:       {"list": {"vlist": [...]}, "page": {"count": N}}
-        #   audios:       {"data": [...], "curPage": 1, "pageCount": N, "totalSize": N}
-        #   channel_list: {"items_lists": {"page": {"total": N}, "seasons_list": [...], ...}}
-        #
-        # --- pagination info ---
-        total_count = _extract_total_count(data)
-
-        # Shape 1: standard B站 {"page": {"count": N}} (videos)
-        pi = data.get("page")
-        if isinstance(pi, dict):
-            total_count = total_count or pi.get("count", 0)
-
-        # Shape 2: audio service top-level fields
-        if total_count == 0 and "totalSize" in data:
-            total_count = data.get("totalSize", 0)
-
-        # Shape 3: channel_list {"items_lists": {"page": {"total": N}}}
-        if total_count == 0:
-            il_page = _resolve_dot_path(data, "items_lists.page")
-            if isinstance(il_page, dict):
-                total_count = il_page.get("total", 0)
-
-        # Shape 4: articles {"articles": [...], "pn": N, "ps": N, "count": N}
-        if total_count == 0 and "count" in data and isinstance(data["count"], int):
-            total_count = data["count"]
-
-        # Shape 5: album {"biz_list": [...], "total_count": N}
-        if total_count == 0 and "total_count" in data and isinstance(data["total_count"], int):
-            total_count = data["total_count"]
-
-        # --- items ---
-        items = _extract_list_items(data, spec.items_path)
-
-        current_pn = request_params.get("pn", 1)
-        ps = request_params.get("ps", 30)
-        if not items or (total_count > 0 and current_pn * ps >= total_count):
-            is_last = True
-        else:
-            next_req = {**request_params, "pn": current_pn + 1}
-
-    elif spec.pagination_strategy == "cursor":
-        has_more = data.get("has_more", 0) == 1
-        if not has_more:
-            is_last = True
-        else:
-            next_req = {**request_params, "offset": data.get("offset", "")}
-
-    elif spec.pagination_strategy == "anchor":
-        # Anchor pagination: response contains an ``anchor`` field pointing to
-        # the next page's start.  Terminate when anchor is absent or 0.
-        anchor = data.get("anchor", 0)
-        if not anchor:
-            is_last = True
-        else:
-            next_req = {**request_params, "anchor": anchor}
-
-    elif spec.pagination_strategy == "legacy_offset":
-        next_offset = data.get("next_offset", 0)
-        has_more = data.get("has_more", 0) == 1
-        if not has_more or not next_offset:
-            is_last = True
-        else:
-            next_req = {**request_params, "offset": next_offset}
-
-    elif spec.pagination_strategy == "oid":
-        items = _extract_list_items(data, spec.items_path)
-        ps = request_params.get("ps", 100)
-        total_count = _extract_total_count(data)
-        if not items or (total_count > 0 and len(items) >= total_count):
-            is_last = True
-        else:
-            last = items[-1] if isinstance(items[-1], dict) else {}
-            next_oid = (
-                last.get("aid")
-                or last.get("id")
-                or last.get("oid")
-                or last.get("param")
-            )
-            if not next_oid or len(items) < ps:
-                is_last = True
-            else:
-                next_req = {**request_params, "oid": next_oid}
+    strategy_fn = _PAGINATION_STRATEGIES[spec.pagination_strategy]
+    is_last, next_req = strategy_fn(spec, data, request_params)
 
     return FetchPageResult(
         uid=uid,

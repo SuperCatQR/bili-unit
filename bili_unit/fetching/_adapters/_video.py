@@ -9,10 +9,19 @@ from bilibili_api import Credential
 from bilibili_api.video import Video
 
 from .._adapter_core import (
+    extract_list_items as _extract_list_items,
+)
+from .._adapter_core import (
+    extract_total_count as _extract_total_count,
+)
+from .._adapter_core import (
     json_safe as _json_safe,
 )
 from .._adapter_core import (
     map_bilibili_errors as _map_bilibili_errors,
+)
+from .._adapter_core import (
+    normalise_api_result as _normalise_api_result,
 )
 
 
@@ -163,6 +172,33 @@ fetch_video_is_forbid_note_item = _video_item_method(
 fetch_video_chargers_item = _video_item_method("get_chargers", result_key="chargers")
 
 
+async def fetch_video_public_notes_item(
+    bvid: str,
+    credential: Credential | None,
+    timeout: float = 30.0,
+    ps: int = 50,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """Fetch all public note pages for a bvid."""
+    v = Video(bvid, credential=credential)
+    pages: list[dict[str, Any]] = []
+    pn = 1
+    while True:
+        async with _map_bilibili_errors(f"public_notes[{bvid}][{pn}]"):
+            data = await asyncio.wait_for(
+                v.get_public_notes_list(pn=pn, ps=ps),
+                timeout=timeout,
+            )
+        safe = _normalise_api_result(data)
+        pages.append(safe)
+        items = _extract_list_items(safe)
+        total = _extract_total_count(safe)
+        if not items or (total > 0 and pn * ps >= total) or (total == 0 and len(items) < ps):
+            break
+        pn += 1
+    return {"pages": pages}
+
+
 __all__ = [
     "_extract_bvids_from_videos",
     "_video_pages",
@@ -188,4 +224,5 @@ __all__ = [
     "fetch_video_snapshot_item",
     "fetch_video_special_dms_item",
     "fetch_video_up_mid_item",
+    "fetch_video_public_notes_item",
 ]

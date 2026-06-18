@@ -56,7 +56,7 @@ def _patch_aiohttp_get(url_to_payload: dict[str, dict | Exception]):
 
     return (
         patch(
-            "bili_unit.fetching._bilibili_adapter.aiohttp.ClientSession",
+            "bili_unit.fetching._adapters._subtitle.aiohttp.ClientSession",
             return_value=session_mock,
         ),
         captured_urls,
@@ -77,7 +77,7 @@ async def test_subtitle_fetch_single_lang_success():
 
     patcher, urls = _patch_aiohttp_get({url: {"body": body}})
 
-    with patch("bili_unit.fetching._bilibili_adapter.Video") as MockVideo:
+    with patch("bili_unit.fetching._adapters._subtitle.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_pages = AsyncMock(return_value=[{"cid": 111, "part": "p1"}])
         instance.get_subtitle = AsyncMock(return_value={
@@ -119,7 +119,7 @@ async def test_subtitle_fetch_one_lang_failure_does_not_block_others():
         bad_url: aiohttp.ClientError("connection reset"),
     })
 
-    with patch("bili_unit.fetching._bilibili_adapter.Video") as MockVideo:
+    with patch("bili_unit.fetching._adapters._subtitle.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_pages = AsyncMock(return_value=[{"cid": 111, "part": "p1"}])
         instance.get_subtitle = AsyncMock(return_value={
@@ -152,7 +152,7 @@ async def test_subtitle_fetch_one_lang_failure_does_not_block_others():
 async def test_subtitle_fetch_empty_index_yields_empty_content():
     patcher, urls = _patch_aiohttp_get({})
 
-    with patch("bili_unit.fetching._bilibili_adapter.Video") as MockVideo:
+    with patch("bili_unit.fetching._adapters._subtitle.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_pages = AsyncMock(return_value=[{"cid": 111, "part": "p1"}])
         instance.get_subtitle = AsyncMock(return_value={"subtitles": []})
@@ -176,7 +176,7 @@ async def test_subtitle_fetch_normalises_scheme_relative_url():
 
     patcher, urls = _patch_aiohttp_get({expected_url: {"body": body}})
 
-    with patch("bili_unit.fetching._bilibili_adapter.Video") as MockVideo:
+    with patch("bili_unit.fetching._adapters._subtitle.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_pages = AsyncMock(return_value=[{"cid": 111, "part": "p1"}])
         instance.get_subtitle = AsyncMock(return_value={

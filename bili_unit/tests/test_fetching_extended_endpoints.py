@@ -161,7 +161,7 @@ async def test_video_per_page_helper_serialises_pages():
     spec = get_endpoint("video_subtitle")
     assert spec is not None
 
-    with patch("bili_unit.fetching._bilibili_adapter.Video") as MockVideo:
+    with patch("bili_unit.fetching._adapters._subtitle.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_pages = AsyncMock(return_value=[
             {"cid": 111, "part": "p1"},
