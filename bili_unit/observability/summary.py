@@ -71,6 +71,7 @@ class ParseSummary:
 @dataclass(frozen=True)
 class AsrSummary:
     status: str | None = None
+    coverage_applicable: bool = True
     candidate_count: int | None = None
     expected: int = 0
     success: int = 0
@@ -85,7 +86,7 @@ class AsrSummary:
 
     @property
     def complete(self) -> bool:
-        return self.missing == 0 and self.failed == 0
+        return self.success == self.expected
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,7 @@ async def load_run_summary(
     root: str | Path,
     run_id: str | None = None,
     recent_limit: int = 20,
+    filter_events_to_run: bool = True,
 ) -> RunSummary:
     """Open the uid main DB and build a read-only run summary."""
     ctx = UidContext(uid, root)
@@ -131,6 +133,7 @@ async def load_run_summary(
             uid=uid,
             run_id=run_id,
             recent_limit=recent_limit,
+            filter_events_to_run=filter_events_to_run,
         )
     finally:
         await ctx.close()
@@ -142,11 +145,16 @@ async def build_run_summary(
     uid: int,
     run_id: str | None = None,
     recent_limit: int = 20,
+    filter_events_to_run: bool = True,
 ) -> RunSummary:
     """Read current run/state facts from a main DB connection."""
     run = await _load_run(main, uid=uid, run_id=run_id)
     selected_run_id = run.run_id if run is not None else None
-    event_run_id = selected_run_id if selected_run_id is not None else run_id
+    event_run_id = (
+        selected_run_id if filter_events_to_run and selected_run_id is not None
+        else run_id if filter_events_to_run
+        else None
+    )
     stage_tasks = await _load_stage_tasks(main)
     events = await _load_recent_events(
         main,
@@ -170,6 +178,7 @@ async def build_run_summary(
             main,
             uid=uid,
             run_id=event_run_id,
+            run=run,
             stage_tasks=stage_tasks,
         ),
         recent_events=events,
@@ -288,6 +297,7 @@ async def _load_asr_summary(
     *,
     uid: int,
     run_id: str | None,
+    run: RunRecord | None,
     stage_tasks: dict[str, StageTaskSummary],
 ) -> AsrSummary:
     task = stage_tasks.get("asr")
@@ -320,6 +330,7 @@ async def _load_asr_summary(
     )
     return AsrSummary(
         status=str(audio_status) if audio_status is not None else None,
+        coverage_applicable=_asr_coverage_applicable(run),
         candidate_count=candidate_count,
         expected=len(expected_bvids),
         success=sum(1 for bvid in expected_bvids if statuses.get(bvid) == "success"),
@@ -332,6 +343,23 @@ async def _load_asr_summary(
         failed_bvids=failed_bvids,
         status_counts=status_counts,
     )
+
+
+def _asr_coverage_applicable(run: RunRecord | None) -> bool:
+    if run is None or run.command != "asr":
+        return True
+    args = run.args
+    if args.get("dry_run"):
+        return False
+    if args.get("limit") is not None:
+        return False
+    if args.get("only_bvids") is not None:
+        return False
+    if args.get("exclude_bvids") is not None:
+        return False
+    if args.get("retry_failed_only"):
+        return False
+    return not bool(run.summary.get("budget_exceeded"))
 
 
 async def _load_asr_candidate_count(

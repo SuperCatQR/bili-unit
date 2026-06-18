@@ -334,7 +334,7 @@ async def test_save_video_preserves_child_rows_on_resave(store_and_ctx):
 
 
 # ---------------------------------------------------------------------------
-# save_video_subtitle — derived has_official / has_ai flags
+# save_video_subtitle — derived Bilibili subtitle source flags
 # ---------------------------------------------------------------------------
 
 async def test_save_video_subtitle_human_only(store_and_ctx):
@@ -345,14 +345,58 @@ async def test_save_video_subtitle_human_only(store_and_ctx):
     await store.save_video_subtitle(sub)
 
     row = await ctx.main.fetch_one(
-        "SELECT bvid, has_official, has_ai, payload FROM video_subtitle WHERE bvid = ?",
+        "SELECT bvid, "
+        "has_bilibili_human_uploaded_or_official_subtitle, "
+        "has_bilibili_platform_ai_generated_subtitle, payload "
+        "FROM video_subtitle WHERE bvid = ?",
         ("BV_HUMAN",),
     )
     assert row is not None
-    assert row["has_official"] == 1
-    assert row["has_ai"] == 0
+    assert row["has_bilibili_human_uploaded_or_official_subtitle"] == 1
+    assert row["has_bilibili_platform_ai_generated_subtitle"] == 0
     decoded = json.loads(row["payload"])
     assert decoded == sub.to_dict()
+    page = sub.pages[0]
+    pages = await ctx.main.fetch_all(
+        "SELECT page_no, bilibili_video_page_index, bilibili_video_page_cid, "
+        "       selected_bilibili_subtitle_language_code, "
+        "       is_selected_bilibili_subtitle_platform_ai_generated, "
+        "       selected_bilibili_subtitle_text, subtitle_segment_count "
+        "FROM video_subtitle_page WHERE bvid = ?",
+        ("BV_HUMAN",),
+    )
+    assert [dict(r) for r in pages] == [
+        {
+            "page_no": 1,
+            "bilibili_video_page_index": page.page_index,
+            "bilibili_video_page_cid": page.cid,
+            "selected_bilibili_subtitle_language_code": page.lan,
+            "is_selected_bilibili_subtitle_platform_ai_generated": int(page.is_ai),
+            "selected_bilibili_subtitle_text": " ".join(
+                segment.content for segment in page.segments
+            ),
+            "subtitle_segment_count": len(page.segments),
+        },
+    ]
+    segment = page.segments[0]
+    segments = await ctx.main.fetch_all(
+        "SELECT page_no, segment_no, bilibili_subtitle_start_seconds, "
+        "       bilibili_subtitle_end_seconds, "
+        "       bilibili_subtitle_duration_seconds, "
+        "       bilibili_subtitle_segment_text "
+        "FROM video_subtitle_segment WHERE bvid = ?",
+        ("BV_HUMAN",),
+    )
+    assert [dict(r) for r in segments] == [
+        {
+            "page_no": 1,
+            "segment_no": 1,
+            "bilibili_subtitle_start_seconds": segment.start,
+            "bilibili_subtitle_end_seconds": segment.end,
+            "bilibili_subtitle_duration_seconds": segment.end - segment.start,
+            "bilibili_subtitle_segment_text": segment.content,
+        },
+    ]
 
 
 async def test_save_video_subtitle_ai_only(store_and_ctx):
@@ -361,14 +405,20 @@ async def test_save_video_subtitle_ai_only(store_and_ctx):
     await store.save_video(_with_bvid(_video(), "BV_AI"))
     await store.save_video_subtitle(sub)
 
-    count = await ctx.main.fetch_value(
-        "SELECT COUNT(*) FROM video_subtitle WHERE bvid = ?",
+    row = await ctx.main.fetch_one(
+        "SELECT has_bilibili_human_uploaded_or_official_subtitle, "
+        "has_bilibili_platform_ai_generated_subtitle, payload "
+        "FROM video_subtitle WHERE bvid = ?",
         ("BV_AI",),
     )
-    assert count == 0
+    assert row is not None
+    assert row["has_bilibili_human_uploaded_or_official_subtitle"] == 0
+    assert row["has_bilibili_platform_ai_generated_subtitle"] == 1
+    decoded = json.loads(row["payload"])
+    assert decoded == sub.to_dict()
 
 
-async def test_save_video_subtitle_filters_ai_pages(store_and_ctx):
+async def test_save_video_subtitle_keeps_mixed_ai_pages(store_and_ctx):
     store, ctx = store_and_ctx
     raw = {
         "subtitle": [
@@ -401,15 +451,143 @@ async def test_save_video_subtitle_filters_ai_pages(store_and_ctx):
     await store.save_video_subtitle(sub)
 
     row = await ctx.main.fetch_one(
-        "SELECT has_official, has_ai, payload FROM video_subtitle WHERE bvid = ?",
+        "SELECT has_bilibili_human_uploaded_or_official_subtitle, "
+        "has_bilibili_platform_ai_generated_subtitle, payload "
+        "FROM video_subtitle WHERE bvid = ?",
         ("BV_MIXED",),
     )
     assert row is not None
-    assert row["has_official"] == 1
-    assert row["has_ai"] == 0
+    assert row["has_bilibili_human_uploaded_or_official_subtitle"] == 1
+    assert row["has_bilibili_platform_ai_generated_subtitle"] == 1
     decoded = json.loads(row["payload"])
-    assert [p["lan"] for p in decoded["pages"]] == ["zh-CN"]
-    assert decoded["available_languages"] == ["zh-CN"]
+    assert [
+        p["selected_bilibili_subtitle_language_code"]
+        for p in decoded["bilibili_subtitle_pages"]
+    ] == ["zh-CN", "ai-zh"]
+    assert decoded["available_bilibili_subtitle_language_codes"] == [
+        "zh-CN", "ai-zh",
+    ]
+    page_flags = await ctx.main.fetch_all(
+        "SELECT page_no, selected_bilibili_subtitle_language_code, "
+        "       is_selected_bilibili_subtitle_platform_ai_generated "
+        "FROM video_subtitle_page WHERE bvid = ? ORDER BY page_no",
+        ("BV_MIXED",),
+    )
+    assert [dict(r) for r in page_flags] == [
+        {
+            "page_no": 1,
+            "selected_bilibili_subtitle_language_code": "zh-CN",
+            "is_selected_bilibili_subtitle_platform_ai_generated": 0,
+        },
+        {
+            "page_no": 2,
+            "selected_bilibili_subtitle_language_code": "ai-zh",
+            "is_selected_bilibili_subtitle_platform_ai_generated": 1,
+        },
+    ]
+
+
+async def test_save_video_subtitle_marks_ai_available_language(store_and_ctx):
+    store, ctx = store_and_ctx
+    raw = {
+        "subtitle": [
+            {
+                "page_index": 0,
+                "cid": 1,
+                "content": [
+                    {
+                        "lan": "zh-CN",
+                        "lan_doc": "Chinese",
+                        "body": [{"from": 0.0, "to": 1.0, "content": "human"}],
+                    },
+                    {
+                        "lan": "ai-zh",
+                        "lan_doc": "AI Chinese",
+                        "body": [{"from": 0.0, "to": 1.0, "content": "ai"}],
+                    },
+                ],
+            },
+        ],
+    }
+    sub = VideoSubtitle.from_raw("BV_BOTH_LANGS", raw)
+    await store.save_video(_with_bvid(_video(), "BV_BOTH_LANGS"))
+    await store.save_video_subtitle(sub)
+
+    row = await ctx.main.fetch_one(
+        "SELECT has_bilibili_human_uploaded_or_official_subtitle, "
+        "has_bilibili_platform_ai_generated_subtitle, payload "
+        "FROM video_subtitle WHERE bvid = ?",
+        ("BV_BOTH_LANGS",),
+    )
+    assert row is not None
+    assert row["has_bilibili_human_uploaded_or_official_subtitle"] == 1
+    assert row["has_bilibili_platform_ai_generated_subtitle"] == 1
+    decoded = json.loads(row["payload"])
+    page = decoded["bilibili_subtitle_pages"][0]
+    assert page["selected_bilibili_subtitle_language_code"] == "zh-CN"
+    assert page["is_selected_bilibili_subtitle_platform_ai_generated"] is False
+    assert decoded["available_bilibili_subtitle_language_codes"] == [
+        "zh-CN", "ai-zh",
+    ]
+
+
+async def test_save_video_subtitle_resave_rebuilds_materialized_rows(store_and_ctx):
+    store, ctx = store_and_ctx
+    raw = {
+        "subtitle": [
+            {
+                "page_index": 0,
+                "cid": 1,
+                "content": [
+                    {
+                        "lan": "zh-CN",
+                        "body": [{"from": 0.0, "to": 1.0, "content": "old-1"}],
+                    },
+                ],
+            },
+            {
+                "page_index": 1,
+                "cid": 2,
+                "content": [
+                    {
+                        "lan": "zh-CN",
+                        "body": [{"from": 0.0, "to": 1.0, "content": "old-2"}],
+                    },
+                ],
+            },
+        ],
+    }
+    sub = VideoSubtitle.from_raw("BV_REWRITE_SUB", raw)
+    await store.save_video(_with_bvid(_video(), "BV_REWRITE_SUB"))
+    await store.save_video_subtitle(sub)
+
+    sub.pages = sub.pages[:1]
+    sub.pages[0].segments = [
+        sub.pages[0].segments[0],
+    ]
+    sub.pages[0].segments[0].content = "new"
+    await store.save_video_subtitle(sub)
+
+    pages = await ctx.main.fetch_all(
+        "SELECT page_no, selected_bilibili_subtitle_text "
+        "FROM video_subtitle_page WHERE bvid = ? ORDER BY page_no",
+        ("BV_REWRITE_SUB",),
+    )
+    assert [dict(r) for r in pages] == [
+        {"page_no": 1, "selected_bilibili_subtitle_text": "new"},
+    ]
+    segments = await ctx.main.fetch_all(
+        "SELECT page_no, segment_no, bilibili_subtitle_segment_text "
+        "FROM video_subtitle_segment WHERE bvid = ? ORDER BY page_no, segment_no",
+        ("BV_REWRITE_SUB",),
+    )
+    assert [dict(r) for r in segments] == [
+        {
+            "page_no": 1,
+            "segment_no": 1,
+            "bilibili_subtitle_segment_text": "new",
+        },
+    ]
 
 
 def _with_bvid(video: VideoDetail, bvid: str) -> VideoDetail:

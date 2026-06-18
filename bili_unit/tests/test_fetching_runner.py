@@ -300,6 +300,12 @@ async def test_runner_progress_resumption(tmp_path: Path):
         progress = await store.get_progress("videos")
         assert progress is not None
         assert progress["cursor"] == {"pn": 2, "ps": 30}
+        stored_after_page_1 = await store.get_raw_payload("videos")
+        assert stored_after_page_1 is not None
+        assert [
+            item["bvid"]
+            for item in stored_after_page_1["pages"][0]["list"]["vlist"]
+        ] == [f"BV{i}" for i in range(30)]
 
         # Second run — must start from page 2.
         async def fake_fetch_2(uid, spec, credential, request_params, **kw):

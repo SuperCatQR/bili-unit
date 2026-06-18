@@ -64,7 +64,7 @@ async def _spy_process_audio_one(runner, uid, item, credential):
     await runner._store.save_audio_transcription(
         bvid,
         status="success",
-        transcription_source="asr",
+        transcription_source="MIMO-ASR",
         transcript=None,
         audio_tokens=0,
         seconds=0,

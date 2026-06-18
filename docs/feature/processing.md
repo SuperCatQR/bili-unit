@@ -11,8 +11,12 @@ Current naming and data contract:
 - This file keeps the `feature/processing.md` name because it documents that
   implementation package and store.
 - ASR reads `main.db` only. Work discovery comes from `video` + `video_page`;
-  subtitle short-circuiting reads `video_subtitle`. Bilibili AI subtitles stay
-  out of `main.db.video_subtitle`, so they do not skip ASR.
+  subtitle short-circuiting reads `video_subtitle`. Bilibili AI subtitle text
+  is stored in `main.db.video_subtitle` with explicit
+  `has_bilibili_platform_ai_generated_subtitle` and
+  `is_selected_bilibili_subtitle_platform_ai_generated` markers, but it does
+  not skip ASR. MiMo output is stored separately in `audio_transcription` with
+  `transcription_source='MIMO-ASR'`.
 - `raw.db` is only used by fetching/parsing; ASR can rerun when raw DB is
   incomplete or absent as long as main DB already has parsed video rows.
 > 对应结构约束：`docs/structure/bili.md`
@@ -174,7 +178,7 @@ worker 配置：
 
 ## 存储层
 
-processing 写主 DB（`{bili_db_dir}/{uid}.db`）的三张表（DDL：[main_v2.sql](../../bili_unit/_db/ddl/main_v2.sql)，表语义见 [docs/schema.md](../schema.md)）：
+processing 写主 DB（`{bili_db_dir}/{uid}.db`）的三张表（DDL：[main_v3.sql](../../bili_unit/_db/ddl/main_v3.sql)，表语义见 [docs/schema.md](../schema.md)）：
 
 - `audio_transcription` —— per-bvid 转写结果（FK CASCADE → `video.bvid`）
 - `stage_task[stage='asr']` —— 任务包络（pipeline rollup 在 `payload` JSON）
@@ -200,7 +204,7 @@ FROM audio_transcription WHERE bvid = 'BV1xxxxxxxxxx';
 |---|---|---|
 | `bvid` | `'BV1xxxxxxxxxx'` | PK；FK CASCADE → video.bvid |
 | `status` | `'success'` | `pending` / `running` / `success` / `failed` / `skipped` |
-| `transcription_source` | `'asr'` | `asr` / `subtitle` / `mock` / `mimo` / `whisper` |
+| `transcription_source` | `'MIMO-ASR'` | `MIMO-ASR` / `subtitle` / `mock` / `whisper` |
 | `transcript` | `'完整转录文本...'` | 全文（success/skipped 时非空；失败时通常 NULL） |
 | `audio_tokens` | `1875` | MiMo `usage.prompt_tokens_details.audio_tokens` 累加 |
 | `seconds` | `300.0` | ASR 计费秒数（`usage.seconds` 累加；REAL） |
@@ -232,7 +236,7 @@ FROM audio_transcription WHERE bvid = 'BV1xxxxxxxxxx';
     ],
     "total_duration": 300.0,
     "total_chars": 5000,
-    "transcription_source": "asr",
+    "transcription_source": "MIMO-ASR",
     "cost": {
       "audio_tokens": 1875,
       "seconds": 300,
@@ -262,10 +266,10 @@ FROM audio_transcription WHERE bvid = 'BV1xxxxxxxxxx';
 
 | 值 | 含义 | 来源 |
 |----|------|------|
-| `"asr"` | 走完整音频流水线（CDN 下载 → ffmpeg → ASR） | `video` / `video_page`（主库元数据）+ bilibili-api CDN resolver |
+| `"MIMO-ASR"` | 走完整音频流水线（CDN 下载 → ffmpeg → MiMo ASR） | `video` / `video_page`（主库元数据）+ bilibili-api CDN resolver |
 | `"subtitle"` | 字幕短路：从 parsing 的非 AI `video_subtitle` 直接拼出文本，跳过 ASR | `video_subtitle`（parsed） |
 
-字幕短路触发条件：当 audio pipeline 在 discovery 阶段读到完整且非 AI 的 `video_subtitle`（每个 page 都至少有一种 lang 命中 body，且选中的 page 字幕 `is_ai=false` / `lan` 不以 `ai-` 开头），runner 直接构造 audio result 写入 `audio_transcription` 并把该 item 从 worker 队列移除（`source_endpoints: ["video_subtitle"]`）。其他情况（无字幕 / 部分 page 缺字幕 / B 站 AI 字幕）走 ASR 路径。
+字幕短路触发条件：当 audio pipeline 在 discovery 阶段读到覆盖所有分 P、非 AI、且有非空文本的 `video_subtitle`（每个 expected page 都有选中 language + segment 文本，且选中的 page 字幕 `is_selected_bilibili_subtitle_platform_ai_generated=false` / `selected_bilibili_subtitle_language_code` 不以 `ai-` 开头），runner 直接构造 audio result 写入 `audio_transcription` 并把该 item 从 worker 队列移除（`source_endpoints: ["video_subtitle"]`）。其他情况（无字幕 / 部分 page 缺字幕 / 字幕文本为空 / B 站平台 AI 字幕）走 ASR 路径。
 
 > dry-run 跳过字幕短路 — 不写盘也不影响 candidate 列表。
 
@@ -418,7 +422,7 @@ async def record_error(*, pipeline, item_type, item_id, error_type, message,
 async def list_errors(*, pipeline=None, item_type=None, item_id=None) -> list[dict]
 ```
 
-`save_audio_transcription` 是 `INSERT OR REPLACE`；`update_task_pipeline` 是 read-modify-write，由 store-local `asyncio.Lock` 串行（避免两个 pipeline 收尾相互覆写 task payload）。
+`save_audio_transcription` 使用 `ON CONFLICT DO UPDATE` 更新 parent row，并在同一事务里清理再重建 `audio_transcription_page` / `audio_transcription_segment` 派生表；`failed` / `skipped` / `pending` / `running` 会清空旧派生行。`update_task_pipeline` 是 read-modify-write，由 store-local `asyncio.Lock` 串行（避免两个 pipeline 收尾相互覆写 task payload）。
 
 ## 配置项（env / .env）
 

@@ -75,7 +75,7 @@ async def _fake_process_audio_one(runner, uid, item, credential):
             "pages": pages,
             "total_duration": 60.0,
             "total_chars": len(f"mock transcription for {bvid}"),
-            "transcription_source": "asr",
+            "transcription_source": "MIMO-ASR",
         },
         "source_endpoints": ["video", "video_page"],
         "processed_at": now,
@@ -83,7 +83,7 @@ async def _fake_process_audio_one(runner, uid, item, credential):
     await runner._store.save_audio_transcription(
         bvid,
         status="success",
-        transcription_source="asr",
+        transcription_source="MIMO-ASR",
         transcript=f"mock transcription for {bvid}",
         audio_tokens=0,
         seconds=60,
@@ -421,6 +421,75 @@ async def test_audio_pipeline_failure_records_error(tmp_path):
 
     errs = await _list_processing_errors(s, uid)
     assert any(e["error_type"] == "RuntimeError" for e in errs)
+    await cmd.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_incremental_skip_plus_failure_is_partial(tmp_path):
+    s = _make_settings(tmp_path)
+    uid = 805
+    await _seed_video_pages(s, uid, ["BVdone", "BVfail"])
+
+    cmd1 = ProcessingCommand(
+        s,
+        credential_provider=AsyncMock(return_value=None),
+    )
+    with patch.object(
+        ProcessingRunner,
+        "_process_audio_one",
+        new=_fake_process_audio_one,
+    ):
+        await cmd1.process_uid(uid, only_bvids=["BVdone"])
+
+    mock_dl = AsyncMock()
+    mock_dl.get_audio_url = AsyncMock(side_effect=RuntimeError("audio boom"))
+    cmd2 = ProcessingCommand(
+        s,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+    )
+
+    result = await cmd2.process_uid(uid, mode="incremental")
+
+    assert result.status == ProcessingTaskStatus.PARTIAL
+    assert result.coverage is not None
+    assert result.coverage["success"] == 1
+    assert result.coverage["failed"] == 1
+    task = await _read_processing_task(s, uid)
+    assert task is not None
+    assert task["payload"]["pipelines"]["audio"]["status"] == "PARTIAL"
+    await cmd1.close()
+    await cmd2.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_worker_safety_net_persists_failed_item(tmp_path):
+    s = _make_settings(tmp_path)
+    uid = 807
+    await _seed_video_pages(s, uid, ["BVsafety"])
+
+    cmd = ProcessingCommand(
+        s,
+        credential_provider=AsyncMock(return_value=None),
+    )
+    with patch.object(
+        ProcessingRunner,
+        "_process_audio_one",
+        new=AsyncMock(side_effect=RuntimeError("worker boom")),
+    ):
+        result = await cmd.process_uid(uid)
+
+    assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
+    items = await _list_audio_items(s, uid)
+    assert len(items) == 1
+    assert items[0]["bvid"] == "BVsafety"
+    assert items[0]["status"] == "failed"
+    errs = await _list_processing_errors(s, uid)
+    assert any(
+        e["error_type"] == "RuntimeError"
+        and e["item_id"] == "BVsafety"
+        for e in errs
+    )
     await cmd.close()
 
 

@@ -424,7 +424,7 @@ class _AudioMixin:
         """
         if not isinstance(subtitle, dict):
             return None
-        pages = subtitle.get("pages")
+        pages = subtitle.get("bilibili_subtitle_pages", subtitle.get("pages"))
         if not isinstance(pages, list) or not pages:
             return None
         expected_page_indexes = {
@@ -437,14 +437,30 @@ class _AudioMixin:
         for p in pages:
             if not isinstance(p, dict):
                 return None
-            page_index = int(p.get("page_index", 0) or 0)
+            page_index = int(
+                p.get(
+                    "bilibili_video_page_index",
+                    p.get("bilibili_page_index", p.get("page_index", 0)),
+                ) or 0
+            )
             subtitle_page_indexes.add(page_index)
-            lan = str(p.get("lan", "") or "")
+            lan = str(
+                p.get("selected_bilibili_subtitle_language_code", p.get("lan", ""))
+                or ""
+            )
             if not lan:
                 return None
             # Bilibili AI subtitles are useful reference material, but not
             # reliable enough to replace this project's own ASR pass.
-            if bool(p.get("is_ai")) or lan.startswith("ai-"):
+            if (
+                bool(
+                    p.get(
+                        "is_selected_bilibili_subtitle_platform_ai_generated",
+                        p.get("is_bilibili_platform_ai_subtitle", p.get("is_ai")),
+                    )
+                )
+                or lan.startswith("ai-")
+            ):
                 return None
         if expected_page_indexes and subtitle_page_indexes != expected_page_indexes:
             return None
@@ -458,18 +474,52 @@ class _AudioMixin:
         total_duration = 0.0
         total_chars = 0
         for sp in pages:
-            page_index = int(sp.get("page_index", 0) or 0)
-            cid = int(sp.get("cid", 0) or 0)
-            lan = str(sp.get("lan", "") or "")
-            seg_dicts = sp.get("segments", []) or []
+            page_index = int(
+                sp.get(
+                    "bilibili_video_page_index",
+                    sp.get("bilibili_page_index", sp.get("page_index", 0)),
+                ) or 0
+            )
+            cid = int(
+                sp.get(
+                    "bilibili_video_page_cid",
+                    sp.get("bilibili_cid", sp.get("cid", 0)),
+                ) or 0
+            )
+            lan = str(
+                sp.get("selected_bilibili_subtitle_language_code", sp.get("lan", ""))
+                or ""
+            )
+            seg_dicts = (
+                sp.get("selected_bilibili_subtitle_segments", sp.get("segments", []))
+                or []
+            )
             segments_out: list[dict[str, Any]] = []
             text_parts: list[str] = []
             for seg in seg_dicts:
                 if not isinstance(seg, dict):
                     continue
-                start = float(seg.get("start", 0.0) or 0.0)
-                end = float(seg.get("end", 0.0) or 0.0)
-                content = str(seg.get("content", "") or "")
+                start = float(
+                    seg.get(
+                        "bilibili_subtitle_segment_start_seconds",
+                        seg.get("bilibili_subtitle_start_s", seg.get("start", 0.0)),
+                    )
+                    or 0.0
+                )
+                end = float(
+                    seg.get(
+                        "bilibili_subtitle_segment_end_seconds",
+                        seg.get("bilibili_subtitle_end_s", seg.get("end", 0.0)),
+                    )
+                    or 0.0
+                )
+                content = str(
+                    seg.get(
+                        "bilibili_subtitle_segment_text",
+                        seg.get("bilibili_subtitle_text", seg.get("content", "")),
+                    )
+                    or ""
+                )
                 segments_out.append({
                     "start_s": start,
                     "end_s": end,
@@ -478,7 +528,9 @@ class _AudioMixin:
                     "model": "subtitle",
                 })
                 text_parts.append(content)
-            text = " ".join(text_parts)
+            text = " ".join(part for part in text_parts if part.strip())
+            if not text.strip():
+                return None
 
             duration_meta = bvid_pages.get(page_index, {}).get("duration")
             try:
@@ -576,6 +628,38 @@ class _AudioMixin:
                     "audio_worker_unexpected_error",
                     extra={"uid": uid, "bvid": item.item_id,
                            "error": str(exc)},
+                )
+                now = int(time.time() * 1000)
+                await self._store.record_error(
+                    pipeline=_AUDIO,
+                    item_type="transcription",
+                    item_id=item.item_id,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                    retryable=False,
+                    detail={"source": "audio_worker_safety_net"},
+                )
+                await self._store.save_audio_transcription(
+                    item.item_id,
+                    status="failed",
+                    transcription_source=None,
+                    transcript=None,
+                    audio_tokens=None,
+                    seconds=None,
+                    cache_hits=None,
+                    payload={
+                        "uid": uid,
+                        "pipeline": _AUDIO,
+                        "item_type": "transcription",
+                        "item_id": item.item_id,
+                        "status": ProcessingItemStatus.FAILED.value,
+                        "result": None,
+                        "source_endpoints": ["video", "video_page"],
+                        "processed_at": now,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                    processed_at_ms=now,
                 )
                 if self._reporter is not None:
                     await self._reporter.emit(
@@ -791,7 +875,7 @@ class _AudioMixin:
                 "pages": page_results,
                 "total_duration": total_duration,
                 "total_chars": total_chars,
-                "transcription_source": "asr",
+                "transcription_source": self._asr_transcription_source(),
                 "cost": {
                     "audio_tokens": int(total_audio_tokens),
                     "seconds": int(total_asr_seconds),
@@ -820,3 +904,13 @@ class _AudioMixin:
         finally:
             # Always clean up temp files for this bvid.
             shutil.rmtree(str(temp_base), ignore_errors=True)
+
+    def _asr_transcription_source(self: Any) -> str:
+        """Return the stable user-facing source label for the active backend."""
+        model = str(getattr(self._asr_backend, "model", "") or "").strip()
+        lower_model = model.lower()
+        if lower_model.startswith("mimo"):
+            return "MIMO-ASR"
+        if lower_model.startswith("mock"):
+            return "mock"
+        return model or "ASR"

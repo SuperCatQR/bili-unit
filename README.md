@@ -110,4 +110,4 @@ uv run ruff check                                  # lint
 
 抓取层基于 [bilibili-api-python](https://github.com/Nemo2011/bilibili-api)（GPL-3.0），其传染条款下本仓库及其衍生作品须保持同等许可。上游项目与文档入口见 [docs/upstream.md](docs/upstream.md)。
 
-ASR 后端默认对接 [小米 MiMo ASR](https://api.xiaomimimo.com)（OpenAI-compatible chat completions 接口），可配置走 Token Plan / pay-as-you-go / 自托管中转。VAD 用 [pysilero-vad](https://github.com/rhasspy/pysilero-vad)。
+ASR 后端默认对接 [小米 MiMo ASR](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/Speech-Recognition)（OpenAI-compatible chat completions 接口），可配置走 Token Plan / pay-as-you-go / 自托管中转。VAD 用 [pysilero-vad](https://github.com/rhasspy/pysilero-vad)。

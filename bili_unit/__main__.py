@@ -156,7 +156,11 @@ async def _handle_sync(args: argparse.Namespace) -> None:
             download_images=args.download_images,
         )
         parse_status = result.parse.status.value if result.parse else "SKIPPED"
-    summary = await _load_cli_summary(args.uid, run_id=result.run_id)
+    summary = await _load_cli_summary(
+        args.uid,
+        run_id=result.run_id,
+        filter_events_to_run=False,
+    )
     if summary is None:
         renderer.sync_result(
             uid=args.uid,
@@ -223,14 +227,22 @@ async def _handle_asr(args: argparse.Namespace) -> None:
         )
 
 
-async def _load_cli_summary(uid: int, *, run_id: str | None = None) -> RunSummary | None:
+async def _load_cli_summary(
+    uid: int,
+    *,
+    run_id: str | None = None,
+    filter_events_to_run: bool = True,
+) -> RunSummary | None:
     try:
-        return await load_run_summary(
-            uid=uid,
-            root=get_settings().bili_db_dir,
-            run_id=run_id,
-            recent_limit=12,
-        )
+        kwargs = {
+            "uid": uid,
+            "root": get_settings().bili_db_dir,
+            "run_id": run_id,
+            "recent_limit": 12,
+        }
+        if not filter_events_to_run:
+            kwargs["filter_events_to_run"] = False
+        return await load_run_summary(**kwargs)
     except Exception:
         return None
 

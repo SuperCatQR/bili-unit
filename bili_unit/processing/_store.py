@@ -68,6 +68,29 @@ def _retryable_from_int(value: int | None) -> bool | None:
     return bool(value)
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class ProcessingStore:
     """SQLite-backed write store for the processing stage.
 
@@ -108,32 +131,123 @@ class ProcessingStore:
         payload: dict,
         processed_at_ms: int | None = None,
     ) -> None:
-        """Upsert one ``audio_transcription`` row (INSERT OR REPLACE).
+        """Upsert one ``audio_transcription`` row and rebuild derived rows.
 
         ``status`` must satisfy the table CHECK
         (``'pending'`` / ``'running'`` / ``'success'`` / ``'failed'`` /
         ``'skipped'``). ``payload`` is the ``ProcessingItemDTO``-shaped dict
-        and is stored verbatim in the ``payload`` JSON column.
+        and is stored verbatim in the ``payload`` JSON column.  On success,
+        ``audio_transcription_page`` and ``audio_transcription_segment`` are
+        derived from ``payload.result.pages``; non-success writes clear stale
+        derived rows.
         ``processed_at_ms`` defaults to the current wall clock when omitted.
         """
         ts = _now_ms() if processed_at_ms is None else processed_at_ms
-        await self._ctx.main.execute(
-            "INSERT OR REPLACE INTO audio_transcription("
-            "    bvid, status, transcription_source, transcript, "
-            "    audio_tokens, seconds, cache_hits, payload, processed_at_ms"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        statements: list[tuple[str, tuple[Any, ...]]] = [
             (
-                bvid,
-                status,
-                transcription_source,
-                transcript,
-                audio_tokens,
-                seconds,
-                cache_hits,
-                json.dumps(payload, ensure_ascii=False),
-                ts,
+                """
+                INSERT INTO audio_transcription
+                    (bvid, status, transcription_source, transcript,
+                     audio_tokens, seconds, cache_hits, payload, processed_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bvid) DO UPDATE SET
+                    status = excluded.status,
+                    transcription_source = excluded.transcription_source,
+                    transcript = excluded.transcript,
+                    audio_tokens = excluded.audio_tokens,
+                    seconds = excluded.seconds,
+                    cache_hits = excluded.cache_hits,
+                    payload = excluded.payload,
+                    processed_at_ms = excluded.processed_at_ms
+                """,
+                (
+                    bvid,
+                    status,
+                    transcription_source,
+                    transcript,
+                    audio_tokens,
+                    seconds,
+                    cache_hits,
+                    json.dumps(payload, ensure_ascii=False),
+                    ts,
+                ),
             ),
-        )
+            (
+                "DELETE FROM audio_transcription_page WHERE bvid = ?",
+                (bvid,),
+            ),
+        ]
+
+        result = payload.get("result") if isinstance(payload, dict) else None
+        pages = result.get("pages") if isinstance(result, dict) else None
+        if status == "success" and isinstance(pages, list):
+            for fallback_page_no, page in enumerate(pages, start=1):
+                if not isinstance(page, dict):
+                    continue
+                page_index = _coerce_int_or_none(page.get("page_index"))
+                if page_index is None:
+                    page_index = fallback_page_no - 1
+                page_no = page_index + 1
+                text = str(page.get("text") or "")
+                segments = page.get("segments") or []
+                if not isinstance(segments, list):
+                    segments = []
+                statements.append(
+                    (
+                        """
+                        INSERT INTO audio_transcription_page
+                            (bvid, page_no, page_index, cid, duration_s,
+                             language, asr_model, transcript_text,
+                             transcript_char_count, segment_count)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            bvid,
+                            page_no,
+                            page_index,
+                            page.get("cid"),
+                            _coerce_float_or_none(page.get("duration")),
+                            page.get("language"),
+                            page.get("asr_model"),
+                            text,
+                            len(text),
+                            len([s for s in segments if isinstance(s, dict)]),
+                        ),
+                    ),
+                )
+                for segment_no, segment in enumerate(
+                    (s for s in segments if isinstance(s, dict)),
+                    start=1,
+                ):
+                    segment_text = str(segment.get("text") or "")
+                    statements.append(
+                        (
+                            """
+                            INSERT INTO audio_transcription_segment
+                                (bvid, page_no, segment_no, start_seconds,
+                                 end_seconds, duration_s, transcript_text,
+                                 language, asr_model,
+                                 is_empty_transcript_skip,
+                                 is_high_risk_audio_skip, error_message)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                bvid,
+                                page_no,
+                                segment_no,
+                                _coerce_float_or_none(segment.get("start_s")),
+                                _coerce_float_or_none(segment.get("end_s")),
+                                _coerce_float_or_none(segment.get("duration")),
+                                segment_text,
+                                segment.get("language") or page.get("language"),
+                                segment.get("model") or page.get("asr_model"),
+                                1 if segment.get("empty_skip") else 0,
+                                1 if segment.get("high_risk_skip") else 0,
+                                segment.get("error"),
+                            ),
+                        ),
+                    )
+        await self._ctx.main.run_transaction(statements)
 
     # ------------------------------------------------------------------
     # audio transcription reads
@@ -288,10 +402,22 @@ class ProcessingStore:
 
     async def update_task_status(self, status: str) -> None:
         """Update the top-level ``stage_task.status`` and timestamp."""
-        await self._ctx.main.execute(
-            "UPDATE stage_task SET status = ?, updated_at_ms = ? WHERE stage = ?",
-            (status, _now_ms(), _PROCESSING_STAGE),
-        )
+        now = _now_ms()
+        statements: list[tuple[str, tuple[Any, ...]]] = [
+            (
+                "UPDATE stage_task SET status = ?, updated_at_ms = ? WHERE stage = ?",
+                (status, now, _PROCESSING_STAGE),
+            ),
+        ]
+        if status not in {"PENDING", "RUNNING"}:
+            statements.append(
+                (
+                    "INSERT INTO meta(key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    ("last_processed_at_ms", str(now)),
+                ),
+            )
+        await self._ctx.main.run_transaction(statements)
 
     async def get_task(self) -> dict | None:
         """Return ``{status, payload, created_at_ms, updated_at_ms}`` or ``None``.

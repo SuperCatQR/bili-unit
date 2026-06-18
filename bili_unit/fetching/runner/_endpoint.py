@@ -172,12 +172,22 @@ class _EndpointMixin:
             retry_count=0,
         )
 
+        # Load progress early. A non-empty cursor means a previous paginated
+        # run committed payload+progress and then stopped before completion;
+        # resume that cursor before doing normal known-id incremental scans.
+        progress = await self._store.get_progress(ep_name)
+        progress_cursor = progress.get("cursor") if progress is not None else None
+
         # -- incremental mode: build known_ids from stored data --
         known_ids: set[str] | None = None
         stored_total_count = 0
         stored_cursor_incomplete = False
         id_paths = spec.item_id_paths or ([spec.item_id_path] if spec.item_id_path else None)
-        if mode in ("incremental", "refresh") and spec.pagination_strategy != "none":
+        if (
+            not progress_cursor
+            and mode in ("incremental", "refresh")
+            and spec.pagination_strategy != "none"
+        ):
             existing = await self._store.get_raw_payload(ep_name)
             if existing is not None and id_paths is not None:
                 stored_pages = existing.get("pages", [])
@@ -205,8 +215,6 @@ class _EndpointMixin:
 
         initial_known_count = len(known_ids) if known_ids is not None else 0
 
-        # load progress (only for non-incremental or first-time incremental)
-        progress = await self._store.get_progress(ep_name)
         request_params = spec.params_strategy.copy()
         if known_ids is not None:
             # incremental mode: always start from page 1, ignore stored progress
@@ -228,6 +236,12 @@ class _EndpointMixin:
 
         # track pages fetched in THIS run (for incremental overwrite)
         pages_this_run: list[dict[str, Any]] = []
+        stored_pages_base: list[Any] = []
+        if known_ids is None and spec.pagination_strategy != "none" and mode != "full":
+            existing_payload = await self._store.get_raw_payload(ep_name)
+            existing_pages = (existing_payload or {}).get("pages", [])
+            if isinstance(existing_pages, list):
+                stored_pages_base = list(existing_pages)
         boundary_hit = False  # set when all IDs on a page are known
         pagination_loop_detected = False
         seen_page_requests: set[tuple[tuple[str, str], ...]] = set()
@@ -416,13 +430,16 @@ class _EndpointMixin:
 
             # -- save progress for non-incremental pagination (resume support) --
             if known_ids is None and spec.pagination_strategy != "none":
-                await self._store.save_progress(
+                await self._store.save_raw_page_and_progress(
                     ep_name,
+                    "",
+                    {"pages": [*stored_pages_base, *pages_this_run]},
                     {
                         "cursor": page.next_request,
                         "total": None,
                         "fetched": None,
                     },
+                    fetched_at_ms=now_ms,
                 )
 
             # -- incremental mode: check item IDs --
@@ -511,11 +528,9 @@ class _EndpointMixin:
                 # full mode: overwrite entirely (do NOT accumulate)
                 raw_payload = {"pages": pages_this_run}
             else:
-                # incremental first run (no stored data): accumulate on existing
-                existing = await self._store.get_raw_payload(ep_name)
-                pages = (existing or {}).get("pages", [])
-                pages.extend(pages_this_run)
-                raw_payload = {"pages": pages}
+                # resume / first-time incremental: keep pages committed before
+                # this run, then append pages fetched in this run.
+                raw_payload = {"pages": [*stored_pages_base, *pages_this_run]}
         else:
             raw_payload = pages_this_run[0] if pages_this_run else page.raw_payload
 

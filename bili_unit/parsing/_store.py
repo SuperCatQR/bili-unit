@@ -220,22 +220,20 @@ class ParsingStore:
 
         Column mapping (VideoSubtitle.to_dict() → video_subtitle):
           * bvid          ← bvid
-          * has_official  ← any page with ``is_ai=False``         (derived)
-          * has_ai        ← any page with ``is_ai=True``          (derived)
+          * has_bilibili_human_uploaded_or_official_subtitle
+                          ← any selected page with ``is_ai=False`` (derived)
+          * has_bilibili_platform_ai_generated_subtitle
+                          ← selected AI page or available ``ai-*`` language
 
-        Both flags are 0/1 ints; the dataclass exposes ``is_ai`` per page —
-        this method derives the union over pages.
+        ``video_subtitle.payload`` is the canonical parsed subtitle object.
+        ``video_subtitle_page`` and ``video_subtitle_segment`` are derived
+        query tables rebuilt from that payload on every save.  Bilibili
+        platform AI subtitles are persisted in main DB with explicit source
+        flags, but ASR does not treat them as a trusted shortcut.
         """
-        # Main DB is consumer-facing: keep human/official subtitles only.
-        # Full upstream subtitle payload, including Bilibili AI subtitles,
-        # remains available in raw DB.
         if not sub.bvid:
             raise ValueError("VideoSubtitle.bvid is required to persist a row")
-        pages = [
-            p for p in sub.pages
-            if p.lan and not p.is_ai and not p.lan.startswith("ai-")
-        ]
-        if not pages:
+        if not sub.pages:
             await self._ctx.main.execute(
                 "DELETE FROM video_subtitle WHERE bvid = ?",
                 (sub.bvid,),
@@ -243,26 +241,102 @@ class ParsingStore:
             return
 
         payload = sub.to_dict()
-        payload["pages"] = [p.to_dict() for p in pages]
-        payload["available_languages"] = [
-            lan for lan in sub.available_languages if not lan.startswith("ai-")
-        ]
-        payload["is_complete"] = all(p.lan for p in pages)
-        payload["is_ai_only"] = False
-        await self._ctx.main.execute(
-            """
-            INSERT OR REPLACE INTO video_subtitle
-                (bvid, has_official, has_ai, payload, parsed_at_ms)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                sub.bvid,
-                1,
-                0,
-                json.dumps(payload, ensure_ascii=False),
-                _now_ms(),
-            ),
+        now_ms = _now_ms()
+        has_bilibili_human_uploaded_or_official_subtitle = any(
+            p.lan and not p.is_ai and not p.lan.startswith("ai-")
+            for p in sub.pages
         )
+        has_bilibili_platform_ai_generated_subtitle = any(
+            p.lan and (p.is_ai or p.lan.startswith("ai-"))
+            for p in sub.pages
+        ) or any(lan.startswith("ai-") for lan in sub.available_languages)
+
+        statements: list[tuple[str, tuple[Any, ...]]] = [
+            (
+                """
+                INSERT INTO video_subtitle
+                    (bvid, has_bilibili_human_uploaded_or_official_subtitle,
+                     has_bilibili_platform_ai_generated_subtitle, payload,
+                     parsed_at_ms)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(bvid) DO UPDATE SET
+                    has_bilibili_human_uploaded_or_official_subtitle =
+                        excluded.has_bilibili_human_uploaded_or_official_subtitle,
+                    has_bilibili_platform_ai_generated_subtitle =
+                        excluded.has_bilibili_platform_ai_generated_subtitle,
+                    payload = excluded.payload,
+                    parsed_at_ms = excluded.parsed_at_ms
+                """,
+                (
+                    sub.bvid,
+                    1 if has_bilibili_human_uploaded_or_official_subtitle else 0,
+                    1 if has_bilibili_platform_ai_generated_subtitle else 0,
+                    json.dumps(payload, ensure_ascii=False),
+                    now_ms,
+                ),
+            ),
+            (
+                "DELETE FROM video_subtitle_page WHERE bvid = ?",
+                (sub.bvid,),
+            ),
+        ]
+        for page in sub.pages:
+            if not page.lan.strip():
+                continue
+            page_no = int(page.page_index) + 1
+            is_platform_ai = bool(page.is_ai or page.lan.startswith("ai-"))
+            page_text = " ".join(s.content for s in page.segments)
+            statements.append(
+                (
+                    """
+                    INSERT INTO video_subtitle_page
+                        (bvid, page_no, bilibili_video_page_index,
+                         bilibili_video_page_cid,
+                         selected_bilibili_subtitle_language_code,
+                         selected_bilibili_subtitle_language_name,
+                         is_selected_bilibili_subtitle_platform_ai_generated,
+                         selected_bilibili_subtitle_text,
+                         subtitle_segment_count, parsed_at_ms)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sub.bvid,
+                        page_no,
+                        int(page.page_index),
+                        int(page.cid or 0),
+                        page.lan,
+                        page.lan_doc,
+                        1 if is_platform_ai else 0,
+                        page_text,
+                        len(page.segments),
+                        now_ms,
+                    ),
+                ),
+            )
+            for segment_no, segment in enumerate(page.segments, start=1):
+                statements.append(
+                    (
+                        """
+                        INSERT INTO video_subtitle_segment
+                            (bvid, page_no, segment_no,
+                             bilibili_subtitle_start_seconds,
+                             bilibili_subtitle_end_seconds,
+                             bilibili_subtitle_duration_seconds,
+                             bilibili_subtitle_segment_text)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            sub.bvid,
+                            page_no,
+                            segment_no,
+                            float(segment.start),
+                            float(segment.end),
+                            max(0.0, float(segment.end) - float(segment.start)),
+                            segment.content,
+                        ),
+                    ),
+                )
+        await self._ctx.main.run_transaction(statements)
 
     async def save_article(self, art: Article) -> None:
         """Upsert an article row.
@@ -487,13 +561,16 @@ class ParsingStore:
         payload = await self.get_video_subtitle_payload(bvid)
         if not isinstance(payload, dict):
             return False
-        pages = payload.get("pages")
+        pages = payload.get("bilibili_subtitle_pages", payload.get("pages"))
         if not isinstance(pages, list) or not pages:
             return False
         for p in pages:
             if not isinstance(p, dict):
                 return False
-            if not p.get("lan"):
+            if not (
+                p.get("selected_bilibili_subtitle_language_code")
+                or p.get("lan")
+            ):
                 return False
         return True
 
@@ -600,14 +677,26 @@ class ParsingStore:
 
     async def update_task_status(self, status: str) -> None:
         """Set the parsing task status (no payload mutation)."""
-        await self._ctx.main.execute(
-            """
-            UPDATE stage_task
-               SET status = ?, updated_at_ms = ?
-             WHERE stage = 'parsing'
-            """,
-            (status, _now_ms()),
-        )
+        now = _now_ms()
+        statements: list[tuple[str, tuple[Any, ...]]] = [
+            (
+                """
+                UPDATE stage_task
+                   SET status = ?, updated_at_ms = ?
+                 WHERE stage = 'parsing'
+                """,
+                (status, now),
+            ),
+        ]
+        if status not in {"PENDING", "RUNNING"}:
+            statements.append(
+                (
+                    "INSERT INTO meta(key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    ("last_parsed_at_ms", str(now)),
+                ),
+            )
+        await self._ctx.main.run_transaction(statements)
 
     async def get_task(self) -> dict | None:
         """Return the parsing stage_task payload (decoded), or None."""

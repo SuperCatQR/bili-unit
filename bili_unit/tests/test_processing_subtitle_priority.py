@@ -49,7 +49,7 @@ _dispatched_bvids: list[str] = []
 
 
 async def _spy_process_audio_one(runner, uid, item, credential):
-    """Stand-in for the real audio worker 鈥?writes an asr-sourced SUCCESS row
+    """Stand-in for the real audio worker 鈥?writes a MIMO-ASR SUCCESS row
     so the test can distinguish "audio worker ran" from "subtitle short-
     circuited" by reading transcription_source from the store."""
     _dispatched_bvids.append(item.item_id)
@@ -63,10 +63,25 @@ async def _spy_process_audio_one(runner, uid, item, credential):
         "status": "SUCCESS",
         "result": {
             "bvid": bvid,
-            "pages": [],
-            "total_duration": 0.0,
-            "total_chars": 0,
-            "transcription_source": "asr",
+            "pages": [{
+                "page_index": 0,
+                "cid": 1,
+                "duration": 60.0,
+                "text": "mimo transcript",
+                "language": "zh",
+                "asr_model": "mimo-v2.5-asr",
+                "segments": [{
+                    "start_s": 0.0,
+                    "end_s": 1.0,
+                    "duration": 1.0,
+                    "text": "mimo transcript",
+                    "language": "zh",
+                    "model": "mimo-v2.5-asr",
+                }],
+            }],
+            "total_duration": 60.0,
+            "total_chars": len("mimo transcript"),
+            "transcription_source": "MIMO-ASR",
         },
         "source_endpoints": ["video", "video_page"],
         "processed_at": now,
@@ -74,8 +89,8 @@ async def _spy_process_audio_one(runner, uid, item, credential):
     await runner._store.save_audio_transcription(
         bvid,
         status="success",
-        transcription_source="asr",
-        transcript=None,
+        transcription_source="MIMO-ASR",
+        transcript="mimo transcript",
         audio_tokens=0,
         seconds=0,
         cache_hits=0,
@@ -121,6 +136,7 @@ async def _seed_parsed_subtitle(
     settings: BiliSettings, uid: int, bvid: str,
     *, page_count: int, missing_pages: list[int] | None = None,
     ai_pages: list[int] | None = None,
+    empty_text_pages: list[int] | None = None,
 ) -> None:
     """Write a VideoSubtitle row to the parsing store.
 
@@ -131,6 +147,7 @@ async def _seed_parsed_subtitle(
     """
     missing = set(missing_pages or [])
     ai = set(ai_pages or [])
+    empty_text = set(empty_text_pages or [])
     pages: list[SubtitlePage] = []
     for idx in range(page_count):
         if idx in missing:
@@ -148,8 +165,16 @@ async def _seed_parsed_subtitle(
             lan_doc="AI涓枃" if is_ai else "涓枃锛堜腑鍥斤級",
             is_ai=is_ai,
             segments=[
-                SubtitleSegment(start=0.0, end=1.5, content=f"hello {idx}"),
-                SubtitleSegment(start=1.5, end=3.0, content="world"),
+                SubtitleSegment(
+                    start=0.0,
+                    end=1.5,
+                    content="" if idx in empty_text else f"hello {idx}",
+                ),
+                SubtitleSegment(
+                    start=1.5,
+                    end=3.0,
+                    content="" if idx in empty_text else "world",
+                ),
             ],
         ))
 
@@ -174,6 +199,18 @@ async def _read_audio_payload(settings: BiliSettings, uid: int, bvid: str) -> di
     try:
         store = ProcessingStore(ctx)
         return await store.get_audio_payload(bvid)
+    finally:
+        await ctx.close()
+
+
+async def _read_subtitle_payload(
+    settings: BiliSettings, uid: int, bvid: str,
+) -> dict | None:
+    ctx = UidContext(uid, settings.bili_db_dir)
+    await ctx.open(raw=False)
+    try:
+        store = ParsingStore(ctx)
+        return await store.get_video_subtitle_payload(bvid)
     finally:
         await ctx.close()
 
@@ -259,12 +296,67 @@ async def test_ai_subtitle_complete_falls_back_to_asr(cmd, settings):
 
     payload = await _read_audio_payload(settings, uid, bvid)
     assert payload is not None
-    assert payload["result"]["transcription_source"] == "asr"
+    assert payload["result"]["transcription_source"] == "MIMO-ASR"
+    subtitle = await _read_subtitle_payload(settings, uid, bvid)
+    assert subtitle is not None
+    subtitle_page = subtitle["bilibili_subtitle_pages"][0]
+    assert (
+        subtitle_page["is_selected_bilibili_subtitle_platform_ai_generated"]
+        is True
+    )
+    assert (
+        subtitle_page["selected_bilibili_subtitle_segments"][0]
+        ["bilibili_subtitle_segment_text"] == "hello 0"
+    )
+    ctx = UidContext(uid, settings.bili_db_dir)
+    await ctx.open(raw=False)
+    try:
+        subtitle_page_row = await ctx.main.fetch_one(
+            "SELECT is_selected_bilibili_subtitle_platform_ai_generated "
+            "FROM video_subtitle_page WHERE bvid = ? AND page_no = 1",
+            (bvid,),
+        )
+        assert subtitle_page_row is not None
+        assert (
+            subtitle_page_row[
+                "is_selected_bilibili_subtitle_platform_ai_generated"
+            ] == 1
+        )
+        asr_page_row = await ctx.main.fetch_one(
+            "SELECT asr_model, transcript_text "
+            "FROM audio_transcription_page WHERE bvid = ? AND page_no = 1",
+            (bvid,),
+        )
+        assert asr_page_row is not None
+        assert dict(asr_page_row) == {
+            "asr_model": "mimo-v2.5-asr",
+            "transcript_text": "mimo transcript",
+        }
+    finally:
+        await ctx.close()
+
+
+async def test_non_ai_subtitle_with_empty_text_falls_back_to_asr(cmd, settings):
+    """A non-AI subtitle needs real text to short-circuit ASR."""
+    uid = 9105
+    bvid = "BVemptysub"
+    await _seed_video_pages(settings, uid, bvid, pages_per_bvid=1)
+    await _seed_parsed_subtitle(
+        settings, uid, bvid, page_count=1, empty_text_pages=[0],
+    )
+
+    result = await cmd.process_uid(uid)
+
+    assert result.status == ProcessingTaskStatus.SUCCESS
+    assert _dispatched_bvids == [bvid]
+    payload = await _read_audio_payload(settings, uid, bvid)
+    assert payload is not None
+    assert payload["result"]["transcription_source"] == "MIMO-ASR"
 
 
 async def test_subtitle_partial_falls_back_to_asr(cmd, settings):
     """A bvid with one page missing a language is NOT short-circuited;
-    the audio worker gets the item and writes ``transcription_source: asr``."""
+    the audio worker gets the item and writes ``transcription_source: MIMO-ASR``."""
     uid = 9101
     bvid = "BVpartial"
     await _seed_video_pages(settings, uid, bvid, pages_per_bvid=2)
@@ -280,7 +372,7 @@ async def test_subtitle_partial_falls_back_to_asr(cmd, settings):
 
     payload = await _read_audio_payload(settings, uid, bvid)
     assert payload is not None
-    assert payload["result"]["transcription_source"] == "asr"
+    assert payload["result"]["transcription_source"] == "MIMO-ASR"
 
 
 async def test_no_subtitle_data_falls_back_to_asr(cmd, settings):
@@ -297,7 +389,7 @@ async def test_no_subtitle_data_falls_back_to_asr(cmd, settings):
 
     payload = await _read_audio_payload(settings, uid, bvid)
     assert payload is not None
-    assert payload["result"]["transcription_source"] == "asr"
+    assert payload["result"]["transcription_source"] == "MIMO-ASR"
 
 
 async def test_processing_does_not_read_fetching_store(cmd, settings):

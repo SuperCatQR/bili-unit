@@ -338,15 +338,29 @@ class ProcessingRunner(_AudioMixin):
         statuses = await proc_store.list_audio_statuses()
         missing = [bvid for bvid in expected if bvid not in statuses]
         failed = [bvid for bvid in expected if statuses.get(bvid) == "failed"]
+        incomplete = [
+            bvid for bvid in expected
+            if statuses.get(bvid) not in (None, "success", "failed")
+        ]
         success = sum(1 for bvid in expected if statuses.get(bvid) == "success")
         coverage = {
             "expected": len(expected),
             "success": success,
             "missing": len(missing),
             "failed": len(failed),
-            "complete": not missing and not failed,
+            "pending": sum(
+                1 for bvid in expected if statuses.get(bvid) == "pending"
+            ),
+            "running": sum(
+                1 for bvid in expected if statuses.get(bvid) == "running"
+            ),
+            "skipped": sum(
+                1 for bvid in expected if statuses.get(bvid) == "skipped"
+            ),
+            "complete": success == len(expected),
             "missing_bvids": missing,
             "failed_bvids": failed,
+            "incomplete_bvids": incomplete,
         }
         task = await proc_store.get_task() or {}
         payload = task.get("payload") or {}
@@ -407,7 +421,7 @@ class ProcessingRunner(_AudioMixin):
             skipped = counts.get("skipped", 0)
             if failed > 0:
                 any_failed = True
-            if completed > 0:
+            if completed > 0 or skipped > 0:
                 any_completed = True
             if total - completed - failed - skipped > 0:
                 any_pending = True

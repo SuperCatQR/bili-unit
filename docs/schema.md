@@ -1,7 +1,7 @@
 # schema —— bili_unit SQLite 数据契约
 
-> 真相源：[main_v2.sql](../bili_unit/_db/ddl/main_v2.sql)、[raw_v1.sql](../bili_unit/_db/ddl/raw_v1.sql)
-> 适用版本：main DB `schema_version = 2`；raw DB `schema_version = 1`（各自独立编号）
+> 真相源：[main_v3.sql](../bili_unit/_db/ddl/main_v3.sql)、[raw_v2.sql](../bili_unit/_db/ddl/raw_v2.sql)
+> 适用版本：main DB `schema_version = 3`；raw DB `schema_version = 2`（各自独立编号）
 
 bili_unit 自 Phase 3 起将自己重新定位为「被动持久化数据存储」：写侧通过 `BiliCommand` 编排三 stage，读侧 **直接 SQL 查询**——不再有 Python query facade。本文件描述消费方需要的 SQL 表面。
 
@@ -35,7 +35,7 @@ sqlite3 output/bili/123456.db "SELECT * FROM manifest_summary;"
 
 ### Schema versioning
 
-main DB `meta.schema_version` 当前为 `'2'`；raw DB `meta.schema_version` 当前为 `'1'`。迁移策略：DDL 不兼容修改时 bump major，并附带 `tools/migrate_*` 脚本；新增列、新增 view、新增 index 不算不兼容。运行时连接器检测到 `schema_version` 高于自己支持的最大版本会抛 `SchemaMismatchError`。
+main DB `meta.schema_version` 当前为 `'3'`；raw DB `meta.schema_version` 当前为 `'2'`。迁移策略：DDL 不兼容修改时 bump major，并附带 `tools/migrate_*` 脚本；新增列、新增 view、新增 index 不算不兼容。运行时连接器检测到 `schema_version` 高于自己支持的最大版本会抛 `SchemaMismatchError`。
 
 ## 2. Path helpers
 
@@ -59,7 +59,7 @@ main DB `meta.schema_version` 当前为 `'2'`；raw DB `meta.schema_version` 当
 | 列 | 类型 | 说明 |
 |----|------|------|
 | `key` | TEXT PK | 见下方约定 |
-| `value` | TEXT NOT NULL | 字符串化的值（main DB `schema_version='2'`、raw DB `schema_version='1'`、`uid='123456'`、ms-epoch 的 `'1718000000000'` 等） |
+| `value` | TEXT NOT NULL | 字符串化的值（main DB `schema_version='3'`、raw DB `schema_version='2'`、`uid='123456'`、ms-epoch 的 `'1718000000000'` 等） |
 
 约定 keys：`schema_version`、`uid`、`created_at_ms`、`last_fetched_at_ms`、`last_parsed_at_ms`、`last_processed_at_ms`。后三个是 stage 入口在写入收尾时刷新的「最近一次成功跑完时间」。
 
@@ -91,9 +91,28 @@ PK：`bvid`，FK CASCADE 到 `video`。
 
 | 列 | 类型 | 说明 |
 |----|------|------|
-| `has_official` | INTEGER NOT NULL CHECK IN (0,1) | 是否有官方/UP 主上传字幕 |
-| `has_ai` | INTEGER NOT NULL CHECK IN (0,1) | 是否有 B 站 AI 字幕 |
-| `payload` | TEXT NOT NULL | 字幕全文 + lang 列表，参见 parsing 层 SubtitleData |
+| `has_bilibili_human_uploaded_or_official_subtitle` | INTEGER NOT NULL CHECK IN (0,1) | 是否有 B 站 UP 主人工上传/官方字幕 |
+| `has_bilibili_platform_ai_generated_subtitle` | INTEGER NOT NULL CHECK IN (0,1) | 是否有 B 站平台自动生成的 AI 字幕 |
+| `payload` | TEXT NOT NULL | 字幕全文 + B 站语言列表；JSON key 使用 `bilibili_*` / `selected_bilibili_subtitle_*` 前缀标明来源与含义 |
+
+B 站字幕文本与本项目自己的 ASR 文本独立存储：`video_subtitle` 保存
+B 站抓取/解析到的字幕事实（含 AI 标记），`audio_transcription` 保存 MiMo
+等 ASR 后端生成的转写结果。
+
+`video_subtitle.payload` 是字幕解析结果的 canonical JSON。下面两张表只是
+为了让直接 SQL 消费者不必解析 JSON：
+
+- `video_subtitle_page`：每个已选中字幕语言的 page 一行，PK `(bvid, page_no)`。
+  `page_no` 是 SQL 侧 1-based 页号；`bilibili_video_page_index` 是 B 站 /
+  payload 里的 0-based page index。`is_selected_bilibili_subtitle_platform_ai_generated`
+  表示“当前选中的 B 站字幕是否为平台 AI 生成”，不是本项目 ASR。
+- `video_subtitle_segment`：每个 B 站字幕片段一行，PK
+  `(bvid, page_no, segment_no)`。列包含
+  `bilibili_subtitle_start_seconds` / `bilibili_subtitle_end_seconds` /
+  `bilibili_subtitle_duration_seconds` / `bilibili_subtitle_segment_text`。
+
+这两张派生表随 `video_subtitle.payload` 重建；外键只连到
+`video_subtitle`，不强绑 `video_page`，以保留 re-parse 与历史 payload 的弹性。
 
 ### 3.5 `article` —— 专栏
 
@@ -115,7 +134,7 @@ PK：`bvid`，FK CASCADE 到 `video`。
 |----|------|------|
 | `bvid` | TEXT PK | |
 | `status` | TEXT NOT NULL CHECK IN (`'pending'`,`'running'`,`'success'`,`'failed'`,`'skipped'`) | 状态机 |
-| `transcription_source` | TEXT | 后端名（`mock` / `mimo` / `whisper` / `subtitle` 等） |
+| `transcription_source` | TEXT | 文本来源（`MIMO-ASR` / `mock` / `whisper` / `subtitle` 等） |
 | `transcript` | TEXT | 转写全文（`success` / `skipped` 时非空） |
 | `audio_tokens` | INTEGER | LLM tokens 累计（计费用） |
 | `seconds` | REAL | 实际处理音频秒数 |
@@ -124,6 +143,22 @@ PK：`bvid`，FK CASCADE 到 `video`。
 | `processed_at_ms` | INTEGER NOT NULL | 处理完成时间 |
 
 `status='skipped'` 表示该视频走字幕直出而非真 ASR；`'failed'` 时 `transcript` 通常为 NULL，原因看 `stage_error`。
+
+`audio_transcription.payload` 是 ASR 处理结果的 canonical JSON。下面两张表是
+从 `payload.result.pages` 物化出来的查询表：
+
+- `audio_transcription_page`：每个 ASR page 一行，PK `(bvid, page_no)`。
+  `page_no` 是 SQL 侧 1-based 页号；`page_index` 是 payload 里的 0-based index。
+  常用列包括 `language` / `asr_model` / `transcript_text` /
+  `transcript_char_count` / `segment_count`。
+- `audio_transcription_segment`：每个 ASR segment 一行，PK
+  `(bvid, page_no, segment_no)`。除 `start_seconds` / `end_seconds` /
+  `duration_s` / `transcript_text` 外，还保留
+  `is_empty_transcript_skip` / `is_high_risk_audio_skip` / `error_message`，
+  用来区分“本段本来无文本”“高风险跳过”和普通识别文本。
+
+`failed` / `skipped` / `pending` / `running` 写入会清空旧的 ASR page/segment
+派生行，避免状态回退后还残留旧 transcript。
 
 ### 3.9 `image_asset` —— 图片缓存索引
 
@@ -172,7 +207,7 @@ PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error
 列：`run_id`（TEXT PK）/ `uid` / `command` / `status` /
 `started_at_ms` / `ended_at_ms` / `args_json` / `summary_json`。
 
-索引：`idx_stage_run_uid_started(uid, started_at_ms DESC)`。
+索引：`idx_stage_run_uid_started(uid, started_at_ms DESC, run_id DESC)`。
 
 ### 4.5 `stage_event`
 
@@ -187,7 +222,7 @@ PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error
 
 索引：
 
-- `idx_stage_event_run_id(run_id, id)`
+- `idx_stage_event_run_id(run_id, id DESC)`
 - `idx_stage_event_item(stage, endpoint, pipeline, item_type, item_id)`
 
 Run Summary 和 CLI 使用方式见 [observability.md](observability.md)。
@@ -222,7 +257,7 @@ LEFT JOIN：尚未处理的视频也会出现，转写列均 NULL。
 
 > 多数消费方 **不应** 打开此文件。仅在 re-parse 场景（不重新抓 B 站，只用本地缓存的 raw 响应重新跑 parsing）才需要它。
 
-DDL：[raw_v1.sql](../bili_unit/_db/ddl/raw_v1.sql)。两张表：
+DDL：[raw_v2.sql](../bili_unit/_db/ddl/raw_v2.sql)。两张表：
 
 ### 6.1 `raw_payload`
 

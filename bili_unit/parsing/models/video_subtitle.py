@@ -37,17 +37,32 @@ class SubtitleSegment:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "start": self.start,
-            "end": self.end,
-            "content": self.content,
+            "bilibili_subtitle_segment_start_seconds": self.start,
+            "bilibili_subtitle_segment_end_seconds": self.end,
+            "bilibili_subtitle_segment_text": self.content,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SubtitleSegment:
         return cls(
-            start=float(d.get("start", 0.0) or 0.0),
-            end=float(d.get("end", 0.0) or 0.0),
-            content=str(d.get("content", "") or ""),
+            start=float(
+                d.get(
+                    "bilibili_subtitle_segment_start_seconds",
+                    d.get("bilibili_subtitle_start_s", d.get("start", 0.0)),
+                ) or 0.0
+            ),
+            end=float(
+                d.get(
+                    "bilibili_subtitle_segment_end_seconds",
+                    d.get("bilibili_subtitle_end_s", d.get("end", 0.0)),
+                ) or 0.0
+            ),
+            content=str(
+                d.get(
+                    "bilibili_subtitle_segment_text",
+                    d.get("bilibili_subtitle_text", d.get("content", "")),
+                ) or ""
+            ),
         )
 
 
@@ -64,29 +79,56 @@ class SubtitlePage:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "page_index": self.page_index,
-            "cid": self.cid,
-            "lan": self.lan,
-            "lan_doc": self.lan_doc,
-            "is_ai": self.is_ai,
-            "segments": [s.to_dict() for s in self.segments],
+            "bilibili_video_page_index": self.page_index,
+            "bilibili_video_page_cid": self.cid,
+            "selected_bilibili_subtitle_language_code": self.lan,
+            "selected_bilibili_subtitle_language_name": self.lan_doc,
+            "is_selected_bilibili_subtitle_platform_ai_generated": self.is_ai,
+            "selected_bilibili_subtitle_segments": [
+                s.to_dict() for s in self.segments
+            ],
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SubtitlePage:
-        seg_list = d.get("segments", []) or []
+        seg_list = d.get("selected_bilibili_subtitle_segments", d.get("segments", [])) or []
         segments = [
             SubtitleSegment.from_dict(s) for s in seg_list if isinstance(s, dict)
         ]
-        lan = str(d.get("lan", "") or "")
+        lan = str(
+            d.get("selected_bilibili_subtitle_language_code", d.get("lan", ""))
+            or ""
+        )
         # Legacy v1 JSON has no ``is_ai``; derive it from the ``lan`` prefix
         # so old persisted data round-trips with the same semantics.
-        is_ai = bool(d.get("is_ai")) if "is_ai" in d else lan.startswith("ai-")
+        if "is_selected_bilibili_subtitle_platform_ai_generated" in d:
+            is_ai = bool(
+                d.get("is_selected_bilibili_subtitle_platform_ai_generated")
+            )
+        elif "is_bilibili_platform_ai_subtitle" in d:
+            is_ai = bool(d.get("is_bilibili_platform_ai_subtitle"))
+        elif "is_ai" in d:
+            is_ai = bool(d.get("is_ai"))
+        else:
+            is_ai = lan.startswith("ai-")
         return cls(
-            page_index=int(d.get("page_index", 0) or 0),
-            cid=int(d.get("cid", 0) or 0),
+            page_index=int(
+                d.get(
+                    "bilibili_video_page_index",
+                    d.get("bilibili_page_index", d.get("page_index", 0)),
+                ) or 0
+            ),
+            cid=int(
+                d.get(
+                    "bilibili_video_page_cid",
+                    d.get("bilibili_cid", d.get("cid", 0)),
+                ) or 0
+            ),
             lan=lan,
-            lan_doc=str(d.get("lan_doc", "") or ""),
+            lan_doc=str(
+                d.get("selected_bilibili_subtitle_language_name", d.get("lan_doc", ""))
+                or ""
+            ),
             is_ai=is_ai,
             segments=segments,
         )
@@ -169,7 +211,7 @@ class VideoSubtitle:
     """Typed representation of subtitle text for a single Bilibili video."""
 
     _model_name: str = "video_subtitle"
-    _schema_version: int = 2
+    _schema_version: int = 3
 
     bvid: str = ""
     pages: list[SubtitlePage] = field(default_factory=list)
@@ -187,7 +229,12 @@ class VideoSubtitle:
 
     @property
     def is_complete(self) -> bool:
-        """True iff every page resolved at least one language with a body."""
+        """True iff every retained subtitle page resolved a language body.
+
+        ``from_raw`` drops pages whose upstream subtitle payload has no usable
+        body.  Callers that need whole-video coverage, such as ASR shortcut
+        logic, must still compare retained page indexes with ``video_page``.
+        """
         return bool(self.pages) and all(p.lan for p in self.pages)
 
     @property
@@ -211,7 +258,8 @@ class VideoSubtitle:
              ]}
 
         Pages whose ``content`` has no usable body for any language are
-        skipped entirely (``is_complete`` will then be False).
+        skipped entirely.  Whole-video completeness is therefore a caller-side
+        check against the expected page indexes.
         """
         pages_out: list[SubtitlePage] = []
         seen_langs: list[str] = []  # preserve discovery order, dedup
@@ -277,10 +325,16 @@ class VideoSubtitle:
             "_model_name": self._model_name,
             "_schema_version": self._schema_version,
             "bvid": self.bvid,
-            "pages": [p.to_dict() for p in self.pages],
-            "available_languages": list(self.available_languages),
-            "is_complete": self.is_complete,
-            "is_ai_only": self.is_ai_only,
+            "bilibili_subtitle_pages": [p.to_dict() for p in self.pages],
+            "available_bilibili_subtitle_language_codes": list(
+                self.available_languages
+            ),
+            "is_selected_bilibili_subtitle_available_for_every_retained_subtitle_page": (
+                self.is_complete
+            ),
+            "is_only_bilibili_platform_ai_generated_subtitle_available": (
+                self.is_ai_only
+            ),
             "_source_refs": [ref.to_dict() for ref in self.source_refs],
             "_cross_refs": self.cross_refs.to_dict(),
         }
@@ -298,11 +352,17 @@ class VideoSubtitle:
         if not cross_refs.bvid and bvid:
             cross_refs.bvid = bvid
 
-        pages_raw = d.get("pages", []) or []
+        pages_raw = d.get("bilibili_subtitle_pages", d.get("pages", [])) or []
         pages = [
             SubtitlePage.from_dict(p) for p in pages_raw if isinstance(p, dict)
         ]
-        avail = d.get("available_languages", []) or []
+        avail = (
+            d.get(
+                "available_bilibili_subtitle_language_codes",
+                d.get("available_languages", []),
+            )
+            or []
+        )
         available_languages = [str(x) for x in avail if isinstance(x, str | int)]
 
         return cls(

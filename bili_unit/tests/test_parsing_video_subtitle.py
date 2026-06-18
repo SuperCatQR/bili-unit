@@ -13,7 +13,7 @@ from bili_unit._db import UidContext
 from bili_unit.fetching._store import FetchingStore
 from bili_unit.parsing._store import ParsingStore
 from bili_unit.parsing.materializer import ParsingMaterializer
-from bili_unit.parsing.models.video_detail import VideoDetail
+from bili_unit.parsing.models.video_detail import PageInfo, VideoDetail
 from bili_unit.parsing.models.video_subtitle import (
     PARSER,
     SubtitlePage,
@@ -194,13 +194,19 @@ def test_round_trip_dict():
     d = obj.to_dict()
     # Schema metadata
     assert d["_model_name"] == "video_subtitle"
-    assert d["_schema_version"] == 2
+    assert d["_schema_version"] == 3
     assert d["bvid"] == "BV009"
-    assert d["is_complete"] is True
-    assert d["is_ai_only"] is False  # mixed: zh-CN page + ai-zh page
-    # Per-page is_ai propagates into the dict.
-    assert d["pages"][0]["is_ai"] is False  # zh-CN
-    assert d["pages"][1]["is_ai"] is True   # ai-zh
+    assert (
+        d["is_selected_bilibili_subtitle_available_for_every_retained_subtitle_page"]
+        is True
+    )
+    assert (
+        d["is_only_bilibili_platform_ai_generated_subtitle_available"] is False
+    )  # mixed: zh-CN page + ai-zh page
+    # Per-page platform AI marker propagates into the dict.
+    pages = d["bilibili_subtitle_pages"]
+    assert pages[0]["is_selected_bilibili_subtitle_platform_ai_generated"] is False
+    assert pages[1]["is_selected_bilibili_subtitle_platform_ai_generated"] is True
     # Round trip through from_dict
     revived = VideoSubtitle.from_dict(d)
     assert revived.bvid == obj.bvid
@@ -302,8 +308,8 @@ def test_video_subtitle_to_dict_emits_is_ai_only():
     }
     obj = VideoSubtitle.from_raw("BV_DICT_AI", raw)
     d = obj.to_dict()
-    assert "is_ai_only" in d
-    assert d["is_ai_only"] is True
+    assert "is_only_bilibili_platform_ai_generated_subtitle_available" in d
+    assert d["is_only_bilibili_platform_ai_generated_subtitle_available"] is True
 
     # And the negative case: a human-authored page → False in the dict.
     raw_human = {
@@ -314,7 +320,7 @@ def test_video_subtitle_to_dict_emits_is_ai_only():
         ],
     }
     d_h = VideoSubtitle.from_raw("BV_DICT_H", raw_human).to_dict()
-    assert d_h["is_ai_only"] is False
+    assert d_h["is_only_bilibili_platform_ai_generated_subtitle_available"] is False
 
 
 def test_video_subtitle_v1_dict_migration():
@@ -390,7 +396,13 @@ def _zh_subtitle_raw(lan: str = "zh-CN") -> dict:
 
 async def _seed_parent_video(parse_store: ParsingStore, bvid: str) -> None:
     """Insert a parent ``video`` row so the FK from video_subtitle holds."""
-    await parse_store.save_video(VideoDetail(bvid=bvid, title=f"parent {bvid}"))
+    await parse_store.save_video(
+        VideoDetail(
+            bvid=bvid,
+            title=f"parent {bvid}",
+            pages=[PageInfo(cid=1, part="P1", duration=60)],
+        ),
+    )
 
 
 async def test_materializer_writes_video_subtitle(stores):
@@ -434,11 +446,17 @@ async def test_materializer_writes_video_subtitle(stores):
     obj_a = await parse_store.get_video_subtitle_payload("BVA1")
     assert obj_a is not None
     assert obj_a["bvid"] == "BVA1"
-    assert obj_a["pages"][0]["lan"] == "zh-CN"
+    assert (
+        obj_a["bilibili_subtitle_pages"][0]
+        ["selected_bilibili_subtitle_language_code"] == "zh-CN"
+    )
 
     obj_b = await parse_store.get_video_subtitle_payload("BVB2")
     assert obj_b is not None
-    assert obj_b["pages"][0]["lan"] == "en-US"
+    assert (
+        obj_b["bilibili_subtitle_pages"][0]
+        ["selected_bilibili_subtitle_language_code"] == "en-US"
+    )
 
 
 async def test_materializer_returns_zero_when_no_fanout(stores):
@@ -457,7 +475,7 @@ async def test_materializer_returns_zero_when_no_fanout(stores):
 
 
 async def test_materializer_skips_existing_in_incremental_mode(stores):
-    """Subtitle materialization refreshes rows even in ``incremental`` mode."""
+    """Subtitle materialization skips existing rows in ``incremental`` mode."""
     ctx, parse_store, fetch_store = stores
 
     # Pre-seed BV01 directly with a human subtitle.
@@ -481,17 +499,46 @@ async def test_materializer_skips_existing_in_incremental_mode(stores):
         uid=UID, model_name="video_subtitle", mode="incremental",
     )
 
-    assert count == 2
+    assert count == 1
     bv01 = await parse_store.get_video_subtitle_payload("BV01")
     assert bv01 is not None
-    assert bv01["pages"][0]["lan"] == "zh-CN"
+    assert (
+        bv01["bilibili_subtitle_pages"][0]
+        ["selected_bilibili_subtitle_language_code"] == "zh-HK"
+    )
 
     bv02 = await parse_store.get_video_subtitle_payload("BV02")
     assert bv02 is not None
-    assert bv02["pages"][0]["lan"] == "zh-CN"
+    assert (
+        bv02["bilibili_subtitle_pages"][0]
+        ["selected_bilibili_subtitle_language_code"] == "zh-CN"
+    )
 
 
-async def test_materializer_drops_ai_only_from_main_db(stores):
+async def test_materializer_skips_orphan_video_subtitle(stores):
+    ctx, parse_store, fetch_store = stores
+
+    await _seed_parent_video(parse_store, "BVHASVIDEO")
+    await fetch_store.save_raw_payload(
+        "video_subtitle", "BVHASVIDEO", _zh_subtitle_raw("zh-CN"),
+    )
+    await fetch_store.save_raw_payload(
+        "video_subtitle", "BVORPHAN", _zh_subtitle_raw("zh-CN"),
+    )
+
+    materializer = ParsingMaterializer(
+        ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
+    )
+    count = await materializer.parse_model(
+        uid=UID, model_name="video_subtitle", mode="full",
+    )
+
+    assert count == 1
+    assert await parse_store.get_video_subtitle_payload("BVHASVIDEO") is not None
+    assert await parse_store.get_video_subtitle_payload("BVORPHAN") is None
+
+
+async def test_materializer_writes_ai_only_to_main_db(stores):
     ctx, parse_store, fetch_store = stores
 
     await _seed_parent_video(parse_store, "BVAI")
@@ -522,4 +569,9 @@ async def test_materializer_drops_ai_only_from_main_db(stores):
     )
 
     assert count == 1
-    assert await parse_store.get_video_subtitle_payload("BVAI") is None
+    payload = await parse_store.get_video_subtitle_payload("BVAI")
+    assert payload is not None
+    assert payload["is_only_bilibili_platform_ai_generated_subtitle_available"] is True
+    page = payload["bilibili_subtitle_pages"][0]
+    assert page["is_selected_bilibili_subtitle_platform_ai_generated"] is True
+    assert page["selected_bilibili_subtitle_language_code"] == "ai-zh"

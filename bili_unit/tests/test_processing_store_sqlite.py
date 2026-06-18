@@ -37,11 +37,16 @@ async def store(tmp_path: Path):
 
 
 async def _seed_video(store: ProcessingStore, bvid: str) -> None:
-    """Insert a minimal placeholder video row so audio FK constraints hold."""
+    """Insert minimal video/page rows so audio FK constraints hold."""
     await store.ctx.main.execute(
         "INSERT OR IGNORE INTO video(bvid, title, payload, parsed_at_ms) "
         "VALUES (?, ?, ?, ?)",
         (bvid, f"title-{bvid}", "{}", 1),
+    )
+    await store.ctx.main.execute(
+        "INSERT OR IGNORE INTO video_page(bvid, page_no, cid, part, duration_s) "
+        "VALUES (?, 1, 0, '', 0)",
+        (bvid,),
     )
 
 
@@ -60,12 +65,44 @@ async def test_save_audio_transcription_success_columns_and_payload(
         "item_type": "transcription",
         "item_id": bvid,
         "status": "SUCCESS",
-        "result": {"transcription_source": "asr", "pages": []},
+        "result": {
+            "transcription_source": "MIMO-ASR",
+            "pages": [
+                {
+                    "page_index": 0,
+                    "cid": 123,
+                    "duration": 12.5,
+                    "text": "hello world",
+                    "language": "zh",
+                    "asr_model": "mimo-v2.5-asr",
+                    "segments": [
+                        {
+                            "start_s": 0.0,
+                            "end_s": 1.5,
+                            "duration": 1.5,
+                            "text": "hello",
+                            "language": "zh",
+                            "model": "mimo-v2.5-asr",
+                        },
+                        {
+                            "start_s": 1.5,
+                            "end_s": 3.0,
+                            "duration": 1.5,
+                            "text": "world",
+                            "language": "zh",
+                            "model": "mimo-v2.5-asr",
+                            "high_risk_skip": True,
+                            "error": "risk",
+                        },
+                    ],
+                },
+            ],
+        },
     }
     await store.save_audio_transcription(
         bvid,
         status="success",
-        transcription_source="asr",
+        transcription_source="MIMO-ASR",
         transcript="hello world",
         audio_tokens=1234,
         seconds=12.5,
@@ -83,13 +120,66 @@ async def test_save_audio_transcription_success_columns_and_payload(
     assert row is not None
     assert row["bvid"] == bvid
     assert row["status"] == "success"
-    assert row["transcription_source"] == "asr"
+    assert row["transcription_source"] == "MIMO-ASR"
     assert row["transcript"] == "hello world"
     assert row["audio_tokens"] == 1234
     assert row["seconds"] == 12.5
     assert row["cache_hits"] == 2
     assert json.loads(row["payload"]) == payload
     assert row["processed_at_ms"] == 10_000
+    page = await store.ctx.main.fetch_one(
+        "SELECT page_no, page_index, cid, duration_s, language, asr_model, "
+        "       transcript_text, transcript_char_count, segment_count "
+        "FROM audio_transcription_page WHERE bvid = ?",
+        (bvid,),
+    )
+    assert page is not None
+    assert dict(page) == {
+        "page_no": 1,
+        "page_index": 0,
+        "cid": 123,
+        "duration_s": 12.5,
+        "language": "zh",
+        "asr_model": "mimo-v2.5-asr",
+        "transcript_text": "hello world",
+        "transcript_char_count": len("hello world"),
+        "segment_count": 2,
+    }
+    segments = await store.ctx.main.fetch_all(
+        "SELECT page_no, segment_no, start_seconds, end_seconds, duration_s, "
+        "       transcript_text, language, asr_model, "
+        "       is_empty_transcript_skip, is_high_risk_audio_skip, error_message "
+        "FROM audio_transcription_segment WHERE bvid = ? ORDER BY segment_no",
+        (bvid,),
+    )
+    assert [dict(r) for r in segments] == [
+        {
+            "page_no": 1,
+            "segment_no": 1,
+            "start_seconds": 0.0,
+            "end_seconds": 1.5,
+            "duration_s": 1.5,
+            "transcript_text": "hello",
+            "language": "zh",
+            "asr_model": "mimo-v2.5-asr",
+            "is_empty_transcript_skip": 0,
+            "is_high_risk_audio_skip": 0,
+            "error_message": None,
+        },
+        {
+            "page_no": 1,
+            "segment_no": 2,
+            "start_seconds": 1.5,
+            "end_seconds": 3.0,
+            "duration_s": 1.5,
+            "transcript_text": "world",
+            "language": "zh",
+            "asr_model": "mimo-v2.5-asr",
+            "is_empty_transcript_skip": 0,
+            "is_high_risk_audio_skip": 1,
+            "error_message": "risk",
+        },
+    ]
 
 
 async def test_save_audio_transcription_failed_no_transcript(
@@ -163,7 +253,7 @@ async def test_save_audio_transcription_replaces_existing_row(
     await store.save_audio_transcription(
         bvid,
         status="success",
-        transcription_source="asr",
+        transcription_source="MIMO-ASR",
         transcript="redo",
         audio_tokens=10,
         seconds=1.0,
@@ -182,6 +272,157 @@ async def test_save_audio_transcription_replaces_existing_row(
     assert rows[0]["transcript"] == "redo"
     assert json.loads(rows[0]["payload"]) == {"v": 2}
     assert rows[0]["processed_at_ms"] == 200
+
+
+async def test_save_audio_transcription_failed_clears_materialized_rows(
+    store: ProcessingStore,
+) -> None:
+    bvid = "BVclear"
+    await _seed_video(store, bvid)
+    await store.save_audio_transcription(
+        bvid,
+        status="success",
+        transcription_source="MIMO-ASR",
+        transcript="ok",
+        audio_tokens=1,
+        seconds=1.0,
+        cache_hits=0,
+        payload={
+            "result": {
+                "pages": [
+                    {
+                        "page_index": 0,
+                        "text": "ok",
+                        "segments": [{"start_s": 0, "end_s": 1, "text": "ok"}],
+                    },
+                ],
+            },
+        },
+    )
+    assert await store.ctx.main.fetch_value(
+        "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
+        (bvid,),
+    ) == 1
+
+    await store.save_audio_transcription(
+        bvid,
+        status="failed",
+        transcription_source=None,
+        transcript=None,
+        audio_tokens=None,
+        seconds=None,
+        cache_hits=None,
+        payload={"result": None},
+    )
+
+    assert await store.ctx.main.fetch_value(
+        "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
+        (bvid,),
+    ) == 0
+    assert await store.ctx.main.fetch_value(
+        "SELECT COUNT(*) FROM audio_transcription_segment WHERE bvid = ?",
+        (bvid,),
+    ) == 0
+
+
+async def test_save_audio_transcription_non_success_statuses_clear_materialized_rows(
+    store: ProcessingStore,
+) -> None:
+    for status in ("skipped", "pending", "running"):
+        bvid = f"BVclear{status}"
+        await _seed_video(store, bvid)
+        await store.save_audio_transcription(
+            bvid,
+            status="success",
+            transcription_source="MIMO-ASR",
+            transcript="ok",
+            audio_tokens=1,
+            seconds=1.0,
+            cache_hits=0,
+            payload={
+                "result": {
+                    "pages": [{
+                        "page_index": 0,
+                        "text": "ok",
+                        "segments": [{"start_s": 0, "end_s": 1, "text": "ok"}],
+                    }],
+                },
+            },
+        )
+        await store.save_audio_transcription(
+            bvid,
+            status=status,
+            transcription_source=None,
+            transcript=None,
+            audio_tokens=None,
+            seconds=None,
+            cache_hits=None,
+            payload={"status": status.upper()},
+        )
+
+        assert await store.ctx.main.fetch_value(
+            "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
+            (bvid,),
+        ) == 0
+        assert await store.ctx.main.fetch_value(
+            "SELECT COUNT(*) FROM audio_transcription_segment WHERE bvid = ?",
+            (bvid,),
+        ) == 0
+
+
+async def test_save_audio_transcription_success_resave_rebuilds_materialized_rows(
+    store: ProcessingStore,
+) -> None:
+    bvid = "BVresave"
+    await _seed_video(store, bvid)
+    await store.save_audio_transcription(
+        bvid,
+        status="success",
+        transcription_source="MIMO-ASR",
+        transcript="one two",
+        audio_tokens=2,
+        seconds=2.0,
+        cache_hits=0,
+        payload={
+            "result": {
+                "pages": [{
+                    "page_index": 0,
+                    "text": "one two",
+                    "segments": [
+                        {"start_s": 0, "end_s": 1, "text": "one"},
+                        {"start_s": 1, "end_s": 2, "text": "two"},
+                    ],
+                }],
+            },
+        },
+    )
+    await store.save_audio_transcription(
+        bvid,
+        status="success",
+        transcription_source="MIMO-ASR",
+        transcript="three",
+        audio_tokens=1,
+        seconds=1.0,
+        cache_hits=0,
+        payload={
+            "result": {
+                "pages": [{
+                    "page_index": 0,
+                    "text": "three",
+                    "segments": [{"start_s": 0, "end_s": 1, "text": "three"}],
+                }],
+            },
+        },
+    )
+
+    rows = await store.ctx.main.fetch_all(
+        "SELECT segment_no, transcript_text "
+        "FROM audio_transcription_segment WHERE bvid = ? ORDER BY segment_no",
+        (bvid,),
+    )
+    assert [dict(r) for r in rows] == [
+        {"segment_no": 1, "transcript_text": "three"},
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +444,7 @@ async def test_get_audio_payload_round_trip(store: ProcessingStore) -> None:
     await store.save_audio_transcription(
         bvid,
         status="success",
-        transcription_source="asr",
+        transcription_source="MIMO-ASR",
         transcript=None,
         audio_tokens=None,
         seconds=None,

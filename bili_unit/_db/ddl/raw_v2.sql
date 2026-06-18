@@ -1,4 +1,4 @@
--- bili_unit raw DB schema, version 1.
+-- bili_unit raw DB schema, version 2.
 --
 -- One file per uid: data/bili/{uid}.raw.db.
 -- Holds B站 64 endpoint raw responses + fetch progress cursors.
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS raw_payload (
     endpoint      TEXT NOT NULL,
     item_id       TEXT NOT NULL DEFAULT '',
     payload       TEXT NOT NULL,
-    fetched_at_ms INTEGER NOT NULL,
+    fetched_at_ms INTEGER NOT NULL CHECK (fetched_at_ms >= 0),
     PRIMARY KEY (endpoint, item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_raw_endpoint
@@ -33,7 +33,12 @@ CREATE INDEX IF NOT EXISTS idx_raw_endpoint
 CREATE TABLE IF NOT EXISTS fetch_progress (
     endpoint      TEXT PRIMARY KEY,
     cursor        TEXT,
-    total         INTEGER,
-    fetched       INTEGER,
-    updated_at_ms INTEGER NOT NULL
+    total         INTEGER CHECK (total IS NULL OR total >= 0),
+    fetched       INTEGER CHECK (
+                      fetched IS NULL OR fetched >= 0
+                  ),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+    CHECK (
+        total IS NULL OR fetched IS NULL OR fetched <= total
+    )
 );

@@ -97,9 +97,12 @@ async def test_open_main_creates_all_content_tables(main_conn: Connection) -> No
     expected = {
         "meta",
         "user_profile", "video", "video_page", "video_subtitle",
+        "video_subtitle_page", "video_subtitle_segment",
         "article", "opus_post", "dynamic_event",
-        "audio_transcription", "image_asset",
+        "audio_transcription", "audio_transcription_page",
+        "audio_transcription_segment", "image_asset",
         "stage_task", "fetch_endpoint_state", "stage_error",
+        "stage_run", "stage_event",
     }
     missing = expected - names
     assert not missing, f"missing tables: {missing}"
@@ -211,14 +214,50 @@ async def test_open_main_rejects_v1_without_auto_migration(tmp_path: Path) -> No
     with pytest.raises(SchemaMismatchError):
         await open_main(77, tmp_path)
 
+    check = sqlite3.connect(str(db_path))
+    try:
+        tables = {
+            row[0]
+            for row in check.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'",
+            )
+        }
+        assert tables == {"meta"}
+    finally:
+        check.close()
 
-async def test_main_v2_stage_task_accepts_fetching_parsing_asr_only(
+
+async def test_open_raw_rejects_v1_without_auto_migration(tmp_path: Path) -> None:
+    db_path = tmp_path / f"88{RAW_DB_SUFFIX}"
+    raw = sqlite3.connect(str(db_path))
+    raw.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    raw.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '1')")
+    raw.commit()
+    raw.close()
+
+    with pytest.raises(SchemaMismatchError):
+        await open_raw(88, tmp_path)
+
+    check = sqlite3.connect(str(db_path))
+    try:
+        tables = {
+            row[0]
+            for row in check.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'",
+            )
+        }
+        assert tables == {"meta"}
+    finally:
+        check.close()
+
+
+async def test_main_v3_stage_task_accepts_fetching_parsing_asr_only(
     main_conn: Connection,
 ) -> None:
     for stage in ("fetching", "parsing", "asr"):
         await main_conn.execute(
             "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
-            "VALUES (?, 'ok', '{}', 1, 1)",
+            "VALUES (?, 'PENDING', '{}', 1, 1)",
             (stage,),
         )
 
@@ -229,7 +268,7 @@ async def test_main_v2_stage_task_accepts_fetching_parsing_asr_only(
         )
 
 
-async def test_main_v2_stage_error_accepts_fetching_parsing_asr_only(
+async def test_main_v3_stage_error_accepts_fetching_parsing_asr_only(
     main_conn: Connection,
 ) -> None:
     for stage in ("fetching", "parsing", "asr"):
@@ -244,6 +283,51 @@ async def test_main_v2_stage_error_accepts_fetching_parsing_asr_only(
             "INSERT INTO stage_error(stage, error_type, message, occurred_at_ms) "
             "VALUES ('processing', 'Error', 'boom', 1)",
         )
+
+
+async def test_main_v3_rejects_invalid_status_values(
+    main_conn: Connection,
+) -> None:
+    with pytest.raises(sqlite3.IntegrityError):
+        await main_conn.execute(
+            "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
+            "VALUES ('fetching', 'ok', '{}', 1, 1)",
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        await main_conn.execute(
+            "INSERT INTO fetch_endpoint_state(endpoint, status, updated_at_ms) "
+            "VALUES ('videos', 'ok', 1)",
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        await main_conn.execute(
+            "INSERT INTO image_asset("
+            "url_hash, source_kind, source_id, url, status, downloaded_at_ms"
+            ") VALUES ('h', 'video.cover', 'BV1', 'https://example.com/1.jpg', "
+            "'unknown', 1)",
+        )
+
+
+async def test_main_v3_rejects_orphan_stage_event(
+    main_conn: Connection,
+) -> None:
+    with pytest.raises(sqlite3.IntegrityError):
+        await main_conn.execute(
+            "INSERT INTO stage_event(run_id, ts_ms, level, stage, event) "
+            "VALUES ('missing-run', 1, 'INFO', 'fetching', 'fetch.started')",
+        )
+
+
+async def test_main_v3_creates_expected_error_indexes(
+    main_conn: Connection,
+) -> None:
+    rows = await main_conn.fetch_all("PRAGMA index_list(stage_error)")
+    names = {row["name"] for row in rows}
+    assert {
+        "idx_stage_error_stage",
+        "idx_stage_error_stage_recent",
+        "idx_stage_error_endpoint",
+        "idx_stage_error_item",
+    } <= names
 
 
 # ---------------------------------------------------------------------------

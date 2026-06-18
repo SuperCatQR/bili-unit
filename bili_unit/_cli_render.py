@@ -172,17 +172,18 @@ class CliRenderer:
             self.line(f"  budget exceeded: {', '.join(budget_exceeded)}")
         if candidates:
             self.line(f"  candidates: {', '.join(candidates)}")
-        self.line(
-            "  coverage: "
-            f"success={summary.asr.success}/"
-            f"{summary.asr.expected} "
-            f"missing={summary.asr.missing} "
-            f"failed={summary.asr.failed}",
-        )
-        if summary.asr.missing_bvids:
-            self.line(f"  missing: {', '.join(summary.asr.missing_bvids)}")
-        if summary.asr.failed_bvids:
-            self.line(f"  failed: {', '.join(summary.asr.failed_bvids)}")
+        if summary.asr.coverage_applicable:
+            self.line(
+                "  coverage: "
+                f"success={summary.asr.success}/"
+                f"{summary.asr.expected} "
+                f"missing={summary.asr.missing} "
+                f"failed={summary.asr.failed}",
+            )
+            if summary.asr.missing_bvids:
+                self.line(f"  missing: {', '.join(summary.asr.missing_bvids)}")
+            if summary.asr.failed_bvids:
+                self.line(f"  failed: {', '.join(summary.asr.failed_bvids)}")
         if summary.asr.status_counts:
             counts = _format_counts(summary.asr.status_counts)
             if counts:

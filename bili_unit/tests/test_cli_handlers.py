@@ -101,8 +101,13 @@ async def test_fetch_handler_falls_back_when_summary_unavailable(
         lambda **_kwargs: _FakeSession(_FakeCommand()),
     )
 
-    async def fake_summary(uid: int, *, run_id: str | None = None):
-        calls.append((uid, run_id))
+    async def fake_summary(
+        uid: int,
+        *,
+        run_id: str | None = None,
+        filter_events_to_run: bool = True,
+    ):
+        calls.append((uid, run_id, filter_events_to_run))
         return None
 
     monkeypatch.setattr(cli, "_load_cli_summary", fake_summary)
@@ -120,7 +125,7 @@ async def test_fetch_handler_falls_back_when_summary_unavailable(
     assert capsys.readouterr().out.splitlines() == [
         "uid=123  status=SUCCESS",
     ]
-    assert calls == [(123, "fetch-run-1")]
+    assert calls == [(123, "fetch-run-1", True)]
 
 
 async def test_asr_handler_prefers_run_summary(
@@ -226,8 +231,13 @@ async def test_sync_handler_passes_run_id_and_keeps_workflow_status(
         lambda **_kwargs: _FakeSession(_FakeCommand()),
     )
 
-    async def fake_summary(uid: int, *, run_id: str | None = None):
-        calls.append((uid, run_id))
+    async def fake_summary(
+        uid: int,
+        *,
+        run_id: str | None = None,
+        filter_events_to_run: bool = True,
+    ):
+        calls.append((uid, run_id, filter_events_to_run))
         return RunSummary(
             uid=uid,
             run=None,
@@ -280,7 +290,7 @@ async def test_sync_handler_passes_run_id_and_keeps_workflow_status(
         "  endpoints: PARTIAL=1",
         "  models: SUCCESS=1",
     ]
-    assert calls == [(123, "parse-run-1")]
+    assert calls == [(123, "parse-run-1", False)]
 
 
 async def test_load_cli_summary_passes_run_id(monkeypatch) -> None:

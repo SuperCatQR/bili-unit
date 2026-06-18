@@ -70,15 +70,48 @@ async def _seed_sample_uid(root: Path) -> Path:
         )
         await ctx.main.execute(
             "INSERT OR REPLACE INTO video_subtitle("
-            "bvid, has_official, has_ai, payload, parsed_at_ms"
+            "bvid, has_bilibili_human_uploaded_or_official_subtitle, "
+            "has_bilibili_platform_ai_generated_subtitle, payload, parsed_at_ms"
             ") VALUES (?, ?, ?, ?, ?)",
             (
                 "BVCONTRACT1",
                 1,
                 0,
-                json.dumps({"bvid": "BVCONTRACT1", "pages": []}),
+                json.dumps({
+                    "bvid": "BVCONTRACT1",
+                    "bilibili_subtitle_pages": [],
+                }),
                 1002,
             ),
+        )
+        await ctx.main.execute(
+            "INSERT OR REPLACE INTO video_subtitle_page("
+            "bvid, page_no, bilibili_video_page_index, bilibili_video_page_cid, "
+            "selected_bilibili_subtitle_language_code, "
+            "selected_bilibili_subtitle_language_name, "
+            "is_selected_bilibili_subtitle_platform_ai_generated, "
+            "selected_bilibili_subtitle_text, subtitle_segment_count, parsed_at_ms"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "BVCONTRACT1",
+                1,
+                0,
+                12345,
+                "zh-CN",
+                "Chinese",
+                0,
+                "hello subtitle",
+                1,
+                1002,
+            ),
+        )
+        await ctx.main.execute(
+            "INSERT OR REPLACE INTO video_subtitle_segment("
+            "bvid, page_no, segment_no, bilibili_subtitle_start_seconds, "
+            "bilibili_subtitle_end_seconds, bilibili_subtitle_duration_seconds, "
+            "bilibili_subtitle_segment_text"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("BVCONTRACT1", 1, 1, 0.0, 1.0, 1.0, "hello subtitle"),
         )
         await ctx.main.execute(
             "INSERT OR REPLACE INTO audio_transcription("
@@ -95,6 +128,45 @@ async def _seed_sample_uid(root: Path) -> Path:
                 2,
                 json.dumps({"item_id": "BVCONTRACT1", "status": "SUCCESS"}),
                 1003,
+            ),
+        )
+        await ctx.main.execute(
+            "INSERT OR REPLACE INTO audio_transcription_page("
+            "bvid, page_no, page_index, cid, duration_s, language, asr_model, "
+            "transcript_text, transcript_char_count, segment_count"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "BVCONTRACT1",
+                1,
+                0,
+                12345,
+                120.0,
+                "zh",
+                "mimo-v2.5-asr",
+                "hello transcript",
+                len("hello transcript"),
+                1,
+            ),
+        )
+        await ctx.main.execute(
+            "INSERT OR REPLACE INTO audio_transcription_segment("
+            "bvid, page_no, segment_no, start_seconds, end_seconds, "
+            "duration_s, transcript_text, language, asr_model, "
+            "is_empty_transcript_skip, is_high_risk_audio_skip, error_message"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "BVCONTRACT1",
+                1,
+                1,
+                0.0,
+                1.0,
+                1.0,
+                "hello transcript",
+                "zh",
+                "mimo-v2.5-asr",
+                0,
+                0,
+                None,
             ),
         )
         await ctx.main.execute(
@@ -150,6 +222,56 @@ async def test_sample_uid_sqlite_contract_reads_via_stdlib(tmp_path: Path) -> No
         assert [(r["bvid"], r["title"]) for r in latest] == [
             ("BVCONTRACT1", "contract video"),
         ]
+
+        subtitle_page = conn.execute(
+            "SELECT selected_bilibili_subtitle_language_code, "
+            "is_selected_bilibili_subtitle_platform_ai_generated, "
+            "selected_bilibili_subtitle_text "
+            "FROM video_subtitle_page WHERE bvid = ? AND page_no = 1",
+            ("BVCONTRACT1",),
+        ).fetchone()
+        assert dict(subtitle_page) == {
+            "selected_bilibili_subtitle_language_code": "zh-CN",
+            "is_selected_bilibili_subtitle_platform_ai_generated": 0,
+            "selected_bilibili_subtitle_text": "hello subtitle",
+        }
+
+        subtitle_segments = conn.execute(
+            "SELECT bilibili_subtitle_duration_seconds, "
+            "bilibili_subtitle_segment_text "
+            "FROM video_subtitle_segment WHERE bvid = ? ORDER BY segment_no",
+            ("BVCONTRACT1",),
+        ).fetchall()
+        assert [dict(r) for r in subtitle_segments] == [{
+            "bilibili_subtitle_duration_seconds": 1.0,
+            "bilibili_subtitle_segment_text": "hello subtitle",
+        }]
+
+        asr_page = conn.execute(
+            "SELECT language, asr_model, transcript_text, segment_count "
+            "FROM audio_transcription_page WHERE bvid = ? AND page_no = 1",
+            ("BVCONTRACT1",),
+        ).fetchone()
+        assert dict(asr_page) == {
+            "language": "zh",
+            "asr_model": "mimo-v2.5-asr",
+            "transcript_text": "hello transcript",
+            "segment_count": 1,
+        }
+
+        asr_segments = conn.execute(
+            "SELECT transcript_text, is_empty_transcript_skip, "
+            "is_high_risk_audio_skip, error_message "
+            "FROM audio_transcription_segment "
+            "WHERE bvid = ? ORDER BY segment_no",
+            ("BVCONTRACT1",),
+        ).fetchall()
+        assert [dict(r) for r in asr_segments] == [{
+            "transcript_text": "hello transcript",
+            "is_empty_transcript_skip": 0,
+            "is_high_risk_audio_skip": 0,
+            "error_message": None,
+        }]
     finally:
         conn.close()
 
@@ -170,10 +292,14 @@ async def test_schema_contract_tables_and_views_are_stable(tmp_path: Path) -> No
             "video",
             "video_page",
             "video_subtitle",
+            "video_subtitle_page",
+            "video_subtitle_segment",
             "article",
             "opus_post",
             "dynamic_event",
             "audio_transcription",
+            "audio_transcription_page",
+            "audio_transcription_segment",
             "image_asset",
         ):
             assert objects.get(table) == "table"

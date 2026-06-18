@@ -289,10 +289,22 @@ class FetchingStore:
 
     async def update_task_status(self, status: str) -> None:
         """Update ``stage_task[stage='fetching'].status`` and timestamp."""
-        await self._ctx.main.execute(
-            "UPDATE stage_task SET status = ?, updated_at_ms = ? WHERE stage = ?",
-            (status, _now_ms(), _FETCHING_STAGE),
-        )
+        now = _now_ms()
+        statements: list[tuple[str, tuple[Any, ...]]] = [
+            (
+                "UPDATE stage_task SET status = ?, updated_at_ms = ? WHERE stage = ?",
+                (status, now, _FETCHING_STAGE),
+            ),
+        ]
+        if status not in {"PENDING", "RUNNING"}:
+            statements.append(
+                (
+                    "INSERT INTO meta(key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    ("last_fetched_at_ms", str(now)),
+                ),
+            )
+        await self._ctx.main.run_transaction(statements)
 
     async def update_endpoint_state(
         self,

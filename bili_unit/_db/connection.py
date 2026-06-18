@@ -11,8 +11,8 @@
 #   * Cross-uid concurrency is fine: each uid has its own files.
 #
 # Schema versioning:
-#   Open path runs apply_ddl() unconditionally (CREATE IF NOT EXISTS, idempotent).
-#   After DDL, meta.schema_version is read; mismatch raises SchemaMismatchError.
+#   Existing DBs are checked before current DDL is applied. This keeps an old
+#   or unknown schema from being partially mutated by a newer binary.
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ logger = logging.getLogger("bili.db.connection")
 
 # Single source of truth for the *currently expected* schema. Bump together
 # with a new ddl/main_v{N}.sql when we ever do a real migration.
-SUPPORTED_MAIN_SCHEMA_VERSION = 2
-SUPPORTED_RAW_SCHEMA_VERSION = 1
+SUPPORTED_MAIN_SCHEMA_VERSION = 3
+SUPPORTED_RAW_SCHEMA_VERSION = 2
 
 DbKind = Literal["main", "raw"]
 
@@ -109,6 +109,7 @@ class Connection:
 
     def _apply_ddl_and_seed(self) -> None:
         assert self._conn is not None
+        self._verify_existing_schema_version_before_ddl()
         ddl_name = (
             f"main_v{SUPPORTED_MAIN_SCHEMA_VERSION}"
             if self._kind == "main"
@@ -121,17 +122,50 @@ class Connection:
         self._seed_meta()
         self._verify_schema_version()
 
+    def _expected_schema_version(self) -> int:
+        return (
+            SUPPORTED_MAIN_SCHEMA_VERSION
+            if self._kind == "main"
+            else SUPPORTED_RAW_SCHEMA_VERSION
+        )
+
+    def _verify_existing_schema_version_before_ddl(self) -> None:
+        """Reject incompatible existing DBs before applying current DDL."""
+        assert self._conn is not None
+        meta = self._conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'meta'",
+        ).fetchone()
+        if meta is None:
+            return
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise SchemaMismatchError(
+                f"{self._path}: existing meta table is not readable",
+            ) from exc
+        if row is None:
+            raise SchemaMismatchError(
+                f"{self._path}: existing meta.schema_version missing",
+            )
+        stored = int(row[0])
+        expected = self._expected_schema_version()
+        if stored != expected:
+            raise SchemaMismatchError(
+                f"{self._path}: schema_version={stored}, "
+                f"this build supports {expected}. "
+                f"Migration tooling for v{stored} to v{expected} is not implemented.",
+            )
+
     def _seed_meta(self) -> None:
         """Insert (uid, schema_version, created_at_ms) on first open; idempotent."""
         assert self._conn is not None
         import time
 
         now_ms = int(time.time() * 1000)
-        version = (
-            SUPPORTED_MAIN_SCHEMA_VERSION
-            if self._kind == "main"
-            else SUPPORTED_RAW_SCHEMA_VERSION
-        )
+        version = self._expected_schema_version()
         # INSERT OR IGNORE so re-opens don't bump created_at_ms.
         self._conn.executemany(
             "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -152,11 +186,7 @@ class Connection:
                 f"{self._path}: meta.schema_version missing after DDL apply",
             )
         stored = int(row[0])
-        expected = (
-            SUPPORTED_MAIN_SCHEMA_VERSION
-            if self._kind == "main"
-            else SUPPORTED_RAW_SCHEMA_VERSION
-        )
+        expected = self._expected_schema_version()
         if stored != expected:
             raise SchemaMismatchError(
                 f"{self._path}: schema_version={stored}, "
@@ -206,6 +236,14 @@ class Connection:
         """Return the first column of the first row, or None."""
         row = await self.fetch_one(sql, params)
         return None if row is None else row[0]
+
+    async def set_meta(self, key: str, value: str | int) -> None:
+        """Upsert one meta key."""
+        await self.execute(
+            "INSERT INTO meta(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
 
     # -- sync workers (called from to_thread) ------------------------------
 

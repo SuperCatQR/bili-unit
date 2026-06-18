@@ -300,10 +300,23 @@ class ParsingMaterializer:
             return 0
 
         count = 0
+        existing_subtitles = (
+            await self._parse_store.get_existing_item_ids("video_subtitle")
+            if mode == "incremental" else set()
+        )
+        existing_videos = await self._parse_store.get_existing_item_ids("video_work")
         for bvid, raw in payloads.items():
             if not bvid or not isinstance(raw, dict):
                 continue
+            if mode == "incremental" and bvid in existing_subtitles:
+                continue
             obj = VideoSubtitle.from_raw(bvid, raw)
+            if obj.pages and bvid not in existing_videos:
+                logger.warning(
+                    "video_subtitle_orphan_skipped",
+                    extra={"uid": uid, "bvid": bvid},
+                )
+                continue
             await self._save_typed("video_subtitle", obj)
             count += 1
 
