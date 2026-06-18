@@ -1,4 +1,4 @@
-"""TUI-facing service boundary over commands and observability snapshots."""
+"""TUI-facing workbench boundary over commands and observability snapshots."""
 
 from __future__ import annotations
 
@@ -35,10 +35,10 @@ class TaskStartCheck:
 
 
 @dataclass
-class BiliService:
+class BiliWorkbench:
     """Stable application-facing boundary for future TUI surfaces.
 
-    ``BiliCommand`` remains the write-side API. This service adds read-side
+    ``BiliCommand`` remains the write-side API. This workbench adds read-side
     dashboard helpers beside those commands so UI code has one dependency.
     """
 
@@ -200,13 +200,13 @@ class BiliService:
         await self.command.close()
 
 
-async def assemble_service(
+async def assemble_workbench(
     settings: BiliSettings | None = None,
     *,
     asr_backend_override: str | None = None,
     credential_provider: CredentialProvider | None = None,
-) -> BiliService:
-    """Assemble a TUI-facing service with write commands and read snapshots."""
+) -> BiliWorkbench:
+    """Assemble a TUI-facing workbench with write commands and read snapshots."""
     from . import assemble
 
     resolved = settings if settings is not None else get_settings()
@@ -215,31 +215,31 @@ async def assemble_service(
         asr_backend_override=asr_backend_override,
         credential_provider=credential_provider,
     )
-    return BiliService(command=command, settings=resolved)
+    return BiliWorkbench(command=command, settings=resolved)
 
 
 @asynccontextmanager
-async def service_session(
+async def workbench_session(
     settings: BiliSettings | None = None,
     *,
     asr_backend_override: str | None = None,
     credential_provider: CredentialProvider | None = None,
-) -> AsyncIterator[BiliService]:
-    """Context manager variant of :func:`assemble_service`."""
-    service = await assemble_service(
+) -> AsyncIterator[BiliWorkbench]:
+    """Context manager variant of :func:`assemble_workbench`."""
+    workbench = await assemble_workbench(
         settings,
         asr_backend_override=asr_backend_override,
         credential_provider=credential_provider,
     )
     try:
-        yield service
+        yield workbench
     finally:
-        await service.close()
+        await workbench.close()
 
 
 __all__ = [
-    "BiliService",
+    "BiliWorkbench",
     "TaskStartCheck",
-    "assemble_service",
-    "service_session",
+    "assemble_workbench",
+    "workbench_session",
 ]

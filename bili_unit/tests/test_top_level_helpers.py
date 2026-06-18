@@ -30,7 +30,7 @@ def test_expected_top_level_names() -> None:
         "ASRCommandResult",
         "ASRError",
         "BiliCommand",
-        "BiliService",
+        "BiliWorkbench",
         "BiliSettings",
         "CommandResult",
         "CredentialProvider",
@@ -47,14 +47,14 @@ def test_expected_top_level_names() -> None:
         "ProcessingError",
         "__version__",
         "assemble",
-        "assemble_service",
+        "assemble_workbench",
         "db_path",
         "get_settings",
         "list_uids",
         "raw_db_path",
         "reload_settings",
         "session",
-        "service_session",
+        "workbench_session",
     }
     assert set(bili_unit.__all__) == expected
 
@@ -64,7 +64,7 @@ def test_key_types_at_top_level() -> None:
     ``bili_unit`` directly."""
     from bili_unit import (
         BiliCommand,
-        BiliService,
+        BiliWorkbench,
         BiliSettings,
         CommandResult,
         ParsingCommandResult,
@@ -73,15 +73,15 @@ def test_key_types_at_top_level() -> None:
         TaskStartCheck,
         UidContext,
         assemble,
-        assemble_service,
+        assemble_workbench,
         db_path,
         raw_db_path,
-        service_session,
         session,
+        workbench_session,
     )
 
     assert BiliCommand is not None
-    assert BiliService is not None
+    assert BiliWorkbench is not None
     assert BiliSettings is not None
     assert CommandResult is not None
     assert ParsingCommandResult is not None
@@ -90,8 +90,8 @@ def test_key_types_at_top_level() -> None:
     assert TaskStartCheck is not None
     assert UidContext is not None
     assert callable(assemble)
-    assert callable(assemble_service)
+    assert callable(assemble_workbench)
     assert callable(session)
-    assert callable(service_session)
+    assert callable(workbench_session)
     assert callable(db_path)
     assert callable(raw_db_path)

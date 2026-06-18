@@ -35,11 +35,11 @@ from .processing import (  # noqa: F401
     ProcessingCommandResult,
     ProcessingError,
 )
-from .service import (  # noqa: F401
-    BiliService,
+from .workbench import (  # noqa: F401
+    BiliWorkbench,
     TaskStartCheck,
-    assemble_service,
-    service_session,
+    assemble_workbench,
+    workbench_session,
 )
 
 __version__ = _pkg_version("bili-unit")
@@ -148,7 +148,7 @@ __all__ = [
     "ASRCommandResult",
     "ASRError",
     "BiliCommand",
-    "BiliService",
+    "BiliWorkbench",
     "BiliSettings",
     "CommandResult",
     "CredentialProvider",
@@ -164,12 +164,12 @@ __all__ = [
     "UidContext",
     "__version__",
     "assemble",
-    "assemble_service",
+    "assemble_workbench",
     "db_path",
     "get_settings",
     "list_uids",
     "raw_db_path",
     "reload_settings",
     "session",
-    "service_session",
+    "workbench_session",
 ]

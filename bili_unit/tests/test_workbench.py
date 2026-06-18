@@ -8,7 +8,7 @@ from bili_unit import BiliSettings
 from bili_unit._db import UidContext
 from bili_unit.command import BiliCommand
 from bili_unit.fetching import CommandResult, TaskStatus
-from bili_unit.service import BiliService, service_session
+from bili_unit.workbench import BiliWorkbench, workbench_session
 
 
 def _settings(tmp_path: Path) -> BiliSettings:
@@ -38,7 +38,7 @@ class _FetchCommand:
         self.closed = True
 
 
-async def test_service_lists_known_uids(tmp_path: Path) -> None:
+async def test_workbench_lists_known_uids(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     root = Path(settings.bili_db_dir)
     root.mkdir(parents=True)
@@ -46,44 +46,44 @@ async def test_service_lists_known_uids(tmp_path: Path) -> None:
     (root / "42.raw.db").write_text("", encoding="utf-8")
     (root / "not-a-uid.db").write_text("", encoding="utf-8")
 
-    service = BiliService(
+    workbench = BiliWorkbench(
         command=BiliCommand(_FetchCommand(), settings=settings),
         settings=settings,
     )
 
-    assert service.list_uids() == [42]
+    assert workbench.list_uids() == [42]
 
 
-async def test_service_delegates_write_commands(tmp_path: Path) -> None:
+async def test_workbench_delegates_write_commands(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     fetch = _FetchCommand()
-    service = BiliService(
+    workbench = BiliWorkbench(
         command=BiliCommand(fetch, settings=settings),
         settings=settings,
     )
 
-    result = await service.fetch(123, endpoints=["user_info"], mode="full")
+    result = await workbench.fetch(123, endpoints=["user_info"], mode="full")
 
     assert result.status == TaskStatus.SUCCESS
     assert result.run_id == "run-1"
     assert fetch.calls == [(123, ["user_info"], "full")]
 
 
-async def test_service_inspect_uid_degrades_when_db_missing(tmp_path: Path) -> None:
+async def test_workbench_inspect_uid_degrades_when_db_missing(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    service = BiliService(
+    workbench = BiliWorkbench(
         command=BiliCommand(_FetchCommand(), settings=settings),
         settings=settings,
     )
 
-    snapshot = await service.inspect_uid(123)
+    snapshot = await workbench.inspect_uid(123)
 
     assert snapshot.uid == 123
     assert snapshot.run_summary is None
     assert snapshot.read_error == "main DB does not exist"
 
 
-async def test_service_run_summary_reads_existing_db(tmp_path: Path) -> None:
+async def test_workbench_run_summary_reads_existing_db(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     ctx = UidContext(uid=123, root=Path(settings.bili_db_dir))
     await ctx.open(raw=False)
@@ -97,25 +97,25 @@ async def test_service_run_summary_reads_existing_db(tmp_path: Path) -> None:
     finally:
         await ctx.close()
 
-    service = BiliService(
+    workbench = BiliWorkbench(
         command=BiliCommand(_FetchCommand(), settings=settings),
         settings=settings,
     )
 
-    summary = await service.run_summary(123)
+    summary = await workbench.run_summary(123)
 
     assert summary.uid == 123
     assert summary.fetch.status == "SUCCESS"
 
 
-async def test_service_can_start_task_allows_missing_uid(tmp_path: Path) -> None:
+async def test_workbench_can_start_task_allows_missing_uid(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    service = BiliService(
+    workbench = BiliWorkbench(
         command=BiliCommand(_FetchCommand(), settings=settings),
         settings=settings,
     )
 
-    check = await service.can_start_task(999)
+    check = await workbench.can_start_task(999)
 
     assert check.uid == 999
     assert check.can_start is True
@@ -123,7 +123,7 @@ async def test_service_can_start_task_allows_missing_uid(tmp_path: Path) -> None
     assert check.reason is None
 
 
-async def test_service_can_start_task_blocks_requested_running_stage(
+async def test_workbench_can_start_task_blocks_requested_running_stage(
     tmp_path: Path,
 ) -> None:
     settings = _settings(tmp_path)
@@ -139,13 +139,13 @@ async def test_service_can_start_task_blocks_requested_running_stage(
     finally:
         await ctx.close()
 
-    service = BiliService(
+    workbench = BiliWorkbench(
         command=BiliCommand(_FetchCommand(), settings=settings),
         settings=settings,
     )
 
-    blocked = await service.can_start_task(123, stages=("fetching",))
-    allowed = await service.can_start_task(123, stages=("asr",))
+    blocked = await workbench.can_start_task(123, stages=("fetching",))
+    allowed = await workbench.can_start_task(123, stages=("asr",))
 
     assert blocked.can_start is False
     assert blocked.active_stages == ("fetching",)
@@ -155,27 +155,27 @@ async def test_service_can_start_task_blocks_requested_running_stage(
     assert allowed.active_stages == ("fetching",)
 
 
-async def test_service_session_closes_underlying_command(
+async def test_workbench_session_closes_underlying_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import bili_unit.service as service_module
+    import bili_unit.workbench as workbench_module
 
     settings = _settings(tmp_path)
     fetch = _FetchCommand()
-    fake_service = BiliService(
+    fake_workbench = BiliWorkbench(
         command=BiliCommand(fetch, settings=settings),
         settings=settings,
     )
 
-    async def fake_assemble_service(*_args, **_kwargs):
-        return fake_service
+    async def fake_assemble_workbench(*_args, **_kwargs):
+        return fake_workbench
 
     monkeypatch.setattr(
-        service_module, "assemble_service", fake_assemble_service,
+        workbench_module, "assemble_workbench", fake_assemble_workbench,
     )
 
-    async with service_session(settings=settings) as service:
-        assert service is fake_service
+    async with workbench_session(settings=settings) as workbench:
+        assert workbench is fake_workbench
 
     assert fetch.closed is True
