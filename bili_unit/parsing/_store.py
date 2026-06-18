@@ -130,7 +130,7 @@ class ParsingStore:
           * uid       ← mid
           * name      ← name
           * sign      ← sign
-          * face_url  ← avatar          (UpProfile stores ``face`` under ``avatar``)
+          * face_url  ← face_url        (raw upstream field is ``face``)
           * level     ← level
           * follower  ← social["follower"]
           * following ← social["following"]
@@ -149,7 +149,7 @@ class ParsingStore:
                 int(profile.mid),
                 profile.name,
                 profile.sign,
-                profile.avatar,
+                profile.face_url,
                 int(profile.level or 0),
                 int(social.get("follower", 0) or 0),
                 int(social.get("following", 0) or 0),
@@ -165,10 +165,10 @@ class ParsingStore:
           * bvid        ← bvid
           * aid         ← aid
           * title       ← title
-          * description ← desc
-          * cover_url   ← pic
-          * duration_s  ← duration                       (already seconds)
-          * pubdate_ms  ← pubdate * 1000                 (s → ms conversion)
+          * description ← description
+          * cover_url   ← cover_url
+          * duration_s  ← duration_s                     (already seconds)
+          * pubdate_ms  ← pubdate_ms                     (already ms; converted in from_raw)
           * view_count  ← stat["view"]
           * danmaku, reply, favorite, coin, share        ← stat[…] (passthrough)
           * like_count  ← stat["like"]
@@ -183,7 +183,7 @@ class ParsingStore:
         stat = video.stat
         payload = _payload(video)
         now_ms = _now_ms()
-        pubdate_ms = _s_to_ms(video.pubdate)
+        pubdate_ms = video.pubdate_ms
 
         statements: list[tuple[str, tuple[Any, ...]]] = [
             (
@@ -215,9 +215,9 @@ class ParsingStore:
                     video.bvid,
                     video.aid,
                     video.title,
-                    video.desc,
-                    video.pic,
-                    int(video.duration or 0),
+                    video.description,
+                    video.cover_url,
+                    int(video.duration_s or 0),
                     pubdate_ms,
                     int(stat.view or 0),
                     int(stat.danmaku or 0),

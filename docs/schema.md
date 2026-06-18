@@ -1,5 +1,15 @@
 # schema —— bili_unit SQLite 数据契约
 
+## payload JSON ↔ 列名对齐
+
+自 Phase 4 起，typed payload JSON 里的 key 与 DDL 列名严格一致。具体：
+
+- `user_profile.face_url` ← `UpProfile.face_url`（payload key 同名；上游 raw 字段是 `face`）
+- `video.description` / `cover_url` / `duration_s` / `pubdate_ms` ← `VideoDetail` 同名字段
+- 单位约定：`duration_s` 是秒，`pubdate_ms` 是毫秒-epoch（`VideoDetail.pubdate_ms` 字段自身就是毫秒，`from_raw` 在读取上游秒值时当场 ×1000）
+
+---
+
 > 真相源：[main_v4.sql](../bili_unit/_db/ddl/main_v4.sql)、[raw_v2.sql](../bili_unit/_db/ddl/raw_v2.sql)
 > 适用版本：main DB `schema_version = 4`；raw DB `schema_version = 2`（各自独立编号）
 

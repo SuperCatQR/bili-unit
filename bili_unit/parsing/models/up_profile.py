@@ -106,7 +106,7 @@ class UpProfile:
     name: str = ""
     sex: str = ""
     sign: str = ""
-    avatar: str = ""
+    face_url: str = ""
     birthday: str = ""
     level: int = 0
     jointime: int = 0
@@ -171,7 +171,7 @@ class UpProfile:
             name=user_info.get("name", ""),
             sex=user_info.get("sex", ""),
             sign=user_info.get("sign", ""),
-            avatar=user_info.get("face", ""),
+            face_url=user_info.get("face", ""),  # raw upstream field is 'face'
             birthday=user_info.get("birthday", ""),
             level=user_info.get("level", 0),
             jointime=user_info.get("jointime", 0),
@@ -192,7 +192,7 @@ class UpProfile:
             "name": self.name,
             "sex": self.sex,
             "sign": self.sign,
-            "avatar": self.avatar,
+            "face_url": self.face_url,
             "birthday": self.birthday,
             "level": self.level,
             "jointime": self.jointime,
@@ -220,7 +220,8 @@ class UpProfile:
             name=d.get("name", ""),
             sex=d.get("sex", ""),
             sign=d.get("sign", ""),
-            avatar=d.get("avatar", ""),
+            # prefer new key "face_url"; fall back to old key "avatar" for legacy payloads
+            face_url=d.get("face_url") or d.get("avatar", ""),
             birthday=d.get("birthday", ""),
             level=d.get("level", 0),
             jointime=d.get("jointime", 0),
@@ -239,8 +240,8 @@ class UpProfile:
 
     def collect_image_jobs(self, uid: int) -> list[tuple[str, str]]:
         """Return [(url, dest_rel), ...] for image downloading."""
-        if self.avatar:
-            return [(self.avatar, "avatar.jpg")]
+        if self.face_url:
+            return [(self.face_url, "avatar.jpg")]
         return []
 
     def apply_image_results(self, results: list) -> None:

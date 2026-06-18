@@ -4,11 +4,11 @@
   "bvid": "BV1abcdef123",
   "aid": 9999001,
   "title": "Hands-on Rust async tutorial",
-  "desc": "Walk through tokio + select! patterns.",
-  "duration": 1830,
+  "description": "Walk through tokio + select! patterns.",
+  "duration_s": 1830,
   "ctime": 1700300000,
-  "pubdate": 1700300600,
-  "pic": "https://i0.hdslb.com/bfs/archive/BV1abcdef123_cover.jpg",
+  "pubdate_ms": 1700300600000,
+  "cover_url": "https://i0.hdslb.com/bfs/archive/BV1abcdef123_cover.jpg",
   "pages": [
     {
       "cid": 11,

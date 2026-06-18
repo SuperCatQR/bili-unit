@@ -123,11 +123,11 @@ class VideoDetail:
     bvid: str = ""
     aid: int | None = None
     title: str = ""
-    desc: str = ""
-    duration: int = 0
+    description: str = ""
+    duration_s: int = 0
     ctime: int | None = None
-    pubdate: int | None = None
-    pic: str = ""
+    pubdate_ms: int | None = None
+    cover_url: str = ""
     pages: list[PageInfo] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     stat: VideoStat = field(default_factory=VideoStat)
@@ -208,15 +208,19 @@ class VideoDetail:
             face=owner_raw.get("face", ""),
         ) if isinstance(owner_raw, dict) else OwnerInfo()
 
+        # pubdate: raw upstream delivers seconds-epoch; store as ms-epoch
+        raw_pubdate = info.get("pubdate")
+        pubdate_ms = (int(raw_pubdate) * 1000) if raw_pubdate is not None else None
+
         return cls(
             bvid=info.get("bvid", ""),
             aid=info.get("aid"),
             title=info.get("title", ""),
-            desc=info.get("desc", ""),
-            duration=info.get("duration", 0),
+            description=info.get("desc", ""),   # upstream raw field is 'desc'
+            duration_s=info.get("duration", 0),
             ctime=info.get("ctime"),
-            pubdate=info.get("pubdate"),
-            pic=info.get("pic", ""),
+            pubdate_ms=pubdate_ms,
+            cover_url=info.get("pic", ""),       # upstream raw field is 'pic'
             pages=pages,
             tags=tags,
             stat=stat,
@@ -236,11 +240,11 @@ class VideoDetail:
             "bvid": self.bvid,
             "aid": self.aid,
             "title": self.title,
-            "desc": self.desc,
-            "duration": self.duration,
+            "description": self.description,
+            "duration_s": self.duration_s,
             "ctime": self.ctime,
-            "pubdate": self.pubdate,
-            "pic": self.pic,
+            "pubdate_ms": self.pubdate_ms,
+            "cover_url": self.cover_url,
             "pages": [p.to_dict() for p in self.pages],
             "tags": list(self.tags),
             "stat": self.stat.to_dict(),
@@ -271,11 +275,12 @@ class VideoDetail:
             bvid=bvid,
             aid=d.get("aid"),
             title=d.get("title", ""),
-            desc=d.get("desc", ""),
-            duration=d.get("duration", 0),
+            # prefer new keys; fall back to old keys for legacy payloads
+            description=d.get("description") or d.get("desc", ""),
+            duration_s=d.get("duration_s") if d.get("duration_s") is not None else d.get("duration", 0),
             ctime=d.get("ctime"),
-            pubdate=d.get("pubdate"),
-            pic=d.get("pic", ""),
+            pubdate_ms=d.get("pubdate_ms") if d.get("pubdate_ms") is not None else d.get("pubdate"),
+            cover_url=d.get("cover_url") or d.get("pic", ""),
             pages=[PageInfo.from_dict(p) for p in d.get("pages", [])],
             tags=d.get("tags", []),
             stat=VideoStat.from_dict(d.get("stat", {})),
@@ -290,8 +295,8 @@ class VideoDetail:
 
     def collect_image_jobs(self, uid: int) -> list[tuple[str, str]]:
         """Return [(url, dest_rel), ...] for image downloading."""
-        if self.pic:
-            return [(self.pic, f"video/{self.bvid}_cover.jpg")]
+        if self.cover_url:
+            return [(self.cover_url, f"video/{self.bvid}_cover.jpg")]
         return []
 
     def apply_image_results(self, results: list) -> None:

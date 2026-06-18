@@ -201,7 +201,7 @@ class TestUpProfile:
         assert profile.name == "test_up"
         assert profile.sex == "男"
         assert profile.sign == "hello"
-        assert profile.avatar == "https://example.com/face.jpg"
+        assert profile.face_url == "https://example.com/face.jpg"
         assert profile.birthday == "01-01"
         assert profile.level == 5
         assert profile.jointime == 1500000000
@@ -241,7 +241,7 @@ class TestUpProfile:
         assert restored.name == profile.name
         assert restored.sex == profile.sex
         assert restored.sign == profile.sign
-        assert restored.avatar == profile.avatar
+        assert restored.face_url == profile.face_url
         assert restored.birthday == profile.birthday
         assert restored.level == profile.level
         assert restored.jointime == profile.jointime
@@ -327,15 +327,15 @@ class TestVideoDetail:
         assert video.bvid == "BV1xx411c7mD"
         assert video.aid == 12345
         assert video.title == "Test Video"
-        assert video.desc == "desc"
-        assert video.duration == 300
+        assert video.description == "desc"
+        assert video.duration_s == 300
         assert video.ctime == 1500000000
-        assert video.pubdate == 1500000001
-        assert video.pic == "https://example.com/cover.jpg"
+        assert video.pubdate_ms == 1500000001 * 1000
+        assert video.cover_url == "https://example.com/cover.jpg"
         assert len(video.pages) == 1
         assert video.pages[0].cid == 111
         assert video.pages[0].part == "Part 1"
-        assert video.pages[0].duration == 300
+        assert video.pages[0].duration == 300  # PageInfo.duration unchanged
         assert video.pages[0].dimension == {"width": 1920, "height": 1080}
         assert video.tags == ["tag1", "tag2"]
         assert video.stat.view == 10000
@@ -363,11 +363,11 @@ class TestVideoDetail:
         assert restored.bvid == video.bvid
         assert restored.aid == video.aid
         assert restored.title == video.title
-        assert restored.desc == video.desc
-        assert restored.duration == video.duration
+        assert restored.description == video.description
+        assert restored.duration_s == video.duration_s
         assert restored.ctime == video.ctime
-        assert restored.pubdate == video.pubdate
-        assert restored.pic == video.pic
+        assert restored.pubdate_ms == video.pubdate_ms
+        assert restored.cover_url == video.cover_url
         assert len(restored.pages) == len(video.pages)
         assert restored.pages[0].cid == video.pages[0].cid
         assert restored.pages[0].part == video.pages[0].part
@@ -442,7 +442,7 @@ class TestVideoDetail:
 
         assert video.bvid == "BV1minimal"
         assert video.aid is None
-        assert video.duration == 0
+        assert video.duration_s == 0
         assert video.pages == []
         assert video.stat.view == 0
         assert video.owner.mid is None
@@ -844,7 +844,7 @@ class TestEdgeCases:
 
         assert profile.mid is None
         assert profile.name == ""
-        assert profile.avatar == ""
+        assert profile.face_url == ""
         assert profile.social == {"following": 0, "follower": 0, "whisper": 0, "black": 0}
         assert profile.stats == {"archive_view": 0, "article_view": 0, "likes": 0}
 
