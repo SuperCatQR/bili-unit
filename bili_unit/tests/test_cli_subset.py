@@ -161,8 +161,10 @@ def test_sync_argparse_defaults_and_modes():
     parser = _build_parser()
     args = parser.parse_args(["sync", "1"])
     assert args.fetch_mode == "incremental"
-    assert args.parse_mode == "full"
+    assert args.parse_mode == "incremental"
     assert args.download_images is False
+    assert args.models is None
+    assert args.exclude_models is None
 
     args = parser.parse_args([
         "sync", "1",
@@ -173,6 +175,17 @@ def test_sync_argparse_defaults_and_modes():
     assert args.fetch_mode == "full"
     assert args.parse_mode == "incremental"
     assert args.download_images is True
+
+    args = parser.parse_args(["sync", "1", "--models", "video_work"])
+    assert args.models == ["video_work"]
+    assert args.exclude_models is None
+
+    args = parser.parse_args(["sync", "1", "--exclude-models", "video_subtitle"])
+    assert args.models is None
+    assert args.exclude_models == ["video_subtitle"]
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["sync", "1", "--models", "video_work", "--exclude-models", "opus_post"])
 
 
 def test_profile_parsing_chosen():

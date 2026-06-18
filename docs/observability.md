@@ -19,6 +19,11 @@ sink persists those events into the uid main DB:
 - `stage_run`: one row per command run.
 - `stage_event`: append-only semantic timeline for that run.
 
+`stage_run.status` can be `PENDING`, `RUNNING`, `SUCCESS`, `PARTIAL`,
+`FAILED`, `CANCELLED`, or `DRY_RUN`. `DRY_RUN` is used by `asr --dry-run`:
+the run records candidate discovery and estimates, but it does not mutate
+`stage_task[stage='asr']` or write `audio_transcription` rows.
+
 The current-state tables remain the control state:
 
 - `stage_task`
@@ -106,6 +111,8 @@ Current final summary behavior:
   events.
 - `asr`: ASR status, candidate count, coverage, missing/failed bvids,
   transcription row counts, attention events.
+  For dry-runs, the status is `DRY_RUN` and the summary is read from run
+  history rather than ASR task progress.
 
 ## Testing Contract
 

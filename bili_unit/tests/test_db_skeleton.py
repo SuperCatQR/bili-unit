@@ -251,7 +251,7 @@ async def test_open_raw_rejects_v1_without_auto_migration(tmp_path: Path) -> Non
         check.close()
 
 
-async def test_main_v3_stage_task_accepts_fetching_parsing_asr_only(
+async def test_main_v4_stage_task_accepts_fetching_parsing_asr_only(
     main_conn: Connection,
 ) -> None:
     for stage in ("fetching", "parsing", "asr"):
@@ -268,7 +268,7 @@ async def test_main_v3_stage_task_accepts_fetching_parsing_asr_only(
         )
 
 
-async def test_main_v3_stage_error_accepts_fetching_parsing_asr_only(
+async def test_main_v4_stage_error_accepts_fetching_parsing_asr_only(
     main_conn: Connection,
 ) -> None:
     for stage in ("fetching", "parsing", "asr"):
@@ -285,7 +285,7 @@ async def test_main_v3_stage_error_accepts_fetching_parsing_asr_only(
         )
 
 
-async def test_main_v3_rejects_invalid_status_values(
+async def test_main_v4_rejects_invalid_status_values(
     main_conn: Connection,
 ) -> None:
     with pytest.raises(sqlite3.IntegrityError):
@@ -298,6 +298,16 @@ async def test_main_v3_rejects_invalid_status_values(
             "INSERT INTO fetch_endpoint_state(endpoint, status, updated_at_ms) "
             "VALUES ('videos', 'ok', 1)",
         )
+
+
+async def test_main_v4_stage_run_accepts_dry_run_status(
+    main_conn: Connection,
+) -> None:
+    await main_conn.execute(
+        "INSERT INTO stage_run("
+        "    run_id, uid, command, status, started_at_ms, args_json"
+        ") VALUES ('run-dry', 1, 'asr', 'DRY_RUN', 1, '{}')",
+    )
     with pytest.raises(sqlite3.IntegrityError):
         await main_conn.execute(
             "INSERT INTO image_asset("
@@ -307,7 +317,7 @@ async def test_main_v3_rejects_invalid_status_values(
         )
 
 
-async def test_main_v3_rejects_orphan_stage_event(
+async def test_main_v4_rejects_orphan_stage_event(
     main_conn: Connection,
 ) -> None:
     with pytest.raises(sqlite3.IntegrityError):
@@ -317,7 +327,7 @@ async def test_main_v3_rejects_orphan_stage_event(
         )
 
 
-async def test_main_v3_creates_expected_error_indexes(
+async def test_main_v4_creates_expected_error_indexes(
     main_conn: Connection,
 ) -> None:
     rows = await main_conn.fetch_all("PRAGMA index_list(stage_error)")

@@ -1,7 +1,7 @@
 # schema —— bili_unit SQLite 数据契约
 
-> 真相源：[main_v3.sql](../bili_unit/_db/ddl/main_v3.sql)、[raw_v2.sql](../bili_unit/_db/ddl/raw_v2.sql)
-> 适用版本：main DB `schema_version = 3`；raw DB `schema_version = 2`（各自独立编号）
+> 真相源：[main_v4.sql](../bili_unit/_db/ddl/main_v4.sql)、[raw_v2.sql](../bili_unit/_db/ddl/raw_v2.sql)
+> 适用版本：main DB `schema_version = 4`；raw DB `schema_version = 2`（各自独立编号）
 
 bili_unit 自 Phase 3 起将自己重新定位为「被动持久化数据存储」：写侧通过 `BiliCommand` 编排三 stage，读侧 **直接 SQL 查询**——不再有 Python query facade。本文件描述消费方需要的 SQL 表面。
 
@@ -35,7 +35,7 @@ sqlite3 output/bili/123456.db "SELECT * FROM manifest_summary;"
 
 ### Schema versioning
 
-main DB `meta.schema_version` 当前为 `'3'`；raw DB `meta.schema_version` 当前为 `'2'`。迁移策略：DDL 不兼容修改时 bump major，并附带 `tools/migrate_*` 脚本；新增列、新增 view、新增 index 不算不兼容。运行时连接器检测到 `schema_version` 高于自己支持的最大版本会抛 `SchemaMismatchError`。
+main DB `meta.schema_version` 当前为 `'4'`；raw DB `meta.schema_version` 当前为 `'2'`。迁移策略：DDL 不兼容修改时 bump major，并附带 `tools/migrate_*` 脚本；新增列、新增 view、新增 index 不算不兼容。运行时连接器检测到 `schema_version` 高于自己支持的最大版本会抛 `SchemaMismatchError`。
 
 ## 2. Path helpers
 
@@ -59,7 +59,7 @@ main DB `meta.schema_version` 当前为 `'3'`；raw DB `meta.schema_version` 当
 | 列 | 类型 | 说明 |
 |----|------|------|
 | `key` | TEXT PK | 见下方约定 |
-| `value` | TEXT NOT NULL | 字符串化的值（main DB `schema_version='3'`、raw DB `schema_version='2'`、`uid='123456'`、ms-epoch 的 `'1718000000000'` 等） |
+| `value` | TEXT NOT NULL | 字符串化的值（main DB `schema_version='4'`、raw DB `schema_version='2'`、`uid='123456'`、ms-epoch 的 `'1718000000000'` 等） |
 
 约定 keys：`schema_version`、`uid`、`created_at_ms`、`last_fetched_at_ms`、`last_parsed_at_ms`、`last_processed_at_ms`。后三个是 stage 入口在写入收尾时刷新的「最近一次成功跑完时间」。
 
@@ -134,7 +134,7 @@ PK：`bvid`，FK CASCADE 到 `video`。
 |----|------|------|
 | `bvid` | TEXT PK | |
 | `status` | TEXT NOT NULL CHECK IN (`'pending'`,`'running'`,`'success'`,`'failed'`,`'skipped'`) | 状态机 |
-| `transcription_source` | TEXT | 文本来源（`MIMO-ASR` / `mock` / `whisper` / `subtitle` 等） |
+| `transcription_source` | TEXT | 文本来源（`MIMO-ASR` / `mock` / `subtitle` 等） |
 | `transcript` | TEXT | 转写全文（`success` / `skipped` 时非空） |
 | `audio_tokens` | INTEGER | LLM tokens 累计（计费用） |
 | `seconds` | REAL | 实际处理音频秒数 |
@@ -180,9 +180,9 @@ PK：`url_hash`（即 url 的 md5，便于按 url 唯一去重）。
 
 ## 4. Producer state 表（仅 debug 用）
 
-> ⚠️ 这三张表 **不属于消费方契约**，可能在 minor 版本调整列。需要稳定的话只读 §3 / §5。
-> Naming note: the user-facing command/event name and DB stage key are `asr`.
-> `process` remains only a CLI compatibility alias.
+> ⚠️ 这些表 **不属于消费方契约**，可能在 minor 版本调整列。需要稳定的话只读 §3 / §5。
+> Naming note: the user-facing command/event name and DB stage key are `asr`;
+> the old `process` CLI command is no longer exposed.
 
 ### 4.1 `stage_task`
 
@@ -206,6 +206,10 @@ PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error
 
 列：`run_id`（TEXT PK）/ `uid` / `command` / `status` /
 `started_at_ms` / `ended_at_ms` / `args_json` / `summary_json`。
+
+`status` CHECK 包含 `PENDING` / `RUNNING` / `SUCCESS` / `PARTIAL` / `FAILED`
+/ `CANCELLED` / `DRY_RUN`。`DRY_RUN` 表示命令完成了候选发现和估算，但没有更新
+stage task 或写入内容结果。
 
 索引：`idx_stage_run_uid_started(uid, started_at_ms DESC, run_id DESC)`。
 

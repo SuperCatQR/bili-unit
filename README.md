@@ -38,8 +38,8 @@ uv run python -m bili_unit asr <uid>           # ASR 转录视频音频（有完
 uv run python -m bili_unit delete-uid <uid> -y     # 删除某 uid 全部数据（不可逆）
 ```
 
-Naming note: `asr` is the primary command and DB stage name. `process` is kept
-only as a CLI compatibility alias.
+Naming note: `asr` is the user-facing command and DB stage name. The older
+`process` command is no longer exposed by the CLI.
 
 高级/调试入口仍保留：`fetch <uid>` 只抓 raw DB，`parse <uid>` 只把已有 raw DB 重新物化到主 DB。
 

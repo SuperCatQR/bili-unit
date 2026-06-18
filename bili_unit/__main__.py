@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 from pathlib import Path
 
 from ._cli_render import CliRenderer
 from ._env import get_settings
 from ._logging import configure_logging
 from .observability import RunSummary, load_run_summary
+
+logger = logging.getLogger("bili.cli")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -145,6 +148,7 @@ async def _handle_sync(args: argparse.Namespace) -> None:
     from bili_unit import session
 
     endpoints = _resolve_fetch_endpoints(args)
+    parse_models = _resolve_parse_models(args)
 
     renderer = CliRenderer()
     async with session() as cmd:
@@ -153,6 +157,7 @@ async def _handle_sync(args: argparse.Namespace) -> None:
             endpoints=endpoints,
             fetch_mode=args.fetch_mode,
             parse_mode=args.parse_mode,
+            parse_models=parse_models,
             download_images=args.download_images,
         )
         parse_status = result.parse.status.value if result.parse else "SKIPPED"
@@ -243,7 +248,12 @@ async def _load_cli_summary(
         if not filter_events_to_run:
             kwargs["filter_events_to_run"] = False
         return await load_run_summary(**kwargs)
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "cli_summary_load_failed",
+            extra={"uid": uid, "run_id": run_id, "error": str(exc)},
+            exc_info=True,
+        )
         return None
 
 
@@ -253,8 +263,9 @@ async def _handle_delete_uid(args: argparse.Namespace) -> None:
 
     main = db_path(args.uid)
     raw = raw_db_path(args.uid)
+    workdir = main.parent / str(args.uid)
     renderer = CliRenderer()
-    if not main.exists() and not raw.exists():
+    if not main.exists() and not raw.exists() and not workdir.exists():
         renderer.delete_missing(uid=args.uid)
         return
 
@@ -263,7 +274,7 @@ async def _handle_delete_uid(args: argparse.Namespace) -> None:
             uid=args.uid,
             main=main,
             raw=raw,
-            workdir=main.parent / str(args.uid),
+            workdir=workdir,
         )
         answer = input("Confirm delete? [y/N] ").strip().lower()
         if answer not in ("y", "yes"):
@@ -345,9 +356,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument(
         "--parse-mode",
         choices=["full", "incremental"],
-        default="full",
-        help="Parsing mode used by sync (default: full)",
+        default="incremental",
+        help="Parsing mode used by sync (default: incremental)",
     )
+    _add_sync_parse_selection_args(p_sync)
     p_sync.add_argument(
         "--download-images", "-i",
         action="store_true",
@@ -392,19 +404,18 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- asr ---
     p_proc = sub.add_parser(
         "asr",
-        aliases=["process"],
-        help="Run audio ASR for a uid (process is a compatibility alias)",
+        help="Run audio ASR for a uid",
     )
     p_proc.add_argument("uid", type=int, help="Target Bilibili user uid")
     p_proc.add_argument(
         "--mode", "-m",
         choices=["incremental", "full"],
         default="incremental",
-        help="ASR mode (default: incremental; internal DB stage remains 'processing')",
+        help="ASR mode (default: incremental)",
     )
     p_proc.add_argument(
         "--asr-backend", "-b",
-        choices=["mock", "mimo", "whisper"],
+        choices=["mock", "mimo"],
         default=None,
         help=(
             "Override BILI_PROCESSING_ASR_BACKEND for this run "
@@ -412,7 +423,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_proc.add_argument(
-        "--limit", type=int, default=None, metavar="N",
+        "--limit", type=_positive_int, default=None, metavar="N",
         help="Process only the first N discovered bvids (after other filters).",
     )
     _add_asr_selection_args(p_proc)
@@ -427,17 +438,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help=(
             "Discover candidates and print them without dispatching workers. "
-            "Task / progress are still written; status is SUCCESS."
+            "Does not update ASR task progress."
         ),
     )
     p_proc.add_argument(
-        "--max-audio-seconds", type=float, default=None, metavar="SECONDS",
+        "--max-audio-seconds", type=_positive_float, default=None, metavar="SECONDS",
         help=(
             "Stop before ASR dispatch if discovered audio exceeds this many seconds."
         ),
     )
     p_proc.add_argument(
-        "--max-audio-tokens", type=int, default=None, metavar="TOKENS",
+        "--max-audio-tokens", type=_positive_int, default=None, metavar="TOKENS",
         help=(
             "Stop before ASR dispatch if estimated audio tokens exceed this cap."
         ),
@@ -520,6 +531,26 @@ def _add_parse_selection_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_sync_parse_selection_args(parser: argparse.ArgumentParser) -> None:
+    model_group = parser.add_mutually_exclusive_group()
+    model_group.add_argument(
+        "--models",
+        dest="models",
+        nargs="+",
+        default=None,
+        metavar="MODEL",
+        help="Parsing model names to run after fetch.",
+    )
+    model_group.add_argument(
+        "--exclude-models",
+        dest="exclude_models",
+        nargs="+",
+        default=None,
+        metavar="MODEL",
+        help="Parsing model names to skip after fetch.",
+    )
+
+
 def _add_asr_selection_args(parser: argparse.ArgumentParser) -> None:
     bvid_group = parser.add_mutually_exclusive_group()
     bvid_group.add_argument(
@@ -540,6 +571,20 @@ def _add_asr_selection_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number")
+    return parsed
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -555,7 +600,6 @@ def main() -> None:
         "fetch": _handle_fetch,
         "parse": _handle_parse,
         "asr": _handle_asr,
-        "process": _handle_asr,
         "delete-uid": _handle_delete_uid,
         "login": _handle_login,
         "init-mimo": _handle_init_mimo,

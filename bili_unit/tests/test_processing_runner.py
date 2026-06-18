@@ -552,7 +552,7 @@ async def test_audio_pipeline_reads_main_db_without_raw_db(cmd, settings):
 
     result = await cmd.process_uid(uid, dry_run=True)
 
-    assert result.status == ProcessingTaskStatus.SUCCESS
+    assert result.status == ProcessingTaskStatus.DRY_RUN
     assert result.dry_run_candidates == bvids
     assert await _raw_db_exists(settings, uid) is False
 

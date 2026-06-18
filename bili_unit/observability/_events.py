@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 EventLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-RunStatus = Literal["PENDING", "RUNNING", "SUCCESS", "PARTIAL", "FAILED", "CANCELLED"]
+RunStatus = Literal[
+    "PENDING", "RUNNING", "SUCCESS", "PARTIAL", "FAILED", "CANCELLED", "DRY_RUN",
+]
 
 
 def now_ms() -> int:

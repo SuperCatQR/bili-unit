@@ -276,7 +276,8 @@ CREATE TABLE IF NOT EXISTS stage_run (
     command       TEXT NOT NULL,
     status        TEXT NOT NULL
                   CHECK (status IN (
-                      'PENDING','RUNNING','SUCCESS','PARTIAL','FAILED','CANCELLED'
+                      'PENDING','RUNNING','SUCCESS','PARTIAL','FAILED','CANCELLED',
+                      'DRY_RUN'
                   )),
     started_at_ms INTEGER NOT NULL CHECK (started_at_ms >= 0),
     ended_at_ms   INTEGER CHECK (ended_at_ms IS NULL OR ended_at_ms >= started_at_ms),

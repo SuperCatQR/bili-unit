@@ -11,9 +11,9 @@ from pathlib import Path
 _HERE = Path(__file__).parent
 
 # Whitelist of DDL files we know how to load. Keeps bumps deliberate: the
-# current main schema is v3, while raw DB is v2.
+# current main schema is v4, while raw DB is v2.
 _DDL_FILES: dict[str, str] = {
-    "main_v3": "main_v3.sql",
+    "main_v4": "main_v4.sql",
     "raw_v2": "raw_v2.sql",
 }
 

@@ -267,6 +267,41 @@ class _AudioMixin:
         )
         return candidates, estimate.to_dict(), []
 
+    async def _dry_run_audio(
+        self: Any,
+        uid: int,
+        mode: str,
+        *,
+        limit: int | None = None,
+        only_bvids: list[str] | None = None,
+        exclude_bvids: list[str] | None = None,
+        retry_failed_only: bool = False,
+    ) -> tuple[list[str], dict]:
+        audio_items, skipped, subtitle_done = await self._discover_audio_items(
+            uid,
+            mode,
+            only_bvids=only_bvids,
+            exclude_bvids=exclude_bvids,
+            retry_failed_only=retry_failed_only,
+            limit=limit,
+            dry_run=True,
+        )
+        candidates = [it.item_id for it in audio_items]
+        estimate = estimate_audio_work(
+            audio_items,
+            tokens_per_second=self._settings.bili_processing_asr_tokens_per_second,
+        ).to_dict()
+        logger.info(
+            "audio_dry_run",
+            extra={
+                "uid": uid,
+                "candidates": candidates,
+                "skipped": skipped,
+                "subtitle_done": subtitle_done,
+            },
+        )
+        return candidates, estimate
+
     async def _discover_audio_items(
         self: Any,
         uid: int,

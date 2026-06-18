@@ -29,7 +29,7 @@ logger = logging.getLogger("bili.db.connection")
 
 # Single source of truth for the *currently expected* schema. Bump together
 # with a new ddl/main_v{N}.sql when we ever do a real migration.
-SUPPORTED_MAIN_SCHEMA_VERSION = 3
+SUPPORTED_MAIN_SCHEMA_VERSION = 4
 SUPPORTED_RAW_SCHEMA_VERSION = 2
 
 DbKind = Literal["main", "raw"]

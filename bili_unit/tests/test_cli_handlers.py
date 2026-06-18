@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 
 import bili_unit
 from bili_unit import __main__ as cli
@@ -54,6 +55,7 @@ class _FakeCommand:
         endpoints=None,
         fetch_mode="incremental",
         parse_mode="full",
+        parse_models=None,
         download_images=False,
     ):
         from bili_unit.command import SyncCommandResult
@@ -277,6 +279,8 @@ async def test_sync_handler_passes_run_id_and_keeps_workflow_status(
         uid=123,
         fetch_mode="incremental",
         parse_mode="full",
+        models=None,
+        exclude_models=None,
         endpoints=None,
         exclude_endpoints=None,
         profile="all",
@@ -291,6 +295,48 @@ async def test_sync_handler_passes_run_id_and_keeps_workflow_status(
         "  models: SUCCESS=1",
     ]
     assert calls == [(123, "parse-run-1", False)]
+
+
+async def test_delete_uid_handler_deletes_orphan_workdir(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    uid = 123
+    workdir = tmp_path / str(uid)
+    workdir.mkdir()
+    (workdir / "cover.jpg").write_bytes(b"x")
+
+    monkeypatch.setattr(bili_unit, "db_path", lambda _uid: tmp_path / f"{uid}.db")
+    monkeypatch.setattr(
+        bili_unit,
+        "raw_db_path",
+        lambda _uid: tmp_path / f"{uid}.raw.db",
+    )
+
+    async def fake_delete_uid(_uid):
+        assert _uid == uid
+        assert workdir.exists()
+        for path in workdir.rglob("*"):
+            if path.is_file():
+                path.unlink()
+        workdir.rmdir()
+        return {"main_db": 0, "raw_db": 0, "workdir_files": 1}
+
+    command = _FakeCommand()
+    command.delete_uid = fake_delete_uid
+    monkeypatch.setattr(
+        bili_unit,
+        "session",
+        lambda **_kwargs: _FakeSession(command),
+    )
+
+    await cli._handle_delete_uid(argparse.Namespace(uid=uid, yes=True))
+
+    assert not workdir.exists()
+    assert capsys.readouterr().out.splitlines() == [
+        "  main_db=0, raw_db=0, workdir_files=1",
+    ]
 
 
 async def test_load_cli_summary_passes_run_id(monkeypatch) -> None:
@@ -310,6 +356,24 @@ async def test_load_cli_summary_passes_run_id(monkeypatch) -> None:
 
     assert summary is not None
     assert calls == [(123, "db-root", "run-exact", 12)]
+
+
+async def test_load_cli_summary_logs_fallback_reason(monkeypatch, caplog) -> None:
+    class _Settings:
+        bili_db_dir = "db-root"
+
+    async def fake_load_run_summary(**_kwargs):
+        raise RuntimeError("summary boom")
+
+    monkeypatch.setattr(cli, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(cli, "load_run_summary", fake_load_run_summary)
+
+    with caplog.at_level("DEBUG", logger="bili.cli"):
+        summary = await cli._load_cli_summary(123, run_id="run-exact")
+
+    assert summary is None
+    assert "cli_summary_load_failed" in caplog.text
+    assert "summary boom" in caplog.text
 
 
 async def _summary_none(uid: int, *, run_id: str | None = None):

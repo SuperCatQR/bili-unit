@@ -180,6 +180,34 @@ class ProcessingRunner(_AudioMixin):
                     },
                 )
 
+            if dry_run:
+                candidates, estimate = await self._dry_run_audio(
+                    uid,
+                    mode,
+                    limit=limit,
+                    only_bvids=only_bvids,
+                    exclude_bvids=exclude_bvids,
+                    retry_failed_only=retry_failed_only,
+                )
+                summary = {
+                    "status": ProcessingTaskStatus.DRY_RUN.value,
+                    "candidate_count": len(candidates),
+                    "estimate": estimate,
+                }
+                if reporter is not None:
+                    await reporter.emit(
+                        "asr.dry_run.completed",
+                        stage="asr",
+                        pipeline=_AUDIO,
+                        data={
+                            "candidates": candidates,
+                            "candidate_count": len(candidates),
+                            "estimate": estimate,
+                        },
+                    )
+                    await reporter.complete("DRY_RUN", summary=summary)
+                return ProcessingTaskStatus.DRY_RUN, candidates, estimate, [], None
+
             # Phase 0 — seed (or merge) the processing task envelope.
             await proc_store.init_task([_AUDIO])
             await proc_store.update_task_status(
@@ -481,6 +509,8 @@ __all__ = [
 def _run_status_from_task_status(status: ProcessingTaskStatus) -> str:
     if status == ProcessingTaskStatus.SUCCESS:
         return "SUCCESS"
+    if status == ProcessingTaskStatus.DRY_RUN:
+        return "DRY_RUN"
     if status == ProcessingTaskStatus.PARTIAL:
         return "PARTIAL"
     if status == ProcessingTaskStatus.RUNNING:

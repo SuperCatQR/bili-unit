@@ -21,6 +21,7 @@ from enum import StrEnum
 class ProcessingTaskStatus(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
+    DRY_RUN = "DRY_RUN"
     SUCCESS = "SUCCESS"
     PARTIAL = "PARTIAL"
     FAILED_PERMANENT = "FAILED_PERMANENT"

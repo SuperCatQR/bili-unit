@@ -116,9 +116,10 @@ class ProcessingCommand:
             exclude_bvids: skip this explicit set of bvids.
             retry_failed_only: only re-process bvids whose existing status is
                 FAILED (incremental-mode extension).
-            dry_run: discover candidates and write task / progress markers,
-                but skip worker dispatch. Status is SUCCESS; the candidate
-                list is returned via ``ProcessingCommandResult.dry_run_candidates``.
+            dry_run: discover candidates and write run history, but do not
+                update ASR task progress or dispatch workers. Status is
+                DRY_RUN; the candidate list is returned via
+                ``ProcessingCommandResult.dry_run_candidates``.
             max_audio_seconds / max_audio_tokens: optional pre-dispatch budget
                 caps. When exceeded, dispatch is skipped and the result reports
                 ``budget_exceeded``.

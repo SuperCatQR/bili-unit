@@ -80,8 +80,9 @@ class BiliSettings(BaseSettings):
     # Backend selection:
     #   mimo (default)  — MiMo cloud ASR via OpenAI-compatible chat completions.
     #   mock            — deterministic stub for tests / no-key environments.
-    #   whisper         — reserved for future local backend.
-    # CLI override: ``-b mock`` on the unified ``process`` command (see __main__).
+    # CLI-supported backends are ``mimo`` and ``mock``. ``whisper`` remains
+    # reserved in the factory for a possible future local backend.
+    # CLI override: ``-b mock`` on the unified ``asr`` command (see __main__).
     #
     # MiMo profile selects the base URL and is the recommended way to configure;
     # users do not have to memorise hosts.

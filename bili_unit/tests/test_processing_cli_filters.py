@@ -271,23 +271,20 @@ async def test_retry_failed_only_reports_missing_coverage(cmd, settings):
 
 
 async def test_dry_run_skips_worker_dispatch(cmd, settings):
-    """Dry-run still writes task / progress, but no worker is invoked."""
+    """Dry-run discovers candidates without mutating ASR task progress."""
     uid = 8004
     bvids = ["BVdr1", "BVdr2", "BVdr3"]
     await _seed_video_pages(settings, uid, bvids)
 
     result = await cmd.process_uid(uid, dry_run=True)
 
-    assert result.status == ProcessingTaskStatus.SUCCESS
+    assert result.status == ProcessingTaskStatus.DRY_RUN
     assert _dispatched_bvids == []
     assert result.dry_run_candidates is not None
     assert sorted(result.dry_run_candidates) == sorted(bvids)
 
-    # stage_task[stage='asr'] still seeded.
     task = await _read_processing_task(settings, uid)
-    assert task is not None
-    pipelines = task["payload"].get("pipelines", {})
-    assert "audio" in pipelines
+    assert task is None
 
     assert result.estimate == {
         "item_count": 3,
@@ -303,7 +300,7 @@ async def test_dry_run_with_no_videos_returns_success(cmd):
 
     result = await cmd.process_uid(uid, dry_run=True)
 
-    assert result.status == ProcessingTaskStatus.SUCCESS
+    assert result.status == ProcessingTaskStatus.DRY_RUN
     assert result.dry_run_candidates == []
     assert _dispatched_bvids == []
     assert result.estimate == {
@@ -382,13 +379,29 @@ def test_cli_argparse_retry_failed_only_flag():
     assert args.retry_failed_only is True
 
 
-def test_cli_argparse_process_alias_still_supported():
+def test_cli_argparse_process_alias_removed():
     from bili_unit.__main__ import _build_parser
 
     parser = _build_parser()
-    args = parser.parse_args(["process", "1234", "--dry-run"])
-    assert args.command == "process"
-    assert args.dry_run is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["process", "1234", "--dry-run"])
+
+
+def test_cli_argparse_rejects_unimplemented_whisper_backend():
+    from bili_unit.__main__ import _build_parser
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["asr", "1234", "--asr-backend", "whisper"])
+
+
+def test_cli_argparse_rejects_nonpositive_numeric_limits():
+    from bili_unit.__main__ import _build_parser
+
+    parser = _build_parser()
+    for flag in ("--limit", "--max-audio-seconds", "--max-audio-tokens"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["asr", "1234", flag, "0"])
 
 
 def test_cli_argparse_retry_failed_only_conflicts_with_full():
