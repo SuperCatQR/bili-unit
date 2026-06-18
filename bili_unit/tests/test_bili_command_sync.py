@@ -65,7 +65,7 @@ async def test_sync_continues_parse_after_partial_fetch():
     assert result.fetch.status == TaskStatus.PARTIAL
     assert result.parse is not None
     assert result.run_id == "parse-run"
-    assert parse.calls == [(123, "full", None, False)]
+    assert parse.calls == [(123, "incremental", None, False)]
 
 
 async def test_sync_skips_parse_after_hard_fetch_failure():

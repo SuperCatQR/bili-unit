@@ -67,9 +67,8 @@ async def stores(tmp_path: Path):
 # the end-to-end orchestration tests in test_parsing_command.py.
 # ---------------------------------------------------------------------------
 
-async def test_incremental_user_profile_skips_existing_row(stores):
-    """A pre-existing user_profile row + ``incremental`` mode → no fetch read,
-    no re-write. Exercises ``_should_skip_item`` for the singleton path."""
+async def test_incremental_user_profile_skips_when_parsed_row_is_fresh(stores):
+    """A parsed row newer than its raw inputs is skipped in incremental mode."""
     ctx, parse_store, fetch_store = stores
 
     existing = UpProfile(mid=UID, name="already parsed")
@@ -78,11 +77,13 @@ async def test_incremental_user_profile_skips_existing_row(stores):
     # Seed every required raw payload — if the materializer wrongly reads
     # them in incremental mode, the assertion below would catch it because
     # ``UpProfile.from_raw`` would overwrite the saved name.
-    await fetch_store.save_raw_payload("user_info", "", {"mid": UID, "name": "fresh"})
     await fetch_store.save_raw_payload(
-        "relation_info", "", {"following": 0, "follower": 0},
+        "user_info", "", {"mid": UID, "name": "fresh"}, fetched_at_ms=1,
     )
-    await fetch_store.save_raw_payload("up_stat", "", {})
+    await fetch_store.save_raw_payload(
+        "relation_info", "", {"following": 0, "follower": 0}, fetched_at_ms=1,
+    )
+    await fetch_store.save_raw_payload("up_stat", "", {}, fetched_at_ms=1)
 
     materializer = ParsingMaterializer(
         ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
@@ -96,8 +97,8 @@ async def test_incremental_user_profile_skips_existing_row(stores):
     assert payload["name"] == "already parsed"
 
 
-async def test_incremental_video_work_skips_existing_items(stores):
-    """Pre-existing BVold row is preserved; only BVnew is parsed and written."""
+async def test_incremental_video_work_skips_only_fresh_existing_items(stores):
+    """Fresh existing rows are preserved; new or stale rows are parsed."""
     ctx, parse_store, fetch_store = stores
 
     old = VideoDetail(bvid="BVold", title="old title")
@@ -113,10 +114,11 @@ async def test_incremental_video_work_skips_existing_items(stores):
         },
         "tags": [],
     }
-    # Both BVold and BVnew sit in the fanout payload table; the materializer
-    # must skip BVold because of the incremental contract.
+    # BVold's raw is older than the parsed row, so it is skipped.
     await fetch_store.save_raw_payload(
-        "video_detail", "BVold", {"info": {"bvid": "BVold", "title": "stale"}, "tags": []},
+        "video_detail", "BVold",
+        {"info": {"bvid": "BVold", "title": "stale"}, "tags": []},
+        fetched_at_ms=1,
     )
     await fetch_store.save_raw_payload("video_detail", "BVnew", fresh_raw)
 
@@ -133,6 +135,39 @@ async def test_incremental_video_work_skips_existing_items(stores):
     assert old_payload["title"] == "old title"
     assert new_payload is not None
     assert new_payload["title"] == "BVnew fresh"
+
+
+async def test_incremental_video_work_reparses_when_raw_is_newer(stores):
+    ctx, parse_store, fetch_store = stores
+
+    old = VideoDetail(bvid="BVold", title="old title")
+    await parse_store.save_video(old)
+    await fetch_store.save_raw_payload(
+        "video_detail",
+        "BVold",
+        {
+            "info": {
+                "bvid": "BVold",
+                "title": "fresh title",
+                "pages": [],
+                "stat": {},
+                "owner": {},
+            },
+            "tags": [],
+        },
+        fetched_at_ms=9_999_999_999_999,
+    )
+
+    materializer = ParsingMaterializer(
+        ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
+    )
+
+    count = await materializer.parse_model(UID, "video_work", "incremental")
+
+    assert count == 1
+    payload = await parse_store.get_video_payload("BVold")
+    assert payload is not None
+    assert payload["title"] == "fresh title"
 
 
 async def test_full_mode_user_profile_overwrites_existing(stores):

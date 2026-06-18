@@ -187,6 +187,19 @@ class FetchingStore:
             return None
         return json.loads(row["payload"])
 
+    async def get_raw_fetched_at_ms(
+        self, endpoint: str, item_id: str = "",
+    ) -> int | None:
+        """Return fetched_at_ms for (endpoint, item_id), or None if absent."""
+        row = await self._ctx.raw.fetch_one(
+            "SELECT fetched_at_ms FROM raw_payload "
+            "WHERE endpoint = ? AND item_id = ?",
+            (endpoint, item_id),
+        )
+        if row is None:
+            return None
+        return int(row["fetched_at_ms"])
+
     async def get_progress(self, endpoint: str) -> dict | None:
         """Return {cursor, total, fetched, updated_at_ms} for ``endpoint``, or None."""
         row = await self._ctx.raw.fetch_one(
@@ -235,6 +248,21 @@ class FetchingStore:
             (endpoint,),
         )
         return {r["item_id"]: json.loads(r["payload"]) for r in rows}
+
+    async def list_fanout_payload_records(self, endpoint: str) -> dict[str, dict]:
+        """Return fanout rows keyed by item_id, including payload and timestamp."""
+        rows = await self._ctx.raw.fetch_all(
+            "SELECT item_id, payload, fetched_at_ms FROM raw_payload "
+            "WHERE endpoint = ? AND item_id <> ''",
+            (endpoint,),
+        )
+        return {
+            r["item_id"]: {
+                "payload": json.loads(r["payload"]),
+                "fetched_at_ms": int(r["fetched_at_ms"]),
+            }
+            for r in rows
+        }
 
     async def list_item_ages_ms(self, endpoint: str) -> dict[str, int]:
         """Return ``{item_id: fetched_at_ms}`` for refresh-mode age comparisons."""

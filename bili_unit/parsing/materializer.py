@@ -20,6 +20,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("bili.parsing.materializer")
 
 
+class MissingRequiredRawPayloadError(RuntimeError):
+    """Raised when a parsing model's required raw input is absent."""
+
+    def __init__(self, model_name: str, missing_endpoints: tuple[str, ...]) -> None:
+        self.model_name = model_name
+        self.missing_endpoints = missing_endpoints
+        super().__init__(
+            "missing required raw payload(s) for "
+            f"{model_name}: {', '.join(missing_endpoints)}",
+        )
+
+
 # Map parsing model names → ParsingStore.save_* methods. Keeps the per-handler
 # code free of save-method naming knowledge so adding a new model is one entry.
 _SAVE_METHODS: dict[str, str] = {
@@ -69,9 +81,24 @@ class ParsingMaterializer:
         mode: str,
     ) -> int:
         """Parse one model and write typed objects to the parsing store."""
+        missing = await self.missing_required_endpoints(model_name)
+        if missing:
+            raise MissingRequiredRawPayloadError(model_name, missing)
         spec = get_spec(model_name)
         handler = getattr(self, spec.materializer_handler)
         return await handler(uid, mode)
+
+    async def missing_required_endpoints(self, model_name: str) -> tuple[str, ...]:
+        """Return required source endpoints that have no raw payload yet."""
+        spec = get_spec(model_name)
+        missing: list[str] = []
+        for endpoint in spec.required_endpoints:
+            payload = await self._fetch_store.get_raw_payload(endpoint)
+            if payload is None:
+                fanout = await self._fetch_store.list_completed_items(endpoint)
+                if not fanout:
+                    missing.append(endpoint)
+        return tuple(missing)
 
     async def download_images(self, uid: int) -> dict[str, Any]:
         """Download images for all parsed models and rewrite local paths.
@@ -226,19 +253,52 @@ class ParsingMaterializer:
     ) -> bool:
         return item_id in await self._parse_store.get_existing_item_ids(model_name)
 
-    async def _should_skip_item(
-        self, model_name: str, item_id: str, mode: str,
+    async def _item_is_fresh(
+        self,
+        model_name: str,
+        item_id: str,
+        raw_fetched_at_ms: int | None,
     ) -> bool:
-        return mode == "incremental" and await self._item_already_parsed(
+        """Return True when the parsed row is at least as new as its raw input."""
+        if raw_fetched_at_ms is None:
+            return False
+        parsed_at_ms = await self._parse_store.get_item_parsed_at_ms(
             model_name, item_id,
         )
+        return parsed_at_ms is not None and parsed_at_ms >= raw_fetched_at_ms
+
+    async def _should_skip_item(
+        self,
+        model_name: str,
+        item_id: str,
+        mode: str,
+        raw_fetched_at_ms: int | None = None,
+    ) -> bool:
+        return mode == "incremental" and await self._item_is_fresh(
+            model_name, item_id, raw_fetched_at_ms,
+        )
+
+    async def _latest_raw_fetched_at_ms(
+        self, endpoints: tuple[str, ...],
+    ) -> int | None:
+        timestamps: list[int] = []
+        for endpoint in endpoints:
+            ts = await self._fetch_store.get_raw_fetched_at_ms(endpoint)
+            if ts is not None:
+                timestamps.append(ts)
+        return max(timestamps) if timestamps else None
 
     # -- per-model handlers -------------------------------------------------
 
     async def _parse_user_profile(self, uid: int, mode: str) -> int:
         from .models.up_profile import UpProfile
 
-        if await self._should_skip_item("user_profile", str(uid), mode):
+        raw_fetched_at_ms = await self._latest_raw_fetched_at_ms(
+            ("user_info", "relation_info", "up_stat", "overview_stat"),
+        )
+        if await self._should_skip_item(
+            "user_profile", str(uid), mode, raw_fetched_at_ms,
+        ):
             logger.info("user_profile already parsed; skipped", extra={"uid": uid})
             return 0
 
@@ -271,13 +331,16 @@ class ParsingMaterializer:
     async def _parse_video_work(self, uid: int, mode: str) -> int:
         from .models.video_detail import VideoDetail
 
-        payloads = await self._fetch_store.list_fanout_payloads("video_detail")
+        records = await self._fetch_store.list_fanout_payload_records("video_detail")
 
         count = 0
-        for bvid, raw in payloads.items():
+        for bvid, record in records.items():
+            raw = record.get("payload")
             if not bvid or not isinstance(raw, dict):
                 continue
-            if await self._should_skip_item("video_work", bvid, mode):
+            if await self._should_skip_item(
+                "video_work", bvid, mode, record.get("fetched_at_ms"),
+            ):
                 continue
             obj = VideoDetail.from_raw(raw)
             await self._save_typed("video_work", obj)
@@ -290,7 +353,9 @@ class ParsingMaterializer:
         from .models.video_subtitle import VideoSubtitle
 
         try:
-            payloads = await self._fetch_store.list_fanout_payloads("video_subtitle")
+            records = await self._fetch_store.list_fanout_payload_records(
+                "video_subtitle",
+            )
         except Exception:
             logger.warning(
                 "video_subtitle fanout unavailable",
@@ -305,13 +370,20 @@ class ParsingMaterializer:
             if mode == "incremental" else set()
         )
         existing_videos = await self._parse_store.get_existing_item_ids("video_work")
-        for bvid, raw in payloads.items():
+        for bvid, record in records.items():
+            raw = record.get("payload")
             if not bvid or not isinstance(raw, dict):
                 continue
-            if mode == "incremental" and bvid in existing_subtitles:
+            if (
+                mode == "incremental"
+                and bvid in existing_subtitles
+                and await self._should_skip_item(
+                    "video_subtitle", bvid, mode, record.get("fetched_at_ms"),
+                )
+            ):
                 continue
             obj = VideoSubtitle.from_raw(bvid, raw)
-            if obj.pages and bvid not in existing_videos:
+            if bvid not in existing_videos:
                 logger.warning(
                     "video_subtitle_orphan_skipped",
                     extra={"uid": uid, "bvid": bvid},
@@ -360,6 +432,9 @@ class ParsingMaterializer:
             )
 
         cvid_to_lists = _build_cvid_to_lists(list_details)
+        listing_fetched_at_ms = await self._fetch_store.get_raw_fetched_at_ms(
+            "articles",
+        )
 
         for page in pages:
             if not isinstance(page, dict):
@@ -374,7 +449,19 @@ class ParsingMaterializer:
                 if not cvid:
                     continue
 
-                if await self._should_skip_item("article_post", cvid, mode):
+                raw_fetched_at_ms = await self._fetch_store.get_raw_fetched_at_ms(
+                    "article_detail", cvid,
+                )
+                timestamps = [
+                    ts for ts in (raw_fetched_at_ms, listing_fetched_at_ms)
+                    if ts is not None
+                ]
+                if await self._should_skip_item(
+                    "article_post",
+                    cvid,
+                    mode,
+                    max(timestamps) if timestamps else None,
+                ):
                     continue
 
                 item = Article.from_raw(
@@ -412,6 +499,8 @@ class ParsingMaterializer:
                 exc_info=True,
             )
 
+        listing_fetched_at_ms = await self._fetch_store.get_raw_fetched_at_ms("opus")
+
         for page in pages:
             if not isinstance(page, dict):
                 continue
@@ -425,7 +514,19 @@ class ParsingMaterializer:
                 if not opus_id_str:
                     continue
 
-                if await self._should_skip_item("opus_post", opus_id_str, mode):
+                detail_fetched_at_ms = await self._fetch_store.get_raw_fetched_at_ms(
+                    "opus_detail", opus_id_str,
+                )
+                timestamps = [
+                    ts for ts in (detail_fetched_at_ms, listing_fetched_at_ms)
+                    if ts is not None
+                ]
+                if await self._should_skip_item(
+                    "opus_post",
+                    opus_id_str,
+                    mode,
+                    max(timestamps) if timestamps else None,
+                ):
                     continue
 
                 item = OpusPost.from_raw(list_item, details.get(opus_id_str))
@@ -449,6 +550,8 @@ class ParsingMaterializer:
         if not isinstance(pages, list):
             return 0
 
+        raw_fetched_at_ms = await self._fetch_store.get_raw_fetched_at_ms("dynamics")
+
         for page in pages:
             if not isinstance(page, dict):
                 continue
@@ -462,7 +565,9 @@ class ParsingMaterializer:
                 if not id_str:
                     continue
 
-                if await self._should_skip_item("dynamic_event", id_str, mode):
+                if await self._should_skip_item(
+                    "dynamic_event", id_str, mode, raw_fetched_at_ms,
+                ):
                     continue
 
                 item = DynamicPost.from_raw(raw_item)

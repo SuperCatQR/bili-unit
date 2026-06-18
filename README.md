@@ -82,7 +82,7 @@ output/bili/{uid}/          # workdir（音频缓存、临时文件等）
 ## 开发
 
 ```bash
-uv run pytest -v                                   # 全量测试（~7.5 分钟，无网络）
+uv run pytest -v                                   # 全量测试（~30 秒，无网络）
 uv run ruff check                                  # lint
 ```
 

@@ -111,8 +111,10 @@ B 站抓取/解析到的字幕事实（含 AI 标记），`audio_transcription` 
   `bilibili_subtitle_start_seconds` / `bilibili_subtitle_end_seconds` /
   `bilibili_subtitle_duration_seconds` / `bilibili_subtitle_segment_text`。
 
-这两张派生表随 `video_subtitle.payload` 重建；外键只连到
-`video_subtitle`，不强绑 `video_page`，以保留 re-parse 与历史 payload 的弹性。
+这两张派生表随 `video_subtitle.payload` 重建；派生页同时外键到
+`video_subtitle` 与当前 `video_page(bvid, page_no)`，避免 SQL 查询表出现
+孤儿 page 或 page_no 漂移。没有可用字幕时仍保留 `video_subtitle` 主表行，
+但不产生 page/segment 派生行；ASR 不会因此短路。
 
 ### 3.5 `article` —— 专栏
 
@@ -167,7 +169,7 @@ PK：`url_hash`（即 url 的 md5，便于按 url 唯一去重）。
 | 列 | 类型 | 说明 |
 |----|------|------|
 | `url_hash` | TEXT PK | md5(url) |
-| `source_kind` | TEXT NOT NULL | `'video_cover'` / `'opus_image'` / `'article_image'` 等 |
+| `source_kind` | TEXT NOT NULL | `'profile.face'` / `'video.cover'` / `'article.image'` / `'opus.image'` / `'dynamic.image'` 等 |
 | `source_id` | TEXT NOT NULL | 来源行的 PK（bvid / opus_id / cvid…） |
 | `url` | TEXT NOT NULL | 原 URL |
 | `file_path` | TEXT | 逻辑相对路径（如 `video/<bvid>_cover.jpg`），下载失败时可能为 NULL |

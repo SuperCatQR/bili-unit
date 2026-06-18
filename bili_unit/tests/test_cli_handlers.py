@@ -54,7 +54,7 @@ class _FakeCommand:
         *,
         endpoints=None,
         fetch_mode="incremental",
-        parse_mode="full",
+        parse_mode="incremental",
         parse_models=None,
         download_images=False,
     ):
@@ -278,7 +278,7 @@ async def test_sync_handler_passes_run_id_and_keeps_workflow_status(
     args = argparse.Namespace(
         uid=123,
         fetch_mode="incremental",
-        parse_mode="full",
+        parse_mode="incremental",
         models=None,
         exclude_models=None,
         endpoints=None,

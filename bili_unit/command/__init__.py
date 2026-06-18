@@ -67,7 +67,7 @@ class BiliCommand:
         endpoints: list[str] | None = None,
         *,
         fetch_mode: str = "incremental",
-        parse_mode: str = "full",
+        parse_mode: str = "incremental",
         parse_models: list[str] | None = None,
         download_images: bool = False,
     ) -> SyncCommandResult:

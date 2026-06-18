@@ -184,12 +184,10 @@ async def test_parse_uid_all_models_succeed_status_success(
     assert event_names.count("parse.model.completed") == len(EXPECTED_MODEL_ORDER)
 
 
-async def test_parse_uid_zero_count_in_full_mode_yields_partial(
+async def test_parse_uid_zero_count_in_full_mode_stays_success(
     parsing_command: ParsingCommand, settings: BiliSettings,
 ):
-    """In full mode, a model returning zero is treated as "nothing fetched",
-    which downgrades the overall status to PARTIAL even though the model
-    itself still ran SUCCESS."""
+    """A model returning zero can mean a valid empty result, not a failure."""
     counts = {
         "user_profile": 1,
         "video_work": 0,
@@ -208,11 +206,11 @@ async def test_parse_uid_zero_count_in_full_mode_yields_partial(
     ):
         result = await parsing_command.parse_uid(uid=2002)
 
-    assert result.status == ParsingTaskStatus.PARTIAL
+    assert result.status == ParsingTaskStatus.SUCCESS
 
     task = await _read_task(2002, settings)
     assert task is not None
-    assert task["status"] == ParsingTaskStatus.PARTIAL.value
+    assert task["status"] == ParsingTaskStatus.SUCCESS.value
 
     # Zero-count models are still SUCCESS at the model level — they ran fine,
     # just found nothing.
@@ -262,6 +260,27 @@ async def test_parse_uid_model_failure_marks_failed_and_partial(
     assert failed[0]["data"]["error_type"] == "RuntimeError"
 
 
+async def test_parse_uid_missing_required_raw_marks_model_skipped(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    result = await parsing_command.parse_uid(uid=3103, models=["video_work"])
+
+    assert result.status == ParsingTaskStatus.PARTIAL
+
+    task = await _read_task(3103, settings)
+    assert task is not None
+    assert task["models"]["video_work"] == {
+        "status": ParsingModelStatus.SKIPPED.value,
+        "count": 0,
+    }
+
+    events = await _list_stage_events(3103, settings)
+    skipped = [event for event in events if event["event"] == "parse.model.skipped"]
+    assert len(skipped) == 1
+    assert skipped[0]["item_id"] == "video_work"
+    assert skipped[0]["data"]["missing_endpoints"] == ["video_detail"]
+
+
 async def test_parse_uid_incremental_mode_with_existing_rows_stays_success(
     parsing_command: ParsingCommand, settings: BiliSettings,
 ):
@@ -296,9 +315,7 @@ async def test_parse_uid_incremental_mode_with_existing_rows_stays_success(
     ):
         result = await parsing_command.parse_uid(uid=uid, mode="incremental")
 
-    # user_profile + video_work already have rows, but the other 4 don't and
-    # they returned 0 in incremental → those still trigger PARTIAL.
-    assert result.status == ParsingTaskStatus.PARTIAL
+    assert result.status == ParsingTaskStatus.SUCCESS
 
 
 async def test_parse_uid_with_download_images_calls_downloader(

@@ -10,6 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 
 from bili_unit._db import UidContext
@@ -418,6 +419,47 @@ async def test_save_video_subtitle_ai_only(store_and_ctx):
     assert decoded == sub.to_dict()
 
 
+async def test_save_video_subtitle_empty_result_keeps_main_row(store_and_ctx):
+    store, ctx = store_and_ctx
+    sub = VideoSubtitle.from_raw(
+        "BV_EMPTY_SUB",
+        {
+            "subtitle": [
+                {
+                    "page_index": 0,
+                    "cid": 1,
+                    "content": [],
+                },
+            ],
+        },
+    )
+    await store.save_video(_with_bvid(_video(), "BV_EMPTY_SUB"))
+    await store.save_video_subtitle(sub)
+
+    row = await ctx.main.fetch_one(
+        "SELECT has_bilibili_human_uploaded_or_official_subtitle, "
+        "has_bilibili_platform_ai_generated_subtitle, payload "
+        "FROM video_subtitle WHERE bvid = ?",
+        ("BV_EMPTY_SUB",),
+    )
+    assert row is not None
+    assert row["has_bilibili_human_uploaded_or_official_subtitle"] == 0
+    assert row["has_bilibili_platform_ai_generated_subtitle"] == 0
+    decoded = json.loads(row["payload"])
+    assert decoded["bilibili_subtitle_pages"] == []
+
+    page_count = await ctx.main.fetch_value(
+        "SELECT COUNT(*) FROM video_subtitle_page WHERE bvid = ?",
+        ("BV_EMPTY_SUB",),
+    )
+    segment_count = await ctx.main.fetch_value(
+        "SELECT COUNT(*) FROM video_subtitle_segment WHERE bvid = ?",
+        ("BV_EMPTY_SUB",),
+    )
+    assert page_count == 0
+    assert segment_count == 0
+
+
 async def test_save_video_subtitle_keeps_mixed_ai_pages(store_and_ctx):
     store, ctx = store_and_ctx
     raw = {
@@ -767,6 +809,33 @@ async def test_get_existing_item_ids_per_model(store):
     assert await store.get_existing_item_ids("article_post") == {"99887766"}
     assert await store.get_existing_item_ids("opus_post") == {"opus_xyz"}
     assert await store.get_existing_item_ids("dynamic_event") == {"dyn_abcdef"}
+
+
+async def test_get_item_parsed_at_ms_returns_timestamps(store):
+    await store.save_user_profile(_up_profile())
+    await store.save_video(_video())
+    await store.save_video_subtitle(_video_subtitle_for_existing_video())
+    await store.save_article(_article())
+    await store.save_opus(_opus())
+    await store.save_dynamic(_dynamic())
+
+    assert await store.get_item_parsed_at_ms("user_profile", "42") is not None
+    assert await store.get_item_parsed_at_ms(
+        "video_work", "BV1xx411c7mD",
+    ) is not None
+    assert await store.get_item_parsed_at_ms(
+        "video_subtitle", "BV1xx411c7mD",
+    ) is not None
+    assert await store.get_item_parsed_at_ms(
+        "article_post", "99887766",
+    ) is not None
+    assert await store.get_item_parsed_at_ms("opus_post", "opus_xyz") is not None
+    assert await store.get_item_parsed_at_ms(
+        "dynamic_event", "dyn_abcdef",
+    ) is not None
+    assert await store.get_item_parsed_at_ms("video_work", "missing") is None
+    with pytest.raises(ValueError):
+        await store.get_item_parsed_at_ms("unknown", "id")
 
 
 def _video_subtitle_for_existing_video() -> VideoSubtitle:

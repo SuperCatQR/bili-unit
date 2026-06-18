@@ -233,12 +233,6 @@ class ParsingStore:
         """
         if not sub.bvid:
             raise ValueError("VideoSubtitle.bvid is required to persist a row")
-        if not sub.pages:
-            await self._ctx.main.execute(
-                "DELETE FROM video_subtitle WHERE bvid = ?",
-                (sub.bvid,),
-            )
-            return
 
         payload = sub.to_dict()
         now_ms = _now_ms()
@@ -503,6 +497,20 @@ class ParsingStore:
         rows = await self._ctx.main.fetch_all(f"SELECT {pk} FROM {table}")
         # uid is INTEGER everywhere else it's TEXT; coerce uniformly to str
         return {str(r[0]) for r in rows}
+
+    async def get_item_parsed_at_ms(self, model: str, item_id: str) -> int | None:
+        """Return parsed_at_ms for one parsed item, or None if absent."""
+        try:
+            table, pk = _MODEL_TABLE[model]
+        except KeyError as exc:
+            raise ValueError(f"unknown parsing model: {model!r}") from exc
+        row = await self._ctx.main.fetch_one(
+            f"SELECT parsed_at_ms FROM {table} WHERE {pk} = ?",
+            (item_id,),
+        )
+        if row is None:
+            return None
+        return int(row["parsed_at_ms"])
 
     async def get_video_payload(self, bvid: str) -> dict | None:
         """Return the JSON payload for ``bvid`` (or None if absent)."""

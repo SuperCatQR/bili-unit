@@ -20,7 +20,7 @@ from . import (
     ParsingTaskStatus,
 )
 from ._store import ParsingStore
-from .materializer import ParsingMaterializer
+from .materializer import MissingRequiredRawPayloadError, ParsingMaterializer
 from .specs import MODEL_ORDER
 
 if TYPE_CHECKING:
@@ -133,9 +133,10 @@ class ParsingCommand:
                         data={"mode": mode},
                     )
                     count = await materializer.parse_model(uid, model_name, mode)
+                    model_status = ParsingModelStatus.SUCCESS
                     await parse_store.update_task_model_status(
                         model_name,
-                        ParsingModelStatus.SUCCESS.value,
+                        model_status.value,
                         count,
                     )
                     await reporter.emit(
@@ -148,13 +149,33 @@ class ParsingCommand:
                             "count": count,
                         },
                     )
-                    if count == 0 and not (
-                        mode == "incremental"
-                        and await self._model_has_existing_items(
-                            parse_store, model_name,
-                        )
-                    ):
-                        overall_status = ParsingTaskStatus.PARTIAL
+                except MissingRequiredRawPayloadError as exc:
+                    logger.info(
+                        "model_parse_skipped_missing_raw",
+                        extra={
+                            "uid": uid,
+                            "model": model_name,
+                            "missing_endpoints": list(exc.missing_endpoints),
+                        },
+                    )
+                    await parse_store.update_task_model_status(
+                        model_name,
+                        ParsingModelStatus.SKIPPED.value,
+                        0,
+                    )
+                    await reporter.emit(
+                        "parse.model.skipped",
+                        stage="parsing",
+                        level="WARNING",
+                        item_type="model",
+                        item_id=model_name,
+                        message=str(exc),
+                        data={
+                            "reason": "missing_required_raw_payload",
+                            "missing_endpoints": list(exc.missing_endpoints),
+                        },
+                    )
+                    overall_status = ParsingTaskStatus.PARTIAL
                 except Exception as exc:
                     logger.error(
                         "model_parse_failed",

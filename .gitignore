@@ -4,6 +4,7 @@
 # Tool / IDE metadata
 .codegraph/
 .workbuddy/
+.reasonix/
 
 # Test coverage
 .coverage

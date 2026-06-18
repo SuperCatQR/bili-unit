@@ -7,12 +7,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 
 from bili_unit._db import UidContext
 from bili_unit.fetching._store import FetchingStore
 from bili_unit.parsing._store import ParsingStore
-from bili_unit.parsing.materializer import ParsingMaterializer
+from bili_unit.parsing.materializer import (
+    MissingRequiredRawPayloadError,
+    ParsingMaterializer,
+)
 from bili_unit.parsing.models.video_detail import PageInfo, VideoDetail
 from bili_unit.parsing.models.video_subtitle import (
     PARSER,
@@ -460,17 +464,17 @@ async def test_materializer_writes_video_subtitle(stores):
 
 
 async def test_materializer_returns_zero_when_no_fanout(stores):
-    """No fanout entries → handler returns 0 without writing anything."""
+    """No required fanout raw → parse_model reports missing required input."""
     ctx, parse_store, fetch_store = stores
 
     materializer = ParsingMaterializer(
         ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
     )
-    count = await materializer.parse_model(
-        uid=UID, model_name="video_subtitle", mode="full",
-    )
+    with pytest.raises(MissingRequiredRawPayloadError):
+        await materializer.parse_model(
+            uid=UID, model_name="video_subtitle", mode="full",
+        )
 
-    assert count == 0
     assert await parse_store.get_existing_item_ids("video_subtitle") == set()
 
 
@@ -486,7 +490,7 @@ async def test_materializer_skips_existing_in_incremental_mode(stores):
 
     # Fanout offers both BV01 (with a different lan) and BV02.
     await fetch_store.save_raw_payload(
-        "video_subtitle", "BV01", _zh_subtitle_raw("zh-CN"),
+        "video_subtitle", "BV01", _zh_subtitle_raw("zh-CN"), fetched_at_ms=1,
     )
     await fetch_store.save_raw_payload(
         "video_subtitle", "BV02", _zh_subtitle_raw("zh-CN"),
@@ -536,6 +540,33 @@ async def test_materializer_skips_orphan_video_subtitle(stores):
     assert count == 1
     assert await parse_store.get_video_subtitle_payload("BVHASVIDEO") is not None
     assert await parse_store.get_video_subtitle_payload("BVORPHAN") is None
+
+
+async def test_materializer_keeps_empty_video_subtitle_row(stores):
+    ctx, parse_store, fetch_store = stores
+
+    await _seed_parent_video(parse_store, "BVEMPTY")
+    await fetch_store.save_raw_payload(
+        "video_subtitle",
+        "BVEMPTY",
+        {
+            "subtitle": [
+                {"page_index": 0, "cid": 1, "content": []},
+            ],
+        },
+    )
+
+    materializer = ParsingMaterializer(
+        ctx=ctx, parse_store=parse_store, fetch_store=fetch_store,
+    )
+    count = await materializer.parse_model(
+        uid=UID, model_name="video_subtitle", mode="full",
+    )
+
+    assert count == 1
+    payload = await parse_store.get_video_subtitle_payload("BVEMPTY")
+    assert payload is not None
+    assert payload["bilibili_subtitle_pages"] == []
 
 
 async def test_materializer_writes_ai_only_to_main_db(stores):

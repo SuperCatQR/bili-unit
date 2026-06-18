@@ -167,6 +167,17 @@ async def test_get_raw_payload_missing(store: FetchingStore) -> None:
     assert await store.get_raw_payload("user_info", "BVXYZ") is None
 
 
+async def test_get_raw_fetched_at_ms_round_trip(store: FetchingStore) -> None:
+    await store.save_raw_payload("user_info", "", {"ok": True}, fetched_at_ms=111)
+    await store.save_raw_payload(
+        "video_detail", "BV1", {"ok": True}, fetched_at_ms=222,
+    )
+
+    assert await store.get_raw_fetched_at_ms("user_info") == 111
+    assert await store.get_raw_fetched_at_ms("video_detail", "BV1") == 222
+    assert await store.get_raw_fetched_at_ms("missing") is None
+
+
 async def test_get_progress_round_trip_string_cursor(store: FetchingStore) -> None:
     await store.save_progress(
         "videos", {"cursor": "tok-1", "total": 10, "fetched": 3},
@@ -225,6 +236,25 @@ async def test_list_fanout_payloads_round_trip(store: FetchingStore) -> None:
 
 async def test_list_fanout_payloads_empty(store: FetchingStore) -> None:
     assert await store.list_fanout_payloads("video_detail") == {}
+
+
+async def test_list_fanout_payload_records_round_trip(
+    store: FetchingStore,
+) -> None:
+    await store.save_raw_payload(
+        "video_detail", "BV1", {"id": 1}, fetched_at_ms=1000,
+    )
+    await store.save_raw_payload(
+        "video_detail", "BV2", {"id": 2}, fetched_at_ms=2000,
+    )
+    await store.save_raw_payload(
+        "video_detail", "", {"meta": True}, fetched_at_ms=500,
+    )
+
+    assert await store.list_fanout_payload_records("video_detail") == {
+        "BV1": {"payload": {"id": 1}, "fetched_at_ms": 1000},
+        "BV2": {"payload": {"id": 2}, "fetched_at_ms": 2000},
+    }
 
 
 async def test_list_item_ages_ms_round_trip(store: FetchingStore) -> None:
