@@ -96,7 +96,7 @@ _Avoid_: list_id。
 ### 状态机
 
 **mode（incremental / refresh / full）**:
-fetching 与 asr 共享部分执行语义。`incremental` 跳过已成功、重试失败；`refresh` 介于两者间（fetching 的 item-level 检查 7 天 freshness window；asr 不支持 refresh）；`full` 忽略已有数据全量重跑。parsing 只支持 `full` / `incremental` 两档。
+fetching 与 asr 共享部分执行语义。`incremental` 跳过已成功、重试失败；`refresh` 介于两者间（fetching 的 item-level 检查 7 天 freshness window；asr 不支持 refresh）；`full` 忽略已有数据全量重跑。parsing 只支持 `full` / `incremental` 两档，其中 `incremental` 只跳过 `parsed_at_ms >= raw_payload.fetched_at_ms` 的项目。
 _Avoid_: strategy, run type。
 
 ### 出口面

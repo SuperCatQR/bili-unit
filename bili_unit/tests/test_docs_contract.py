@@ -134,6 +134,10 @@ def test_current_docs_do_not_expose_removed_cli_or_storage_contracts(path: Path)
         "output/bili/processing/asr_cache",
         "parsing / processing",
         "processing 通过 `FetchingStore` 读取 raw DB",
+        "workdir/images/",
+        "video_cover",
+        "opus_image",
+        "article_image",
     ]
     for phrase in forbidden:
         assert phrase not in text, f"{path} contains outdated phrase: {phrase}"

@@ -9,7 +9,13 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class ParsingSpec:
-    """Static configuration for one parsing model."""
+    """Static configuration for one parsing model.
+
+    ``required_endpoints`` means the minimum raw inputs needed to materialize
+    a row. It is intentionally distinct from a model's ``is_complete`` rule:
+    list-only article/opus rows can be useful even when detail endpoints are
+    missing.
+    """
 
     name: str
     materializer_handler: str

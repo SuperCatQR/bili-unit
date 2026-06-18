@@ -88,7 +88,7 @@ command      ProcessingCommand锛沺rocess_uid() 缂栨帓 audio pipeline + retr
 _db          SQLite 鎸佷箙鍖栧眰锛坧aths / connection / context / DDL锛夛紱鎸?uid 娲剧敓 main DB / raw DB / workdir
 main DB      {bili_db_dir}/{uid}.db 鈥斺€?娑堣垂鏂瑰绾︼紱6 寮犲唴瀹硅〃 + image_asset + stage_task / fetch_endpoint_state / stage_error + manifest_summary / video_full views
 raw DB       {bili_db_dir}/{uid}.raw.db 鈥斺€?producer-private锛況aw_payload + fetch_progress
-workdir      {bili_db_dir}/{uid}/ 鈥斺€?images锛坧arsing 涓嬭浇锛? audio temp & ASR cache锛坧rocessing 涓棿浜х墿锛夛紱DB 鍐呭彧瀛樼浉瀵硅矾寰?
+workdir      {bili_db_dir}/{uid}/ 鈥斺€?audio temp & ASR cache锛坧rocessing 涓棿浜х墿锛夛紱images 榛樿瀛樺叆 image_asset.data
 ```
 
 ```text
@@ -143,7 +143,7 @@ fetching.command  鈫?fetching.runner 鈫?auth 鈫?_env
                                                        鈹斺攢 main DB (stage_task + fetch_endpoint_state + stage_error)
 parsing.command   鈫?parsing.materializer 鈫?FetchingStore (read raw_payload)
                                           鈫?models[*].from_raw() 鈫?typed object
-                                          鈫?ImageDownloader锛堝彲閫夛級鈫?workdir/images/
+                                          鈫?ImageDownloader锛堝彲閫夛級鈫?image_asset.data + logical file_path
                                           鈫?ParsingStore 鈫?main DB (user_profile / video / video_subtitle /
                                                                      article / opus_post / dynamic_event /
                                                                      video_page / image_asset / stage_task)
@@ -184,7 +184,7 @@ ASR 杩涘害锛坰tage_task[stage='asr'].payload.pipelines[*].items锛?
 澶勭悊缁撴灉锛坅udio_transcription锛?
 raw 瀛樺偍锛坽uid}.raw.db锛?
 temp / asr_cache 瀛樺偍锛坵orkdir 浜岃繘鍒剁洰褰曪級
-parsing 瀛樺偍锛坱yped objects 琛?+ workdir/images/锛?
+parsing 瀛樺偍锛坱yped objects 琛?+ image_asset.data锛?
 main DB 瀛樺偍锛坽uid}.db锛?
 閿欒鐘舵€侊紙stage_error锛?
 鎶撳彇鏃堕棿锛坢eta.last_fetched_at_ms / fetched_at_ms锛?

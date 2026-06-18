@@ -12,6 +12,7 @@ from bili_unit.parsing.models.dynamic import DynamicPost
 from bili_unit.parsing.models.opus import OpusPost
 from bili_unit.parsing.models.up_profile import UpProfile
 from bili_unit.parsing.models.video_detail import VideoDetail
+from bili_unit.parsing.specs import get_spec
 
 # ---------------------------------------------------------------------------
 # UpProfile
@@ -117,6 +118,11 @@ def test_article_incomplete_with_only_listing_ref():
     assert a.is_complete is False
 
 
+def test_article_required_endpoint_is_minimum_materialization_input():
+    """Spec required endpoints are not the same as object completeness."""
+    assert get_spec("article_post").required_endpoints == ("articles",)
+
+
 # ---------------------------------------------------------------------------
 # OpusPost
 # ---------------------------------------------------------------------------
@@ -138,6 +144,11 @@ def test_opus_incomplete_with_only_listing_ref():
         source_refs=[SourceRef("opus", "500")],
     )
     assert o.is_complete is False
+
+
+def test_opus_required_endpoint_is_minimum_materialization_input():
+    """The listing endpoint can materialize a row; detail makes it complete."""
+    assert get_spec("opus_post").required_endpoints == ("opus",)
 
 
 # ---------------------------------------------------------------------------

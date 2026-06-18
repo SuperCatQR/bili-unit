@@ -280,12 +280,4 @@ class ParsingCommand:
     async def close(self) -> None:
         """No-op: stores are now per-call resources."""
 
-    @staticmethod
-    async def _model_has_existing_items(
-        store: ParsingStore, model_name: str,
-    ) -> bool:
-        """Return True if ``model_name`` already has rows in the main DB."""
-        return bool(await store.get_existing_item_ids(model_name))
-
-
 __all__: list[str] = ["ParsingCommand"]
