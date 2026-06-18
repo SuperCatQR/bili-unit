@@ -190,6 +190,87 @@ class _EndpointMixin:
                 data=data,
             )
 
+    async def _build_known_ids_for_incremental(
+        self: Any,
+        uid: int,
+        spec: EndpointSpec,
+        ep_name: str,
+        mode: str,
+        progress_cursor: Any,
+    ) -> tuple[set[str] | None, int, bool, list[Any]]:
+        """Build the known-ID set from stored pages for incremental/refresh runs.
+
+        Returns (known_ids, stored_total_count, stored_cursor_incomplete,
+        stored_pages).  When the conditions for an incremental scan are not
+        met, returns (None, 0, False, []).
+        """
+        id_paths = spec.item_id_paths or ([spec.item_id_path] if spec.item_id_path else None)
+        if (
+            progress_cursor
+            or mode not in ("incremental", "refresh")
+            or spec.pagination_strategy == "none"
+        ):
+            return None, 0, False, []
+
+        existing = await self._store.get_raw_payload(ep_name)
+        if existing is None or id_paths is None:
+            logger.info(
+                "incremental_no_stored_data",
+                extra={"uid": uid, "endpoint": ep_name},
+            )
+            return None, 0, False, []
+
+        stored_pages = existing.get("pages", [])
+        if not isinstance(stored_pages, list):
+            stored_pages = []
+        stored_total_count = _stored_total_count(stored_pages)
+        stored_cursor_incomplete = _stored_cursor_incomplete(
+            stored_pages, spec.pagination_strategy,
+        )
+        known_ids: set[str] = set()
+        for stored_page in stored_pages:
+            for item_id in _extract_item_ids_multi(stored_page, id_paths):
+                known_ids.add(item_id)
+        logger.info(
+            "incremental_scan_started",
+            extra={"uid": uid, "endpoint": ep_name, "known_id_count": len(known_ids)},
+        )
+        return known_ids, stored_total_count, stored_cursor_incomplete, stored_pages
+
+    async def _prepare_request_state(
+        self: Any,
+        spec: EndpointSpec,
+        ep_name: str,
+        mode: str,
+        known_ids: set[str] | None,
+        progress: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], list[Any]]:
+        """Derive initial request_params and stored_pages_base.
+
+        Returns (request_params, stored_pages_base).
+        """
+        request_params = spec.params_strategy.copy()
+        if known_ids is not None:
+            # incremental mode: always start from page 1, ignore stored progress
+            request_params = spec.params_strategy.copy()
+        elif progress is not None:
+            cursor = progress.get("cursor")
+            if cursor and isinstance(cursor, dict):
+                # cursor stored as either dict (page params) or string token;
+                # the store decodes JSON-shaped cursors back into dict form.
+                # Plain string cursors are opaque to the runner — endpoints
+                # with token cursors handle that themselves through fetch_fn.
+                request_params = cursor
+
+        stored_pages_base: list[Any] = []
+        if known_ids is None and spec.pagination_strategy != "none" and mode != "full":
+            existing_payload = await self._store.get_raw_payload(ep_name)
+            existing_pages = (existing_payload or {}).get("pages", [])
+            if isinstance(existing_pages, list):
+                stored_pages_base = list(existing_pages)
+
+        return request_params, stored_pages_base
+
     async def _run_endpoint_inner(
         self: Any,
         uid: int,
@@ -211,55 +292,24 @@ class _EndpointMixin:
         progress = await self._store.get_progress(ep_name)
         progress_cursor = progress.get("cursor") if progress is not None else None
 
-        # -- incremental mode: build known_ids from stored data --
-        known_ids: set[str] | None = None
-        stored_total_count = 0
-        stored_cursor_incomplete = False
         id_paths = spec.item_id_paths or ([spec.item_id_path] if spec.item_id_path else None)
-        if (
-            not progress_cursor
-            and mode in ("incremental", "refresh")
-            and spec.pagination_strategy != "none"
-        ):
-            existing = await self._store.get_raw_payload(ep_name)
-            if existing is not None and id_paths is not None:
-                stored_pages = existing.get("pages", [])
-                if isinstance(stored_pages, list):
-                    stored_total_count = _stored_total_count(stored_pages)
-                    stored_cursor_incomplete = _stored_cursor_incomplete(
-                        stored_pages, spec.pagination_strategy,
-                    )
-                else:
-                    stored_pages = []
-                known_ids = set()
-                for stored_page in stored_pages:
-                    for item_id in _extract_item_ids_multi(stored_page, id_paths):
-                        known_ids.add(item_id)
-                logger.info(
-                    "incremental_scan_started",
-                    extra={"uid": uid, "endpoint": ep_name, "known_id_count": len(known_ids)},
-                )
-            else:
-                # no stored data — fall back to full fetch
-                logger.info(
-                    "incremental_no_stored_data",
-                    extra={"uid": uid, "endpoint": ep_name},
-                )
+
+        # -- incremental mode: build known_ids from stored data --
+        (
+            known_ids,
+            stored_total_count,
+            stored_cursor_incomplete,
+            stored_pages,
+        ) = await self._build_known_ids_for_incremental(
+            uid, spec, ep_name, mode, progress_cursor,
+        )
 
         initial_known_count = len(known_ids) if known_ids is not None else 0
 
-        request_params = spec.params_strategy.copy()
-        if known_ids is not None:
-            # incremental mode: always start from page 1, ignore stored progress
-            request_params = spec.params_strategy.copy()
-        elif progress is not None:
-            cursor = progress.get("cursor")
-            if cursor and isinstance(cursor, dict):
-                # cursor stored as either dict (page params) or string token;
-                # the store decodes JSON-shaped cursors back into dict form.
-                # Plain string cursors are opaque to the runner — endpoints
-                # with token cursors handle that themselves through fetch_fn.
-                request_params = cursor
+        # -- prepare initial request params and stored pages base --
+        request_params, stored_pages_base = await self._prepare_request_state(
+            spec, ep_name, mode, known_ids, progress,
+        )
 
         settings = self._settings
         max_retries = settings.bili_fetching_max_retries
@@ -269,12 +319,6 @@ class _EndpointMixin:
 
         # track pages fetched in THIS run (for incremental overwrite)
         pages_this_run: list[dict[str, Any]] = []
-        stored_pages_base: list[Any] = []
-        if known_ids is None and spec.pagination_strategy != "none" and mode != "full":
-            existing_payload = await self._store.get_raw_payload(ep_name)
-            existing_pages = (existing_payload or {}).get("pages", [])
-            if isinstance(existing_pages, list):
-                stored_pages_base = list(existing_pages)
         boundary_hit = False  # set when all IDs on a page are known
         pagination_loop_detected = False
         seen_page_requests: set[tuple[tuple[str, str], ...]] = set()
