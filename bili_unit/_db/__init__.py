@@ -1,7 +1,7 @@
 # bili_unit._db — SQLite persistence layer.
 #
 # Replaces the old bili_unit._storage (file-directory JSON KV store).
-# See docs/history/refactor-plan-sqlite.md for the full transition plan.
+# See docs/schema.md for the current on-disk contract.
 #
 # Public surface:
 #

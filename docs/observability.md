@@ -1,7 +1,6 @@
 # Run Observability
 
-This document describes the current run-observability read side. The
-architecture decision is recorded in [ADR 0001](adr/0001-run-observability.md).
+This document describes the current run-observability read side.
 
 ## Current Shape
 

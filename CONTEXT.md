@@ -107,4 +107,4 @@ _Avoid_: service, facade, api。
 
 ## Notes
 
-- 详细结构约束见 `docs/structure/bili.md`；实现现状见 `docs/feature/{fetching,parsing,processing}.md`（后者是真相源）。
+- 详细结构约束见 `docs/architecture.md`；数据契约见 `docs/schema.md`。

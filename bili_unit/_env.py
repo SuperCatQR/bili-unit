@@ -39,7 +39,7 @@ class BiliSettings(BaseSettings):
     #   {bili_db_dir}/{uid}.db        ← consumer contract  (parsing + processing tables, task state, errors)
     #   {bili_db_dir}/{uid}.raw.db    ← producer-private   (raw fetching payloads + cursor)
     #   {bili_db_dir}/{uid}/          ← workdir            (audio caches / temp files)
-    # See docs/history/refactor-plan-sqlite.md for the full layout rationale.
+    # See docs/schema.md for the current on-disk contract.
     bili_db_dir: str = "output/bili"
 
     # === fetching stage ===

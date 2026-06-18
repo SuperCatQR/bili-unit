@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from ..audio._asr_backend import ASRBackend
     from ..audio._asr_cache import ASRCacheStore
 
-# Boundaries (docs/structure/bili.md §8): processing runner must not import
+# Boundaries (docs/architecture.md): processing runner must not import
 # fetching.auth directly.  The caller (assemble / ProcessingCommand) injects
 # a provider callable so this mixin stays decoupled from the fetching stage.
 # CredentialProvider itself lives in bili_unit._types. This module imports it

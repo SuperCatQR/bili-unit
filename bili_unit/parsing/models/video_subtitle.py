@@ -5,7 +5,7 @@
 # whose ``content`` array contains one entry per language with an inline
 # ``body`` of timed segments (when the subtitle URL fetch succeeded).
 #
-# See docs/structure/fetching-contract.md §4.7 for the upstream shape.
+# See docs/endpoint-contract.md for the upstream shape.
 
 from __future__ import annotations
 
@@ -249,7 +249,7 @@ class VideoSubtitle:
     def from_raw(cls, bvid: str, raw: dict) -> VideoSubtitle:
         """Build from the fetching ``video_subtitle`` raw_payload.
 
-        ``raw`` shape (see fetching-contract §4.7):
+        ``raw`` shape (see docs/endpoint-contract.md):
             {"pages": [...],
              "subtitle": [
                  {"page_index": 0, "cid": ..., "part": "...",

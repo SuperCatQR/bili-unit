@@ -93,7 +93,7 @@ workdir      {bili_db_dir}/{uid}/ 鈥斺€?images锛坧arsing 涓嬭浇锛? aud
 
 ```text
 SQLite 鏄敮涓€绋冲畾 deliverable锛涙秷璐规柟鐢?stdlib sqlite3 鐩磋繛涓?DB 鏌?SQL銆?
-鍏蜂綋琛ㄤ笌瀛楁璇箟瑙?docs/schema.md锛岃惤鐩樻牸寮忚 docs/feature/*.md 涓?docs/structure/fetching-contract.md銆?
+Tables and fields are documented in docs/schema.md; raw endpoint payload shapes are documented in docs/endpoint-contract.md.
 ```
 
 ### 鍏ュ彛
@@ -253,10 +253,9 @@ bili_unit/                # Python 鍖呮牴锛坧yproject 閲?packages = ["bili
 ```text
 浠ｇ爜鐜扮姸锛堢粨鏋?vs 瀹炵幇锛?
   涓婅〃涓?bili_unit 浠撳簱褰撳墠鐨勫疄闄呭竷灞€锛屽寘绾у舰鎬佺ǔ瀹氥€?
-  fetching / parsing / processing 浣滀负闃舵瀛愬寘瀛樺湪锛涗笁涓?stage 閫氳繃鍏变韩 UidContext
+  fetching / parsing / asr 浣滀负闃舵瀛愬寘瀛樺湪锛涗笁涓?stage 閫氳繃鍏变韩 UidContext
   鍦ㄥ悓涓€瀵?SQLite DB 涓婂崗浣滐紝bili_unit/command/ 浣滀负璺ㄩ樁娈靛啓渚х粺涓€鍏ュ彛銆?
 璋冪敤鏂归€氳繃 sqlite3.connect(bili_unit.db_path(uid)) 鐩存帴娑堣垂涓?DB锛?
   涓嶅啀鏈?bili_unit/query/ 鍖咃紱manifest 鏄?manifest_summary SQL view锛屼笉鏄嫭绔?stage銆?
   raw / workdir / DB 鐨勭墿鐞嗙洰褰曠敱 BILI_DB_DIR 鎺у埗锛岀粨鏋勪笂涓嶅睘浜庝唬鐮佸寘銆?
 ```
-

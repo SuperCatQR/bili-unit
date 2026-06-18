@@ -90,18 +90,16 @@ uv run ruff check                                  # lint
 
 ## 文档
 
-新读者建议先看：[docs/README.md](docs/README.md) → [docs/schema.md](docs/schema.md) → [docs/structure/bili.md](docs/structure/bili.md) → 对应 feature 文档。
+新读者建议先看：[docs/README.md](docs/README.md) → [docs/schema.md](docs/schema.md) → [docs/architecture.md](docs/architecture.md)。
 
 | 类别 | 路径 | 性质 |
 | --- | --- | --- |
-| **文档入口** | [docs/README.md](docs/README.md) | 当前真相 / 历史背景的阅读路线 |
+| **文档入口** | [docs/README.md](docs/README.md) | 当前真相的阅读路线 |
 | **数据契约** | [docs/schema.md](docs/schema.md) | SQLite DDL、表/视图、5 个常用查询 |
 | 领域语言 | [CONTEXT.md](CONTEXT.md) | 项目术语表（unit / stage / raw_payload 等） |
-| 模块边界 | [docs/structure/bili.md](docs/structure/bili.md) | 各层职责约束（must-be） |
-| 端点契约 | [docs/structure/fetching-contract.md](docs/structure/fetching-contract.md) | 64 个端点的 raw_payload schema |
-| fetching 现状 | [docs/feature/fetching.md](docs/feature/fetching.md) | 端点注册表、限流、模式、CLI |
-| parsing 现状 | [docs/feature/parsing.md](docs/feature/parsing.md) | model 字段映射、图片下载、CLI |
-| ASR 实现现状 | [docs/feature/processing.md](docs/feature/processing.md) | audio pipeline、ASR 后端、CLI（当前实现包名仍为 processing） |
+| 模块边界 | [docs/architecture.md](docs/architecture.md) | 各层职责约束（must-be） |
+| 端点契约 | [docs/endpoint-contract.md](docs/endpoint-contract.md) | 64 个端点的 raw_payload schema |
+| 运行状态 | [docs/observability.md](docs/observability.md) | run events、Run Summary、TUI 读模型 |
 | 上游 API | [docs/upstream.md](docs/upstream.md) | bilibili-api-python 的角色、链接与维护规则 |
 
 ## 许可与依赖
