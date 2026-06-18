@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from bili_unit.observability.dashboard import (
     DashboardSnapshot,
@@ -324,6 +328,15 @@ class _FakeWorkbench:
     async def sync(self, uid: int, **kwargs):
         self.calls.append(("sync", uid, kwargs))
 
+    async def fetch(self, uid: int, **kwargs):
+        self.calls.append(("fetch", uid, kwargs))
+
+    async def parse(self, uid: int, **kwargs):
+        self.calls.append(("parse", uid, kwargs))
+
+    async def asr(self, uid: int, **kwargs):
+        self.calls.append(("asr", uid, kwargs))
+
     async def delete_uid(self, uid: int, **kwargs):
         self.calls.append(("delete_uid", uid, kwargs))
 
@@ -336,3 +349,160 @@ class _FakeWorkbench:
             uids=[self.dashboard_uid],
             items=[_uid_item(self.root, self.dashboard_uid)],
         )
+
+
+# ── Fix 1 + 5: exception handling ─────────────────────────────────────────────
+
+class _ErrorWorkbench(_FakeWorkbench):
+    """Variant where sync raises a RuntimeError."""
+
+    async def sync(self, uid: int, **kwargs):
+        raise RuntimeError("network timeout")
+
+
+async def test_dispatch_action_catches_command_exception_and_keeps_tui_alive(
+    tmp_path: Path,
+) -> None:
+    state = TuiState(
+        snapshot=DashboardSnapshot(
+            root=tmp_path,
+            uids=[123],
+            items=[_uid_item(tmp_path, 123)],
+        ),
+    )
+    workbench = _ErrorWorkbench(tmp_path, can_start=True)
+
+    # Must NOT raise
+    await dispatch_action(workbench, state, "sync")
+
+    assert "failed" in state.message
+    assert "RuntimeError" in state.message
+    # dashboard was refreshed even after failure
+    assert state.snapshot is not None
+    assert ("dashboard",) in workbench.calls
+
+
+async def test_dispatch_action_logs_exception(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    state = TuiState(
+        snapshot=DashboardSnapshot(
+            root=tmp_path,
+            uids=[123],
+            items=[_uid_item(tmp_path, 123)],
+        ),
+    )
+    workbench = _ErrorWorkbench(tmp_path, can_start=True)
+
+    with caplog.at_level(logging.ERROR, logger="bili.tui"):
+        await dispatch_action(workbench, state, "sync")
+
+    assert any("failed" in r.message.lower() or "network timeout" in r.message for r in caplog.records)
+
+
+# ── Fix 2: terminal size ───────────────────────────────────────────────────────
+
+def test_print_screen_uses_terminal_size(tmp_path: Path) -> None:
+    import os
+
+    from bili_unit import tui as tui_module
+
+    item = _uid_item(tmp_path, 123)
+    state = TuiState(
+        snapshot=DashboardSnapshot(root=tmp_path, uids=[123], items=[item]),
+    )
+    fake_ts = os.terminal_size((80, 24))
+
+    collected: list[str] = []
+
+    def fake_print(*args, **kwargs):
+        if args:
+            collected.append(str(args[0]))
+
+    with (
+        patch("bili_unit.tui.shutil.get_terminal_size", return_value=fake_ts),
+        patch("builtins.print", side_effect=fake_print),
+    ):
+        tui_module._print_screen(state)
+
+    content_lines = [ln for ln in collected if ln]
+    assert content_lines, "expected some rendered output"
+    assert all(len(ln) <= 80 for ln in content_lines), (
+        f"line too wide: {max(content_lines, key=len)!r}"
+    )
+
+
+# ── Fix 3: fetch / parse / asr dispatch ──────────────────────────────────────
+
+async def test_dispatch_action_runs_fetch(tmp_path: Path) -> None:
+    state = TuiState(
+        snapshot=DashboardSnapshot(
+            root=tmp_path,
+            uids=[123],
+            items=[_uid_item(tmp_path, 123)],
+        ),
+    )
+    workbench = _FakeWorkbench(tmp_path, can_start=True)
+
+    await dispatch_action(workbench, state, "fetch")
+
+    assert ("fetch", 123, {"mode": "incremental"}) in workbench.calls
+    assert "completed" in state.message
+    assert ("dashboard",) in workbench.calls
+
+
+async def test_dispatch_action_runs_parse(tmp_path: Path) -> None:
+    state = TuiState(
+        snapshot=DashboardSnapshot(
+            root=tmp_path,
+            uids=[123],
+            items=[_uid_item(tmp_path, 123)],
+        ),
+    )
+    workbench = _FakeWorkbench(tmp_path, can_start=True)
+
+    await dispatch_action(workbench, state, "parse")
+
+    assert ("parse", 123, {"mode": "incremental"}) in workbench.calls
+    assert "completed" in state.message
+    assert ("dashboard",) in workbench.calls
+
+
+async def test_dispatch_action_runs_asr(tmp_path: Path) -> None:
+    state = TuiState(
+        snapshot=DashboardSnapshot(
+            root=tmp_path,
+            uids=[123],
+            items=[_uid_item(tmp_path, 123)],
+        ),
+    )
+    workbench = _FakeWorkbench(tmp_path, can_start=True)
+
+    await dispatch_action(workbench, state, "asr")
+
+    assert ("asr", 123, {"mode": "incremental"}) in workbench.calls
+    assert "completed" in state.message
+    assert ("dashboard",) in workbench.calls
+
+
+# ── Fix 4: running hint ────────────────────────────────────────────────────────
+
+async def test_dispatch_action_prints_running_hint(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = TuiState(
+        snapshot=DashboardSnapshot(
+            root=tmp_path,
+            uids=[123],
+            items=[_uid_item(tmp_path, 123)],
+        ),
+    )
+    workbench = _FakeWorkbench(tmp_path, can_start=True)
+
+    await dispatch_action(workbench, state, "sync")
+
+    out = capsys.readouterr().out
+    assert "running" in out
+    assert "see stderr" in out

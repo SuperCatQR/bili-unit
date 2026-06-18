@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from .observability.dashboard import DashboardSnapshot, UidDashboardSnapshot
 from .tui_spec import TUI_DETAIL_TABS, TUI_MVP_ACTIONS, TuiActionSpec
 from .workbench import BiliWorkbench, workbench_session
+
+logger = logging.getLogger("bili.tui")
 
 
 @dataclass
@@ -117,8 +121,15 @@ async def dispatch_action(
         if not check.can_start:
             state.message = check.reason or "task blocked"
             return
-        state.message = f"running {action.id} {uid}..."
-        await _run_action(workbench, uid, action)
+        print(f"running {action.id} {uid}... (see stderr for progress)", flush=True)
+        try:
+            await _run_action(workbench, uid, action)
+        except Exception as exc:
+            logger.exception("TUI action %s %s failed", action.id, uid)
+            state.message = f"{action.label} {uid} failed: {type(exc).__name__}: {exc}"[:120]
+            state.snapshot = await workbench.dashboard()
+            state.selected_index = _index_for_uid(state.snapshot, uid)
+            return
         state.snapshot = await workbench.dashboard()
         state.selected_index = _index_for_uid(state.snapshot, uid)
         state.message = f"{action.label} {uid} completed"
@@ -140,8 +151,15 @@ async def dispatch_action(
             state.message = check.reason or "task blocked"
             return
 
-    state.message = f"running {action.id}..."
-    await _run_action(workbench, item.uid, action)
+    print(f"running {action.id} {item.uid}... (see stderr for progress)", flush=True)
+    try:
+        await _run_action(workbench, item.uid, action)
+    except Exception as exc:
+        logger.exception("TUI action %s %s failed", action.id, item.uid)
+        state.message = f"{action.label} failed: {type(exc).__name__}: {exc}"[:120]
+        state.snapshot = await workbench.dashboard()
+        state.selected_index = _clamp_selection(state)
+        return
     state.snapshot = await workbench.dashboard()
     state.selected_index = _clamp_selection(state)
     state.message = f"{action.label} completed"
@@ -153,6 +171,7 @@ def render_lines(
     selected_index: int = 0,
     selected_tab_index: int = 0,
     width: int = 100,
+    height: int | None = None,
 ) -> list[str]:
     """Render dashboard state into plain text lines for TUI and tests."""
     return render_screen(
@@ -160,6 +179,7 @@ def render_lines(
         selected_index=selected_index,
         selected_tab_index=selected_tab_index,
         width=width,
+        height=height,
     ).lines
 
 
@@ -247,11 +267,16 @@ def _detail_lines(
 
 
 def _print_screen(state: TuiState) -> None:
+    size = shutil.get_terminal_size(fallback=(100, 30))
+    width = size.columns
+    height = max(4, size.lines - 2)  # leave two rows for prompt and input
     print("\n" * 2)
     for line in render_lines(
         state.snapshot,
         selected_index=state.selected_index,
         selected_tab_index=state.selected_tab_index,
+        width=width,
+        height=height,
     ):
         print(line)
     print("")
