@@ -64,6 +64,8 @@ async def test_uid_dashboard_snapshot_reads_manifest_and_latest_run(tmp_path: Pa
     assert snapshot.run_summary is not None
     assert snapshot.run_summary.run is not None
     assert snapshot.run_summary.run.run_id == "run-1"
+    assert snapshot.active is False
+    assert snapshot.active_stages == ()
     assert snapshot.recommended_actions == []
 
 
@@ -121,9 +123,38 @@ async def test_dashboard_snapshot_handles_missing_uid(tmp_path: Path) -> None:
     snapshot = await load_uid_dashboard_snapshot(uid=999, root=tmp_path)
 
     assert snapshot.available is False
+    assert snapshot.active is False
+    assert snapshot.active_stages == ()
     assert snapshot.manifest is None
     assert snapshot.run_summary is None
     assert snapshot.read_error == "main DB does not exist"
+
+
+async def test_uid_dashboard_snapshot_exposes_active_stages(tmp_path: Path) -> None:
+    uid = 123
+    await _seed_dashboard_uid(tmp_path, uid=uid)
+    ctx = UidContext(uid=uid, root=tmp_path)
+    await ctx.open(raw=False)
+    try:
+        await ctx.main.execute(
+            "INSERT INTO stage_task("
+            "    stage, status, payload, created_at_ms, updated_at_ms"
+            ") VALUES (?, ?, ?, ?, ?)",
+            ("fetching", "RUNNING", '{"endpoints":[]}', 1, 2),
+        )
+        await ctx.main.execute(
+            "INSERT INTO stage_task("
+            "    stage, status, payload, created_at_ms, updated_at_ms"
+            ") VALUES (?, ?, ?, ?, ?)",
+            ("parsing", "SUCCESS", '{"models":{}}', 1, 2),
+        )
+    finally:
+        await ctx.close()
+
+    snapshot = await load_uid_dashboard_snapshot(uid=uid, root=tmp_path)
+
+    assert snapshot.active is True
+    assert snapshot.active_stages == ("fetching",)
 
 
 async def test_dashboard_snapshot_can_read_while_writer_updates(tmp_path: Path) -> None:

@@ -55,6 +55,22 @@ class UidDashboardSnapshot:
     def available(self) -> bool:
         return self.read_error is None
 
+    @property
+    def active_stages(self) -> tuple[str, ...]:
+        """Stages whose current task state is RUNNING."""
+        if self.run_summary is None:
+            return ()
+        return tuple(
+            stage
+            for stage, task in sorted(self.run_summary.stage_tasks.items())
+            if task.status == "RUNNING"
+        )
+
+    @property
+    def active(self) -> bool:
+        """Whether any known stage is currently RUNNING."""
+        return bool(self.active_stages)
+
 
 @dataclass(frozen=True)
 class DashboardSnapshot:
