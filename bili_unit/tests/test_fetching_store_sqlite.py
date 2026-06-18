@@ -569,6 +569,42 @@ async def test_list_failed_items_dedupes_repeated_failures(
     assert await store.list_failed_items("video_detail") == ["BV1"]
 
 
+async def test_list_unavailable_items_only_returns_terminal_unavailable(
+    store: FetchingStore,
+) -> None:
+    await store.record_error(
+        endpoint="video_detail",
+        error_type="ResourceUnavailableError",
+        message="gone",
+        retryable=False,
+        detail={"item_id": "BV_gone"},
+    )
+    await store.record_error(
+        endpoint="video_detail",
+        error_type="Http412Error",
+        message="too fast",
+        retryable=False,
+        detail={"item_id": "BV_retry_later"},
+    )
+    await store.record_error(
+        endpoint="article_detail",
+        error_type="ResourceUnavailableError",
+        message="gone",
+        retryable=False,
+        detail={"item_id": "CV_other_endpoint"},
+    )
+    await store.record_error(
+        endpoint="video_detail",
+        error_type="ResourceUnavailableError",
+        message="recovered",
+        retryable=False,
+        detail={"item_id": "BV_recovered"},
+    )
+    await store.save_raw_payload("video_detail", "BV_recovered", {"ok": True})
+
+    assert await store.list_unavailable_items("video_detail") == ["BV_gone"]
+
+
 # ---------------------------------------------------------------------------
 # Misc / smoke
 # ---------------------------------------------------------------------------

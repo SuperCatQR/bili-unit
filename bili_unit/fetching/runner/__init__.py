@@ -134,19 +134,17 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         uid = scope.uid
         endpoints = scope.endpoints
         mode = scope.mode
-        # auth 鈥?always required; fetching does not operate without credential
-        try:
-            credential = await get_credential()
-        except AuthError as exc:
-            await self._store.record_error(
-                endpoint=None,
-                error_type=type(exc).__name__,
-                message=str(exc),
-                retryable=False,
-            )
-            return TaskResult(uid=uid, status=TaskStatus.FAILED_PERMANENT)
 
         await prepare_scope(self._store, scope)
+        specs_by_name = {ep_name: get_endpoint(ep_name) for ep_name in endpoints}
+        for spec in list(specs_by_name.values()):
+            if spec is None or spec.kind != "item" or not spec.source_endpoint:
+                continue
+            specs_by_name.setdefault(
+                spec.source_endpoint,
+                get_endpoint(spec.source_endpoint),
+            )
+        credential = await self._resolve_credential(uid, specs_by_name)
 
         # ---- Phase 1: uid-level endpoints (parallel) ----
         uid_tasks = []
@@ -158,12 +156,26 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                 continue
             if state.get("status") == EndpointStatus.SUCCESS.value:
                 continue
-            spec = get_endpoint(ep_name)
+            spec = specs_by_name.get(ep_name)
             if spec is None:
                 err_id = await self._store.record_error(
                     endpoint=ep_name,
                     error_type="FetchingError",
                     message=f"unknown endpoint: {ep_name}",
+                    retryable=False,
+                )
+                await self._store.update_endpoint_state(
+                    ep_name,
+                    status=EndpointStatus.FAILED_PERMANENT.value,
+                    last_error_id=err_id,
+                )
+                continue
+
+            if spec.credential_required and credential is None:
+                err_id = await self._store.record_error(
+                    endpoint=ep_name,
+                    error_type="AuthError",
+                    message="credential required for endpoint",
                     retryable=False,
                 )
                 await self._store.update_endpoint_state(
@@ -187,8 +199,24 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                     if src_state is None:
                         # source not seeded 鈫?seed and run in Phase 1
                         await self._store.init_task([spec.source_endpoint])
-                        src_spec = get_endpoint(spec.source_endpoint)
+                        src_spec = specs_by_name.get(spec.source_endpoint)
+                        if src_spec is None:
+                            src_spec = get_endpoint(spec.source_endpoint)
+                            specs_by_name[spec.source_endpoint] = src_spec
                         if src_spec is not None:
+                            if src_spec.credential_required and credential is None:
+                                err_id = await self._store.record_error(
+                                    endpoint=spec.source_endpoint,
+                                    error_type="AuthError",
+                                    message="credential required for endpoint",
+                                    retryable=False,
+                                )
+                                await self._store.update_endpoint_state(
+                                    spec.source_endpoint,
+                                    status=EndpointStatus.FAILED_PERMANENT.value,
+                                    last_error_id=err_id,
+                                )
+                                continue
                             uid_tasks.append(
                                 self._run_endpoint(
                                     uid, src_spec, spec.source_endpoint,
@@ -278,6 +306,42 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         )
 
     # -- helpers -----------------------------------------------------------
+
+    async def _resolve_credential(
+        self,
+        uid: int,
+        specs_by_name: dict[str, EndpointSpec | None],
+    ) -> Any | None:
+        """Load credential only when the requested endpoint set needs one.
+
+        Public Bilibili endpoints can run without cookies. Credential-required
+        endpoints are marked individually below instead of failing the whole
+        fetching run before public endpoints get a chance to complete.
+        """
+        needs_credential = any(
+            spec is not None and spec.credential_required
+            for spec in specs_by_name.values()
+        )
+        if not needs_credential:
+            return None
+        try:
+            return await get_credential()
+        except AuthError as exc:
+            await self._store.record_error(
+                endpoint=None,
+                error_type=type(exc).__name__,
+                message=str(exc),
+                retryable=False,
+            )
+            logger.info(
+                "credential_unavailable",
+                extra={"uid": uid, "credential_required_endpoints": [
+                    ep_name
+                    for ep_name, spec in specs_by_name.items()
+                    if spec is not None and spec.credential_required
+                ]},
+            )
+            return None
 
     async def _run_with_reporting(
         self,

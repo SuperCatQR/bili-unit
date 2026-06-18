@@ -208,26 +208,38 @@ async def test_runner_partial(tmp_path: Path):
 
 
 # ======================================================================
-# runner — auth is mandatory: AuthError -> FAILED_PERMANENT
+# runner — credential-required endpoints fail without blocking public endpoints
 # ======================================================================
 
-async def test_runner_auth_failure_is_permanent(tmp_path: Path):
-    """Missing credential -> AuthError raised by get_credential -> FAILED_PERMANENT.
-
-    The conftest's autouse mock of get_credential is overridden here to raise
-    AuthError; the runner must record this and mark the task FAILED_PERMANENT.
-    """
+async def test_runner_public_endpoint_does_not_get_credential(tmp_path: Path):
     ctx, store = await _open_store(tmp_path, 3)
+    try:
+        fetch_mock = AsyncMock(return_value=_fake_page(3, {"ok": True}))
+        runner = _runner(store, _settings(tmp_path), fetch_fn=fetch_mock)
+        get_credential_mock = AsyncMock(side_effect=AuthError("no sessdata"))
+        with patch(
+            "bili_unit.fetching.runner.get_credential",
+            new=get_credential_mock,
+        ):
+            result = await runner.run_task(3, endpoints=["user_info"])
+        assert result.status == TaskStatus.SUCCESS
+        assert get_credential_mock.await_count == 0
+        assert fetch_mock.await_args.args[2] is None
+    finally:
+        await ctx.close()
+
+
+async def test_runner_credential_required_auth_failure_is_permanent(tmp_path: Path):
+    ctx, store = await _open_store(tmp_path, 3003)
     try:
         runner = _runner(store, _settings(tmp_path))
         with patch(
             "bili_unit.fetching.runner.get_credential",
             new=AsyncMock(side_effect=AuthError("no sessdata")),
         ):
-            result = await runner.run_task(3, endpoints=["user_info"])
+            result = await runner.run_task(3003, endpoints=["user_medal"])
         assert result.status == TaskStatus.FAILED_PERMANENT
-
-        # An error row must have been recorded.
+        assert result.endpoints["user_medal"] == EndpointStatus.FAILED_PERMANENT
         errors = await store.list_errors()
         assert any(e["error_type"] == "AuthError" for e in errors)
     finally:
@@ -456,7 +468,12 @@ async def test_incremental_backfills_incomplete_page_listing(tmp_path: Path):
         assert call_log == [1, 2, 3]
         stored = await store.get_raw_payload("videos")
         assert stored is not None
-        assert len(stored["pages"]) == 3
+        stored_bvids = [
+            item["bvid"]
+            for page in stored["pages"]
+            for item in page["list"]["vlist"]
+        ]
+        assert stored_bvids == ["BV1", "BV2", "BV3", "BV4", "BV5"]
     finally:
         await ctx.close()
 
@@ -558,7 +575,12 @@ async def test_incremental_new_ids_continue_then_boundary(tmp_path: Path):
 
         stored = await store.get_raw_payload("videos")
         assert stored is not None
-        assert len(stored["pages"]) == 3
+        stored_bvids = [
+            item["bvid"]
+            for page in stored["pages"]
+            for item in page["list"]["vlist"]
+        ]
+        assert stored_bvids == ["BV1", "BV2", "BV3", "BV4", "BV5", "BV6", "BV7"]
     finally:
         await ctx.close()
 
@@ -608,8 +630,8 @@ async def test_incremental_no_stored_data_fetches_all(tmp_path: Path):
 # Incremental mode — overwrite behaviour
 # ======================================================================
 
-async def test_incremental_overwrites_stored_pages(tmp_path: Path):
-    """After incremental run, raw_payload.pages contains ONLY this run's pages."""
+async def test_incremental_preserves_unseen_stored_pages(tmp_path: Path):
+    """Incremental keeps old pages whose items were not seen this run."""
     ctx, store = await _open_store(tmp_path, 103)
     try:
         # Seed with 5 old pages.
@@ -637,9 +659,13 @@ async def test_incremental_overwrites_stored_pages(tmp_path: Path):
 
         assert result.status == TaskStatus.SUCCESS
         stored = await store.get_raw_payload("videos")
-        # Boundary page + safety page = 2; the original 5 pages are gone.
         assert stored is not None
-        assert len(stored["pages"]) == 2
+        stored_bvids = [
+            item["bvid"]
+            for page in stored["pages"]
+            for item in page["list"]["vlist"]
+        ]
+        assert stored_bvids == ["OLD0", "OLD1", "OLD2", "OLD3", "OLD4"]
     finally:
         await ctx.close()
 
@@ -1156,12 +1182,60 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(tmp_path: Pa
         saved = next(e for e in events if e["event"] == "fetch.item.saved")
         assert saved["item_id"] == "BV_ok"
         completed = events[-1]
-        assert completed["data"] == {
-            "status": "PARTIAL_ITEM",
-            "completed": 1,
-            "failed": 1,
-            "total": 2,
-        }
+        assert completed["data"]["status"] == "PARTIAL_ITEM"
+        assert completed["data"]["completed"] == 1
+        assert completed["data"]["failed"] == 1
+        assert completed["data"]["total"] == 2
+    finally:
+        await ctx.close()
+
+
+async def test_item_fanout_incremental_skips_unavailable_items(tmp_path: Path):
+    ctx, store = await _open_store(tmp_path, 7021)
+    try:
+        await store.init_task(["videos", "video_detail"])
+        await store.save_raw_payload("videos", "", {
+            "pages": [
+                {"list": {"vlist": [{"bvid": "BV_ok"}, {"bvid": "BV_dead"}]}},
+            ],
+        })
+        await store.update_endpoint_state("videos", status=EndpointStatus.SUCCESS.value)
+        await store.update_endpoint_state(
+            "video_detail", status=EndpointStatus.PENDING.value,
+        )
+
+        first_calls: list[str] = []
+
+        async def first_fetch(item_id, credential, **kw):
+            first_calls.append(item_id)
+            if item_id == "BV_dead":
+                raise ResourceUnavailableError(f"gone {item_id}")
+            return {"info": {"bvid": item_id}, "tags": []}
+
+        spec = get_endpoint("video_detail")
+        assert spec is not None
+        runner = _runner(store, _settings(tmp_path))
+        with patch.object(spec, "callable", first_fetch):
+            await runner._run_item_endpoint(7021, spec, credential=None, mode="full")
+
+        assert set(first_calls) == {"BV_ok", "BV_dead"}
+        assert await store.list_unavailable_items("video_detail") == ["BV_dead"]
+
+        second_fetch = AsyncMock(return_value={"info": {"unexpected": True}})
+        await store.update_endpoint_state(
+            "video_detail", status=EndpointStatus.PENDING.value,
+        )
+        with patch.object(spec, "callable", second_fetch):
+            await runner._run_item_endpoint(
+                7021, spec, credential=None, mode="incremental",
+            )
+
+        assert second_fetch.await_count == 0
+        state = await store.get_endpoint_state("video_detail")
+        assert state is not None
+        assert state["status"] == EndpointStatus.SUCCESS.value
+        assert state["item_progress"]["skipped_existing"] == 1
+        assert state["item_progress"]["skipped_unavailable"] == 1
     finally:
         await ctx.close()
 
@@ -1280,6 +1354,35 @@ async def test_runner_uses_injected_progress_factory(tmp_path: Path):
         assert progress.label == "fetch uid=12 endpoints"
         assert progress.updates == [(1, None)]
         assert progress.closed is True
+    finally:
+        await ctx.close()
+
+
+async def test_runner_mixed_public_private_auth_failure_keeps_public_endpoint(
+    tmp_path: Path,
+):
+    ctx, store = await _open_store(tmp_path, 3004)
+    try:
+        async def fake_fetch(uid, spec, credential, request_params, **kw):
+            assert spec.name == "user_info"
+            assert credential is None
+            return _fake_page(uid, {"ok": True}, endpoint=spec.name)
+
+        runner = _runner(
+            store,
+            _settings(tmp_path),
+            fetch_fn=AsyncMock(side_effect=fake_fetch),
+        )
+        with patch(
+            "bili_unit.fetching.runner.get_credential",
+            new=AsyncMock(side_effect=AuthError("no sessdata")),
+        ):
+            result = await runner.run_task(
+                3004, endpoints=["user_info", "user_medal"],
+            )
+        assert result.status == TaskStatus.PARTIAL
+        assert result.endpoints["user_info"] == EndpointStatus.SUCCESS
+        assert result.endpoints["user_medal"] == EndpointStatus.FAILED_PERMANENT
     finally:
         await ctx.close()
 

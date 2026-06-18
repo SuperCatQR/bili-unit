@@ -59,6 +59,8 @@
 
 分页游标另存 raw DB 的 `fetch_progress(endpoint, cursor, total, fetched, updated_at_ms)`。
 
+凭据按端点生效：公开端点允许匿名抓取并向上游传 `credential=None`；标注为“需凭据”的端点在缺少有效登录信息时单独失败，不阻塞同一次 run 中的公开端点。
+
 ---
 
 ### 2. raw_payload 两种存储形态

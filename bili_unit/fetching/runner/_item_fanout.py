@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +32,25 @@ class _ItemFanoutResult(StrEnum):
     SUCCESS = "success"
     FAILED = "failed"
     PERMANENT = "permanent"  # AuthError — aborts whole fan-out
+
+
+@dataclass(frozen=True)
+class _ItemFanoutPlan:
+    """Execution plan for one item-level endpoint run."""
+
+    total: int
+    to_fetch: list[str]
+    skipped_existing: int = 0
+    skipped_fresh: int = 0
+    skipped_unavailable: int = 0
+
+    @property
+    def skipped(self) -> int:
+        return (
+            self.skipped_existing
+            + self.skipped_fresh
+            + self.skipped_unavailable
+        )
 
 
 class _ItemFanoutMixin:
@@ -134,8 +154,9 @@ class _ItemFanoutMixin:
                 )
             return
 
-        total_items = len(items)
-        completed_items = 0
+        plan = await self._build_item_fanout_plan(ep_name, items, mode)
+        total_items = plan.total
+        completed_items = plan.skipped
         failed_items = 0
 
         settings = self._settings
@@ -188,10 +209,11 @@ class _ItemFanoutMixin:
         # 3. Run all items concurrently (bounded by semaphore).
         try:
             try:
-                await asyncio.gather(
-                    *[process_item(iid) for iid in items],
-                    return_exceptions=False,
-                )
+                if plan.to_fetch:
+                    await asyncio.gather(
+                        *[process_item(iid) for iid in plan.to_fetch],
+                        return_exceptions=False,
+                    )
             except FetchingError:
                 # AuthError from any item → abort and mark permanently failed.
                 await self._store.update_endpoint_state(
@@ -234,6 +256,10 @@ class _ItemFanoutMixin:
                 "total": total_items,
                 "completed": completed_items,
                 "failed": failed_items,
+                "skipped": plan.skipped,
+                "skipped_existing": plan.skipped_existing,
+                "skipped_fresh": plan.skipped_fresh,
+                "skipped_unavailable": plan.skipped_unavailable,
             },
         )
 
@@ -245,6 +271,10 @@ class _ItemFanoutMixin:
                 "completed": completed_items,
                 "failed": failed_items,
                 "total": total_items,
+                "skipped": plan.skipped,
+                "skipped_existing": plan.skipped_existing,
+                "skipped_fresh": plan.skipped_fresh,
+                "skipped_unavailable": plan.skipped_unavailable,
             },
         )
         if reporter is not None:
@@ -267,8 +297,62 @@ class _ItemFanoutMixin:
                     "completed": completed_items,
                     "failed": failed_items,
                     "total": total_items,
+                    "skipped": plan.skipped,
+                    "skipped_existing": plan.skipped_existing,
+                    "skipped_fresh": plan.skipped_fresh,
+                    "skipped_unavailable": plan.skipped_unavailable,
                 },
             )
+
+    async def _build_item_fanout_plan(
+        self: Any,
+        ep_name: str,
+        items: list[str],
+        mode: str,
+    ) -> _ItemFanoutPlan:
+        """Classify fan-out items before execution."""
+        if mode == "full":
+            return _ItemFanoutPlan(total=len(items), to_fetch=list(items))
+
+        completed = set(await self._store.list_completed_items(ep_name))
+        unavailable = set(await self._store.list_unavailable_items(ep_name))
+        item_ages = (
+            await self._store.list_item_ages_ms(ep_name)
+            if mode == "refresh"
+            else {}
+        )
+        now_ms = int(time.time() * 1000)
+        threshold_ms = (
+            self._settings.bili_fetching_refresh_after_days * 86400 * 1000
+        )
+
+        to_fetch: list[str] = []
+        skipped_existing = 0
+        skipped_fresh = 0
+        skipped_unavailable = 0
+        for item_id in items:
+            if item_id in unavailable:
+                skipped_unavailable += 1
+                continue
+            if item_id in completed:
+                if mode == "refresh":
+                    fetched_at = item_ages.get(item_id)
+                    if fetched_at is not None and now_ms - fetched_at >= threshold_ms:
+                        to_fetch.append(item_id)
+                    else:
+                        skipped_fresh += 1
+                else:
+                    skipped_existing += 1
+                continue
+            to_fetch.append(item_id)
+
+        return _ItemFanoutPlan(
+            total=len(items),
+            to_fetch=to_fetch,
+            skipped_existing=skipped_existing,
+            skipped_fresh=skipped_fresh,
+            skipped_unavailable=skipped_unavailable,
+        )
 
     async def _process_single_item(
         self: Any,
@@ -280,22 +364,6 @@ class _ItemFanoutMixin:
     ) -> _ItemFanoutResult:
         """Fetch and store a single item. Returns an _ItemFanoutResult enum value."""
         ep_name = spec.name
-
-        # Incremental / refresh: skip if already stored (and fresh for refresh).
-        if mode in ("incremental", "refresh"):
-            existing = await self._store.get_raw_payload(ep_name, item_id)
-            if existing is not None:
-                if mode == "incremental":
-                    return _ItemFanoutResult.SUCCESS
-                # refresh mode: check freshness window
-                ages = await self._store.list_item_ages_ms(ep_name)
-                fetched_at = ages.get(item_id)
-                if fetched_at is not None:
-                    now_ms = int(time.time() * 1000)
-                    age_ms = now_ms - fetched_at
-                    threshold_ms = self._settings.bili_fetching_refresh_after_days * 86400 * 1000
-                    if age_ms < threshold_ms:
-                        return _ItemFanoutResult.SUCCESS  # still fresh, skip
 
         settings = self._settings
         max_retries = settings.bili_fetching_max_retries

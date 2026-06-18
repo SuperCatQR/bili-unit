@@ -64,6 +64,35 @@ def _stored_total_count(stored_pages: list[Any]) -> int:
     return 0
 
 
+def _merge_incremental_pages(
+    *,
+    new_pages: list[dict[str, Any]],
+    stored_pages: list[Any],
+    id_paths: list[str] | None,
+) -> list[Any]:
+    """Keep fresh pages first while preserving old unseen listing pages."""
+    if not id_paths:
+        return list(new_pages)
+    seen_ids: set[str] = set()
+    merged: list[Any] = []
+    for page in new_pages:
+        page_ids = set(_extract_item_ids_multi(page, id_paths))
+        if page_ids and page_ids <= seen_ids:
+            continue
+        seen_ids.update(page_ids)
+        merged.append(page)
+    for stored_page in stored_pages:
+        if not isinstance(stored_page, dict):
+            merged.append(stored_page)
+            continue
+        stored_ids = set(_extract_item_ids_multi(stored_page, id_paths))
+        if stored_ids and stored_ids <= seen_ids:
+            continue
+        seen_ids.update(stored_ids)
+        merged.append(stored_page)
+    return merged
+
+
 class _EndpointMixin:
     """Mixin providing ``_run_endpoint`` for :class:`Runner`.
 
@@ -522,8 +551,16 @@ class _EndpointMixin:
         # -- store results --
         if spec.pagination_strategy != "none":
             if known_ids is not None:
-                # incremental: overwrite with pages from this run only
-                raw_payload: dict[str, Any] = {"pages": pages_this_run}
+                # incremental: fresh pages first, but keep old unseen pages so
+                # raw.db remains a durable input cache rather than a small
+                # latest-window snapshot.
+                raw_payload: dict[str, Any] = {
+                    "pages": _merge_incremental_pages(
+                        new_pages=pages_this_run,
+                        stored_pages=stored_pages,
+                        id_paths=id_paths,
+                    ),
+                }
             elif mode == "full":
                 # full mode: overwrite entirely (do NOT accumulate)
                 raw_payload = {"pages": pages_this_run}

@@ -501,6 +501,38 @@ class FetchingStore:
         succeeded = set(await self.list_completed_items(endpoint))
         return sorted(failed - succeeded)
 
+    async def list_unavailable_items(self, endpoint: str) -> list[str]:
+        """Return item_ids that failed with a terminal unavailable error.
+
+        These are item fan-out failures caused by Bilibili business state
+        rather than transport flakiness: deleted videos, private articles,
+        unavailable opus posts, and similar cases surfaced as
+        ``ResourceUnavailableError``. Incremental runs should not spend the
+        retry budget on them again unless a caller explicitly asks for a full
+        refresh.
+        """
+        error_rows = await self._ctx.main.fetch_all(
+            "SELECT detail FROM stage_error "
+            "WHERE stage = ? AND endpoint = ? "
+            "AND error_type = ? AND retryable = 0 AND detail IS NOT NULL",
+            (_FETCHING_STAGE, endpoint, "ResourceUnavailableError"),
+        )
+        unavailable: set[str] = set()
+        for row in error_rows:
+            try:
+                detail = json.loads(row["detail"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(detail, dict):
+                continue
+            item_id = detail.get("item_id")
+            if item_id:
+                unavailable.add(str(item_id))
+        if not unavailable:
+            return []
+        succeeded = set(await self.list_completed_items(endpoint))
+        return sorted(unavailable - succeeded)
+
     # ------------------------------------------------------------------
     # error sink (stage_error)
     # ------------------------------------------------------------------

@@ -241,9 +241,9 @@ async def test_video_detail_basic_fanout(tmp_path: Path):
         state = await store.get_endpoint_state("video_detail")
         assert state is not None
         assert state["status"] == EndpointStatus.SUCCESS.value
-        assert state["item_progress"] == {
-            "total": 3, "completed": 3, "failed": 0,
-        }
+        assert state["item_progress"]["total"] == 3
+        assert state["item_progress"]["completed"] == 3
+        assert state["item_progress"]["failed"] == 0
     finally:
         await ctx.close()
 
@@ -490,9 +490,9 @@ async def test_video_detail_progress_tracking(tmp_path: Path):
         # endpoint state's item_progress mirrors that.
         state = await store.get_endpoint_state("video_detail")
         assert state is not None
-        assert state["item_progress"] == {
-            "total": 2, "completed": 2, "failed": 0,
-        }
+        assert state["item_progress"]["total"] == 2
+        assert state["item_progress"]["completed"] == 2
+        assert state["item_progress"]["failed"] == 0
     finally:
         await ctx.close()
 

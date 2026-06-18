@@ -190,7 +190,7 @@ PK：`stage`，CHECK IN (`'fetching'`,`'parsing'`,`'asr'`)。一个 stage 一行
 
 ### 4.2 `fetch_endpoint_state`
 
-PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error_id` / `item_progress`（fan-out 计数）/ `progress`（分页游标）/ `updated_at_ms`。`item_progress` 与 `progress` 都是 JSON。
+PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error_id` / `item_progress`（fan-out 计数）/ `progress`（分页游标）/ `updated_at_ms`。`item_progress` 与 `progress` 都是 JSON。item fan-out 的 `item_progress` 常用键包括 `total` / `completed` / `failed`，以及缓存或终态跳过时的 `skipped` / `skipped_existing` / `skipped_fresh` / `skipped_unavailable`。
 
 ### 4.3 `stage_error`
 
