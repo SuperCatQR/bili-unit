@@ -40,6 +40,8 @@ def test_expected_top_level_names() -> None:
         "TaskResult",
         "TaskStartCheck",
         "TaskStatus",
+        "TUI_MVP_ACTIONS",
+        "TUI_MVP_PANELS",
         "UidContext",
         "AudioError",
         "FetchingError",
@@ -71,6 +73,8 @@ def test_key_types_at_top_level() -> None:
         ProcessingCommandResult,
         SyncCommandResult,
         TaskStartCheck,
+        TUI_MVP_ACTIONS,
+        TUI_MVP_PANELS,
         UidContext,
         assemble,
         assemble_workbench,
@@ -88,6 +92,8 @@ def test_key_types_at_top_level() -> None:
     assert ProcessingCommandResult is not None
     assert SyncCommandResult is not None
     assert TaskStartCheck is not None
+    assert TUI_MVP_ACTIONS
+    assert TUI_MVP_PANELS
     assert UidContext is not None
     assert callable(assemble)
     assert callable(assemble_workbench)

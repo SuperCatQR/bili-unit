@@ -35,6 +35,7 @@ from .processing import (  # noqa: F401
     ProcessingCommandResult,
     ProcessingError,
 )
+from .tui_spec import TUI_MVP_ACTIONS, TUI_MVP_PANELS  # noqa: F401
 from .workbench import (  # noqa: F401
     BiliWorkbench,
     TaskStartCheck,
@@ -161,6 +162,8 @@ __all__ = [
     "TaskResult",
     "TaskStartCheck",
     "TaskStatus",
+    "TUI_MVP_ACTIONS",
+    "TUI_MVP_PANELS",
     "UidContext",
     "__version__",
     "assemble",
