@@ -51,7 +51,9 @@ messages. Those log names are not read-side facts.
 
 ## Run Summary
 
-`bili_unit.observability.summary` provides the read-side aggregation:
+`bili_unit.observability.summary` provides the read-side aggregation. Every
+`RunSummary` carries a `schema_version: int` field (currently `1`) that lets
+consumers reject incompatible serialisations as the structure evolves.
 
 ```python
 from bili_unit.observability import load_run_summary
@@ -204,6 +206,25 @@ Emitted when a fetched item payload is persisted. No `data` keys beyond `endpoin
 data: {}
 ```
 
+### fetch.endpoint.unavailable
+
+Emitted when an endpoint is marked permanently unavailable (e.g. a 404 from
+upstream that classifies as `ResourceUnavailableError`). Identity comes from
+the `endpoint` field; `message` carries the upstream reason.
+
+```
+data: {}
+```
+
+### fetch.item.unavailable
+
+Emitted when a single item id is permanently unavailable mid fan-out;
+sibling items continue. Identity comes from `endpoint` + `item_id`.
+
+```
+data: {}
+```
+
 ### parse.model.completed
 
 Emitted after a parsing model finishes successfully.
@@ -284,5 +305,3 @@ data: {
   "incomplete_bvids": list[str],
 }
 ```
-
-`RunSummary.schema_version` 当前为 1。

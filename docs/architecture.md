@@ -41,9 +41,11 @@ bili_unit/
   __main__.py        CLI entry: sync / fetch / parse / asr / delete-uid / auth
   __init__.py        top-level helpers, command assembly, sessions
   workbench.py       application-facing boundary for future TUI surfaces
+  tui.py             portable line-mode TUI over the workbench dashboard
   tui_spec.py        MVP panel/action specification for the first TUI
   command/           cross-stage write workflows such as sync
-  fetching/          endpoint catalog, auth, rate limit, runner, raw store
+  fetching/          endpoint catalog, auth, rate limit, runner, raw store;
+                     _adapters/ holds video / subtitle / pagination wrappers
   parsing/           specs, materializer, models, image handling, main store
   processing/        ASR command, audio runner, ASR cache/backend, main store
   observability/     run events, summaries, dashboard snapshots
