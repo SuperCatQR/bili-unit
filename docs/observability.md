@@ -156,3 +156,133 @@ Get-Content -Encoding UTF8 docs\observability.md
 ```
 
 Do not batch-transcode files just because PowerShell displays mojibake.
+
+## 事件 data schema
+
+以下列出代码中实际 emit 的主要事件及其 `data` 字段。`endpoint`/`pipeline`/`item_type`/`item_id` 字段属于 `RunEvent` 的固定结构字段，不在下方 `data` 里重复列出。
+
+### fetch.endpoint.completed
+
+Emitted when a fetch endpoint run finishes with SUCCESS status.
+
+```
+data: {
+  "status":        str,   # EndpointStatus value
+  "retry_count":   int | None,
+  "last_error_id": int | None,
+}
+```
+
+### fetch.endpoint.retry_scheduled
+
+Emitted when an endpoint hits a 412 or FetchingError and will retry.
+
+```
+data: {
+  "retry":        int,
+  "delay_s":      float,
+  "error_type":   str,
+}
+```
+
+### fetch.item.failed
+
+Emitted when an individual item fetch is exhausted (retries gone).
+
+```
+data: {
+  "retry":        int,
+  "error_type":   str,
+}
+```
+
+### fetch.item.saved
+
+Emitted when a fetched item payload is persisted. No `data` keys beyond `endpoint`, `item_type`, `item_id`.
+
+```
+data: {}
+```
+
+### parse.model.completed
+
+Emitted after a parsing model finishes successfully.
+
+```
+data: {
+  "status": str,  # ParsingModelStatus value, e.g. "SUCCESS"
+  "count":  int,  # number of items materialised
+}
+```
+
+### parse.model.failed
+
+Emitted when a parsing model raises an unexpected error.
+
+```
+data: {
+  "error_type": str,
+}
+```
+
+### asr.discovery.completed
+
+Emitted after ASR candidate discovery completes (before worker dispatch).
+
+```
+data: {
+  "candidate_count": int,
+  "skipped":         int,
+  "subtitle_done":   int,
+  "estimate":        dict,  # AudioEstimate.to_dict()
+}
+```
+
+### asr.item.completed
+
+Emitted when one bvid completes the full audio pipeline successfully.
+
+```
+data: {}   # identity via item_id field
+```
+
+### asr.segment.rate_limited
+
+Emitted when an ASR segment request is throttled (429) and being retried.
+
+```
+data: {
+  "uid":          int,
+  "bvid":         str,
+  "page_index":   int,
+  "segment":      str,
+  "start_s":      float,
+  "end_s":        float,
+  "attempt":      int,
+  "max_attempts": int,
+  "delay_s":      float,
+  "error":        str,
+}
+```
+
+### asr.coverage.partial
+
+Emitted when uid-level ASR coverage audit finds incomplete transcription.
+
+```
+data: {
+  "expected":         int,
+  "success":          int,
+  "missing":          int,
+  "failed":           int,
+  "pending":          int,
+  "running":          int,
+  "skipped":          int,
+  "complete":         bool,
+  "missing_bvids":    list[str],
+  "failed_bvids":     list[str],
+  "incomplete_bvids": list[str],
+}
+```
+
+`RunSummary.schema_version` 当前为 1。

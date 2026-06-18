@@ -108,6 +108,8 @@ class BiliSettings(BaseSettings):
     bili_processing_asr_language: str = "auto"
     bili_processing_asr_timeout: int = 300
     bili_processing_asr_max_file_size_mb: int = 10
+    bili_processing_asr_cdn_download_timeout_s: int = 600  # 总超时秒数
+    bili_processing_asr_cdn_max_size_mb: int = 1024  # CDN 单文件硬上限
 
     # Token-budget segmentation (root cause for 8192-token MiMo errors).
     #

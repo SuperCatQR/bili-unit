@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -400,12 +402,8 @@ class _AudioMixin:
             bvid = item.item_id
             try:
                 subtitle = await parse_store.get_video_subtitle_payload(bvid)
-            except Exception:  # noqa: BLE001 — defensive: never block audio
-                logger.warning(
-                    "subtitle_lookup_failed",
-                    extra={"uid": uid, "bvid": bvid},
-                    exc_info=True,
-                )
+            except (sqlite3.OperationalError, sqlite3.DatabaseError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                logger.warning("subtitle short-circuit failed bvid=%s: %s: %s", bvid, type(exc).__name__, exc)
                 remaining.append(item)
                 continue
 

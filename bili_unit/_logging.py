@@ -128,6 +128,28 @@ class ProgressAwareHandler(logging.StreamHandler):
 
 
 # ---------------------------------------------------------------------------
+# RedactingFilter — drop records containing credential keywords
+# ---------------------------------------------------------------------------
+
+class RedactingFilter(logging.Filter):
+    """Drop common credential keywords from log records before emission."""
+
+    SECRETS = ("sessdata", "bili_jct", "buvid3", "api_key", "apikey", "authorization", "cookie")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage().lower()
+        except Exception:
+            return True
+        for s in self.SECRETS:
+            if s in msg:
+                record.msg = "[REDACTED secret]"
+                record.args = None
+                break
+        return True
+
+
+# ---------------------------------------------------------------------------
 # configure_logging — single CLI entry-point
 # ---------------------------------------------------------------------------
 
@@ -151,7 +173,7 @@ def configure_logging(
     else:
         level = logging.INFO
 
-    root = logging.getLogger()
+    root = logging.getLogger("bili_unit")
     root.setLevel(level)
     for h in list(root.handlers):
         root.removeHandler(h)
@@ -159,6 +181,7 @@ def configure_logging(
     stream = ProgressAwareHandler(sys.stderr)
     stream.setLevel(level)
     stream.setFormatter(HumanFormatter(color=sys.stderr.isatty()))
+    stream.addFilter(RedactingFilter())
     root.addHandler(stream)
 
     if log_file is not None:
@@ -166,9 +189,10 @@ def configure_logging(
         fh = logging.FileHandler(log_file, encoding="utf-8")
         fh.setLevel(logging.DEBUG)  # 文件总是写全量，方便事后 grep
         fh.setFormatter(JsonFormatter())
+        fh.addFilter(RedactingFilter())
         root.addHandler(fh)
 
-    # 抑制第三方库噪音 —— 这些库的 INFO/DEBUG 在我们的 INFO 视角下属于背景音
+    # third-party noise floor — 抑制第三方库噪音
     for noisy in ("aiohttp.access", "asyncio", "urllib3", "charset_normalizer"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
@@ -362,6 +386,7 @@ __all__ = [
     "JsonFormatter",
     "Progress",
     "ProgressAwareHandler",
+    "RedactingFilter",
     "configure_logging",
     "progress_for",
 ]

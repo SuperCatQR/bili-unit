@@ -1100,3 +1100,52 @@ async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path):
 # was dropped in the Phase 6 rewrite. Aggregate-view assertions now live in
 # the SQLite-store contract tests (see test_processing_store_sqlite.py and
 # the per-stage SQL view tests).
+
+
+# -- Task 3: subtitle short-circuit exception handling ----------------------
+
+@pytest.mark.asyncio
+async def test_subtitle_shortcircuit_skips_on_db_error(tmp_path, caplog):
+    """When ParsingStore.get_video_subtitle_payload raises sqlite3.OperationalError,
+    the short-circuit is skipped (item appended to remaining) and caplog contains
+    'subtitle short-circuit failed'."""
+    import sqlite3
+    from unittest.mock import AsyncMock
+
+    from bili_unit.processing.runner import ProcessingRunner
+    from bili_unit.processing.runner._pipeline_executor import WorkItem
+
+    s = _make_settings(tmp_path)
+    uid = 123
+    bvid = "BV1testXX"
+
+    # Build a fake store
+    fake_proc_store = AsyncMock()
+    fake_proc_store.get_audio_status = AsyncMock(return_value=None)
+    fake_proc_store.save_audio_transcription = AsyncMock()
+
+    # Build a fake parse_store whose get_video_subtitle_payload raises
+    fake_parse_store = AsyncMock()
+    fake_parse_store.get_video_subtitle_payload = AsyncMock(
+        side_effect=sqlite3.OperationalError("disk I/O error")
+    )
+
+    item = WorkItem(
+        item_type="transcription",
+        item_id=bvid,
+        item_data={"pages": [{"page_index": 0, "cid": 1, "duration": 60.0, "part": "p1"}]},
+    )
+
+    runner = ProcessingRunner(s)
+    runner._store = fake_proc_store
+    runner._parse_store = fake_parse_store
+
+    with caplog.at_level("WARNING", logger="bili.processing.runner"):
+        remaining, subtitle_done = await runner._apply_subtitle_shortcuts(
+            uid, [item], dry_run=False
+        )
+
+    assert len(remaining) == 1
+    assert remaining[0].item_id == bvid
+    assert subtitle_done == 0
+    assert "subtitle short-circuit failed" in caplog.text

@@ -50,6 +50,45 @@ _MODEL_TABLE: dict[str, tuple[str, str]] = {
     "dynamic_event":  ("dynamic_event",  "dynamic_id"),
 }
 
+# Pre-built SQL for the four read/write operations that address a single model.
+# Using constants avoids f-string table/column interpolation in hot paths and
+# makes SQL auditable at module load time.
+_LIST_PK_SQL: dict[str, str] = {
+    "user_profile":   "SELECT uid FROM user_profile",
+    "video_work":     "SELECT bvid FROM video",
+    "video_subtitle": "SELECT bvid FROM video_subtitle",
+    "article_post":   "SELECT cvid FROM article",
+    "opus_post":      "SELECT opus_id FROM opus_post",
+    "dynamic_event":  "SELECT dynamic_id FROM dynamic_event",
+}
+
+_GET_PARSED_AT_SQL: dict[str, str] = {
+    "user_profile":   "SELECT parsed_at_ms FROM user_profile WHERE uid = ?",
+    "video_work":     "SELECT parsed_at_ms FROM video WHERE bvid = ?",
+    "video_subtitle": "SELECT parsed_at_ms FROM video_subtitle WHERE bvid = ?",
+    "article_post":   "SELECT parsed_at_ms FROM article WHERE cvid = ?",
+    "opus_post":      "SELECT parsed_at_ms FROM opus_post WHERE opus_id = ?",
+    "dynamic_event":  "SELECT parsed_at_ms FROM dynamic_event WHERE dynamic_id = ?",
+}
+
+_UPDATE_PAYLOAD_SQL: dict[str, str] = {
+    "user_profile":   "UPDATE user_profile SET payload = ? WHERE uid = ?",
+    "video_work":     "UPDATE video SET payload = ? WHERE bvid = ?",
+    "video_subtitle": "UPDATE video_subtitle SET payload = ? WHERE bvid = ?",
+    "article_post":   "UPDATE article SET payload = ? WHERE cvid = ?",
+    "opus_post":      "UPDATE opus_post SET payload = ? WHERE opus_id = ?",
+    "dynamic_event":  "UPDATE dynamic_event SET payload = ? WHERE dynamic_id = ?",
+}
+
+_GET_PAYLOAD_SQL: dict[str, str] = {
+    "user_profile":   "SELECT payload FROM user_profile WHERE uid = ?",
+    "video_work":     "SELECT payload FROM video WHERE bvid = ?",
+    "video_subtitle": "SELECT payload FROM video_subtitle WHERE bvid = ?",
+    "article_post":   "SELECT payload FROM article WHERE cvid = ?",
+    "opus_post":      "SELECT payload FROM opus_post WHERE opus_id = ?",
+    "dynamic_event":  "SELECT payload FROM dynamic_event WHERE dynamic_id = ?",
+}
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -509,21 +548,21 @@ class ParsingStore:
         ``article_post``, ``opus_post``, ``dynamic_event``.
         """
         try:
-            table, pk = _MODEL_TABLE[model]
+            sql = _LIST_PK_SQL[model]
         except KeyError as exc:
             raise ValueError(f"unknown parsing model: {model!r}") from exc
-        rows = await self._ctx.main.fetch_all(f"SELECT {pk} FROM {table}")
+        rows = await self._ctx.main.fetch_all(sql)
         # uid is INTEGER everywhere else it's TEXT; coerce uniformly to str
         return {str(r[0]) for r in rows}
 
     async def get_item_parsed_at_ms(self, model: str, item_id: str) -> int | None:
         """Return parsed_at_ms for one parsed item, or None if absent."""
         try:
-            table, pk = _MODEL_TABLE[model]
+            sql = _GET_PARSED_AT_SQL[model]
         except KeyError as exc:
             raise ValueError(f"unknown parsing model: {model!r}") from exc
         row = await self._ctx.main.fetch_one(
-            f"SELECT parsed_at_ms FROM {table} WHERE {pk} = ?",
+            sql,
             (item_id,),
         )
         if row is None:
@@ -543,11 +582,11 @@ class ParsingStore:
         incremental parsing tied to raw payload freshness.
         """
         try:
-            table, pk = _MODEL_TABLE[model]
+            sql = _UPDATE_PAYLOAD_SQL[model]
         except KeyError as exc:
             raise ValueError(f"unknown parsing model: {model!r}") from exc
         await self._ctx.main.execute(
-            f"UPDATE {table} SET payload = ? WHERE {pk} = ?",
+            sql,
             (json.dumps(payload, ensure_ascii=False), item_id),
         )
 
@@ -636,8 +675,13 @@ class ParsingStore:
     async def _read_payload(
         self, table: str, pk: str, item_id: Any,
     ) -> dict | None:
+        # Build a reverse-lookup key to find the pre-built SQL from _GET_PAYLOAD_SQL.
+        # Callers always use safe literal (table, pk) pairs defined in _MODEL_TABLE.
+        _table_pk_to_model = {(t, p): m for m, (t, p) in _MODEL_TABLE.items()}
+        model_key = _table_pk_to_model.get((table, pk))
+        sql = _GET_PAYLOAD_SQL[model_key] if model_key is not None else f"SELECT payload FROM {table} WHERE {pk} = ?"  # noqa: S608
         raw = await self._ctx.main.fetch_value(
-            f"SELECT payload FROM {table} WHERE {pk} = ?",
+            sql,
             (item_id,),
         )
         if raw is None:

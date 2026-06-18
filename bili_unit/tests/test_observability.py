@@ -542,3 +542,12 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
         ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ("BV2", "failed", None, None, None, None, None, "{}", 2),
     )
+
+
+# -- Task 5: RunSummary schema_version field ---------------------------------
+
+def test_run_summary_schema_version():
+    """RunSummary.schema_version defaults to 1."""
+    from bili_unit.observability.summary import RunSummary
+    instance = RunSummary(uid=42)
+    assert instance.schema_version == 1

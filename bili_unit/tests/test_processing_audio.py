@@ -1074,3 +1074,93 @@ async def test_convert_single_vad_failure_falls_back_to_fixed(tmp_path):
     # Fell back to fixed-period segmentation despite use_vad=True.
     assert len(result) == 1
     assert captured_seg["segment_seconds"] == 830
+
+
+# ---------- AudioDownloader: size cap + timeout ----------------------------
+
+@pytest.mark.asyncio
+async def test_audio_downloader_size_cap():
+    """iter_chunked yielding more bytes than max_size_bytes raises DownloadError."""
+    import contextlib
+    import os
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from bili_unit.processing import DownloadError
+    from bili_unit.processing.audio._downloader import AudioDownloader
+
+    cap = 100
+    downloader = AudioDownloader(download_timeout_s=30, max_size_bytes=cap)
+
+    # Build a fake chunk iterator that yields cap+1 bytes in one shot.
+    async def _fake_iter_chunked(size):  # noqa: ARG001
+        yield b"x" * (cap + 1)
+
+    fake_content = MagicMock()
+    fake_content.iter_chunked = _fake_iter_chunked
+
+    fake_resp = AsyncMock()
+    fake_resp.__aenter__ = AsyncMock(return_value=fake_resp)
+    fake_resp.__aexit__ = AsyncMock(return_value=False)
+    fake_resp.status = 200
+    fake_resp.content = fake_content
+
+    fake_session = AsyncMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+    fake_session.get = MagicMock(return_value=fake_resp)
+
+    with patch("bili_unit.processing.audio._downloader.aiohttp.ClientSession", return_value=fake_session):
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            dest = tf.name
+        try:
+            with pytest.raises(DownloadError, match="exceeded"):
+                await downloader.download_to_file("http://fake/url", dest)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(dest)
+
+
+@pytest.mark.asyncio
+async def test_audio_downloader_timeout_set():
+    """AudioDownloader passes download_timeout_s as ClientTimeout.total."""
+    import contextlib
+    import os
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from bili_unit.processing.audio._downloader import AudioDownloader
+
+    downloader = AudioDownloader(download_timeout_s=42)
+
+    captured_timeout: list = []
+
+    class FakeSession:
+        def __init__(self, *, timeout=None, **kw):
+            captured_timeout.append(timeout)
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            pass
+        def get(self, url, headers=None):
+            resp = AsyncMock()
+            resp.__aenter__ = AsyncMock(return_value=resp)
+            resp.__aexit__ = AsyncMock(return_value=False)
+            resp.status = 200
+            async def _empty(size):  # noqa: ARG001
+                return
+                yield  # make it an async generator
+            resp.content = MagicMock()
+            resp.content.iter_chunked = _empty
+            return resp
+
+    with patch("bili_unit.processing.audio._downloader.aiohttp.ClientSession", FakeSession):
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            dest = tf.name
+        with contextlib.suppress(Exception):
+            await downloader.download_to_file("http://fake/url", dest)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(dest)
+
+    assert len(captured_timeout) == 1
+    assert captured_timeout[0].total == 42

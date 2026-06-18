@@ -38,8 +38,16 @@ class AudioDownloader:
     quality parameter and filtering by class name.
     """
 
-    def __init__(self, credential: Credential | None = None) -> None:
+    def __init__(
+        self,
+        credential: Credential | None = None,
+        *,
+        download_timeout_s: int = 600,
+        max_size_bytes: int = 1024 * 1024 * 1024,
+    ) -> None:
         self._credential = credential
+        self._download_timeout_s = download_timeout_s
+        self._max_size_bytes = max_size_bytes
 
     async def get_audio_url(
         self,
@@ -101,25 +109,35 @@ class AudioDownloader:
         """Download audio bytes from *url* and write to *dest_path*.
 
         Raises:
-            DownloadError: on network or I/O failure.
+            DownloadError: on network, timeout, I/O failure, or size exceeded.
         """
         headers = {
             "Referer": f"{_DEFAULT_REFERER}/video/{bvid}" if bvid else _DEFAULT_REFERER,
             "User-Agent": _DEFAULT_UA,
         }
+        timeout = aiohttp.ClientTimeout(
+            total=self._download_timeout_s,
+            sock_read=60,
+        )
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(timeout=timeout) as session,
                 session.get(url, headers=headers) as resp,
             ):
                 if resp.status != 200:
                     raise DownloadError(
                         f"CDN download returned {resp.status} for {url}"
                     )
+                total_bytes = 0
                 with open(dest_path, "wb") as f:
                     async for chunk in resp.content.iter_chunked(8192):
+                        total_bytes += len(chunk)
+                        if total_bytes > self._max_size_bytes:
+                            raise DownloadError(
+                                f"CDN download exceeded {self._max_size_bytes} bytes for {url}"
+                            )
                         f.write(chunk)
-        except aiohttp.ClientError as exc:
+        except (aiohttp.ClientError, TimeoutError) as exc:
             raise DownloadError(f"CDN download failed for {url}: {exc}") from exc
 
 

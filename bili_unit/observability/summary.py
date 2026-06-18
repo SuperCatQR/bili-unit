@@ -106,14 +106,20 @@ class RunEventSummary:
 
 @dataclass(frozen=True)
 class RunSummary:
-    uid: int
-    run: RunRecord | None
-    stage_tasks: dict[str, StageTaskSummary]
-    fetch: FetchSummary
-    parse: ParseSummary
-    asr: AsrSummary
-    recent_events: list[RunEventSummary]
-    recent_attention_events: list[RunEventSummary]
+    """Aggregated read-side summary for one uid and optional run.
+
+    schema_version 标识 RunSummary 序列化结构版本，消费者据此判断兼容性。
+    """
+
+    schema_version: int = 1
+    uid: int = 0
+    run: RunRecord | None = None
+    stage_tasks: dict[str, StageTaskSummary] = field(default_factory=dict)
+    fetch: FetchSummary = field(default_factory=FetchSummary)
+    parse: ParseSummary = field(default_factory=ParseSummary)
+    asr: AsrSummary = field(default_factory=AsrSummary)
+    recent_events: list[RunEventSummary] = field(default_factory=list)
+    recent_attention_events: list[RunEventSummary] = field(default_factory=list)
 
 
 async def load_run_summary(

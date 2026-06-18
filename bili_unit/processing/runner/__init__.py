@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import shutil
 from collections.abc import Callable
@@ -70,9 +71,16 @@ class ProcessingRunner(_AudioMixin):
         self._settings = settings
         self._asr_backend = asr_backend
         self._credential_provider = credential_provider
-        self._downloader_factory = (
-            downloader_factory if downloader_factory is not None else _real_audio_downloader_cls
-        )
+        if downloader_factory is not None:
+            self._downloader_factory = downloader_factory
+        else:
+            # Wrap the real downloader class with settings-derived defaults so
+            # callers that inject a custom factory don't receive unexpected kwargs.
+            self._downloader_factory = functools.partial(
+                _real_audio_downloader_cls,
+                download_timeout_s=settings.bili_processing_asr_cdn_download_timeout_s,
+                max_size_bytes=settings.bili_processing_asr_cdn_max_size_mb * 1024 * 1024,
+            )
         self._convert_fn = (
             convert_fn if convert_fn is not None else _real_convert_single
         )
