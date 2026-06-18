@@ -2,7 +2,12 @@
 
 import pytest
 
-from bili_unit.fetching._endpoint_catalog import ENDPOINTS, PROFILES, resolve_profile
+from bili_unit.fetching._endpoint_catalog import (
+    ENDPOINTS,
+    PROFILES,
+    resolve_profile,
+)
+from bili_unit.parsing.specs import iter_specs
 
 ALL_REGISTERED = {ep.name for ep in ENDPOINTS}
 
@@ -32,17 +37,25 @@ def test_minimal_subset_of_parsing():
     assert PROFILES["minimal"] < PROFILES["parsing"]
 
 
-def test_parsing_covers_known_consumed_endpoints():
+def test_parsing_profile_covers_parsing_source_endpoints():
     # 与 bili_unit/parsing/specs.py 的 source_endpoints 对齐。
-    expected = {
-        "user_info", "relation_info", "up_stat", "overview_stat",
-        "articles", "article_detail", "article_list_detail",
-        "opus", "opus_detail",
-        "dynamics",
-        "videos", "video_detail",
-    }
-    assert PROFILES["parsing"] == frozenset(expected)
+    source_endpoints = frozenset(
+        endpoint
+        for spec in iter_specs()
+        for endpoint in spec.source_endpoints
+    )
+    assert source_endpoints <= PROFILES["parsing"]
 
+
+def test_parsing_profile_covers_required_endpoints():
+    required = frozenset(
+        endpoint
+        for spec in iter_specs()
+        for endpoint in spec.required_endpoints
+    )
+    assert "video_subtitle" in required
+    assert required <= PROFILES["parsing"]
+    assert "video_subtitle" in PROFILES["parsing"]
 
 def test_resolve_all_returns_none():
     assert resolve_profile("all") is None

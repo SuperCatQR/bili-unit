@@ -251,21 +251,21 @@ async def test_processing_failed_items_from_stage_error_and_audio(
         "INSERT INTO stage_error("
         "    stage, pipeline, item_type, item_id, error_type, message, "
         "    retryable, occurred_at_ms"
-        ") VALUES ('processing', 'audio', 'transcription', ?, ?, ?, ?, ?)",
+        ") VALUES ('asr', 'audio', 'transcription', ?, ?, ?, ?, ?)",
         (bvid_bad, "RuntimeError", "permanent", 0, 100),
     )
     await ctx.main.execute(
         "INSERT INTO stage_error("
         "    stage, pipeline, item_type, item_id, error_type, message, "
         "    retryable, occurred_at_ms"
-        ") VALUES ('processing', 'audio', 'transcription', ?, ?, ?, ?, ?)",
+        ") VALUES ('asr', 'audio', 'transcription', ?, ?, ?, ?, ?)",
         (bvid_ok, "RuntimeError", "transient 401", 1, 200),
     )
     # Plus a uid-level error with no item_id — must NOT surface as a failed item.
     await ctx.main.execute(
         "INSERT INTO stage_error("
         "    stage, pipeline, error_type, message, retryable, occurred_at_ms"
-        ") VALUES ('processing', 'audio', 'AuthError', 'config', 0, 50)",
+        ") VALUES ('asr', 'audio', 'AuthError', 'config', 0, 50)",
     )
     # Current state: bvid_ok succeeded on retry; bvid_bad is still failed.
     await ctx.main.execute(
@@ -289,7 +289,7 @@ async def test_processing_failed_items_from_stage_error_and_audio(
           FROM stage_error e
           LEFT JOIN audio_transcription t
             ON t.bvid = e.item_id
-         WHERE e.stage = 'processing'
+         WHERE e.stage = 'asr'
            AND e.item_id IS NOT NULL
            AND (t.status IS NULL OR t.status <> 'success')
          ORDER BY e.item_id

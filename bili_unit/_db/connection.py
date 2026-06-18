@@ -29,7 +29,7 @@ logger = logging.getLogger("bili.db.connection")
 
 # Single source of truth for the *currently expected* schema. Bump together
 # with a new ddl/main_v{N}.sql when we ever do a real migration.
-SUPPORTED_MAIN_SCHEMA_VERSION = 1
+SUPPORTED_MAIN_SCHEMA_VERSION = 2
 SUPPORTED_RAW_SCHEMA_VERSION = 1
 
 DbKind = Literal["main", "raw"]
@@ -109,26 +109,17 @@ class Connection:
 
     def _apply_ddl_and_seed(self) -> None:
         assert self._conn is not None
-        ddl_name = "main_v1" if self._kind == "main" else "raw_v1"
+        ddl_name = (
+            f"main_v{SUPPORTED_MAIN_SCHEMA_VERSION}"
+            if self._kind == "main"
+            else f"raw_v{SUPPORTED_RAW_SCHEMA_VERSION}"
+        )
         ddl_sql = read_ddl(ddl_name)
         # executescript handles multi-statement DDL but auto-commits any
         # pending tx; safe here because we just opened the connection.
         self._conn.executescript(ddl_sql)
-        self._apply_compat_migrations()
         self._seed_meta()
         self._verify_schema_version()
-
-    def _apply_compat_migrations(self) -> None:
-        """Apply additive, same-version compatibility migrations."""
-        assert self._conn is not None
-        if self._kind != "main":
-            return
-        columns = {
-            row["name"]
-            for row in self._conn.execute("PRAGMA table_info(image_asset)")
-        }
-        if "data" not in columns:
-            self._conn.execute("ALTER TABLE image_asset ADD COLUMN data BLOB")
 
     def _seed_meta(self) -> None:
         """Insert (uid, schema_version, created_at_ms) on first open; idempotent."""

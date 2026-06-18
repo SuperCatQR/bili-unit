@@ -10,10 +10,10 @@ from pathlib import Path
 
 _HERE = Path(__file__).parent
 
-# Whitelist of DDL files we know how to load. Keeps bumps deliberate — adding
-# main_v2 means adding the constant here and updating connection.SUPPORTED_*.
+# Whitelist of DDL files we know how to load. Keeps bumps deliberate: the
+# current main schema is v2, while raw DB remains v1.
 _DDL_FILES: dict[str, str] = {
-    "main_v1": "main_v1.sql",
+    "main_v2": "main_v2.sql",
     "raw_v1": "raw_v1.sql",
 }
 

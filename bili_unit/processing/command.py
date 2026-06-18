@@ -1,7 +1,8 @@
 # command — processing write-side entry.
 #
-# ProcessingCommand exposes only process_uid(); there is no retry_failed()
-# — failed work items are retried by re-invoking process_uid() in
+# ProcessingCommand exposes asr_uid() as the primary entry point; process_uid()
+# remains a compatibility alias. There is no retry_failed()
+# — failed work items are retried by re-invoking asr_uid() in
 # incremental mode.
 #
 # Phase 3.3 contract:
@@ -51,7 +52,7 @@ class ProcessingCommand:
         self._credential_provider = credential_provider
         self._downloader_factory = downloader_factory
         self._convert_fn = convert_fn
-        # The runner is stateless across process_uid calls; we instantiate it
+        # The runner is stateless across asr_uid/process_uid calls; we instantiate it
         # once with the cross-uid services and pass the per-uid stores into
         # ``run()``.
         self._runner = ProcessingRunner(
@@ -203,7 +204,7 @@ class ProcessingCommand:
         """Close cross-uid resources held by the command (asr_backend HTTP
         session, etc.).
 
-        Per-uid contexts are opened and closed inside :meth:`process_uid`;
+        Per-uid contexts are opened and closed inside :meth:`asr_uid`;
         nothing context-scoped survives this call.
         """
         if self._asr_backend is not None:

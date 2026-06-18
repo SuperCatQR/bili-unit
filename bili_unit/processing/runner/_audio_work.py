@@ -393,7 +393,7 @@ async def _transcribe_segment_once_with_rate_limit_retry(
             if reporter is not None:
                 await reporter.emit(
                     "asr.segment.rate_limited",
-                    stage="processing",
+                    stage="asr",
                     pipeline="audio",
                     item_type="transcription",
                     item_id=bvid,
@@ -464,7 +464,7 @@ async def _transcribe_segment_with_high_risk_fallback(
             if reporter is not None:
                 await reporter.emit(
                     "asr.segment.empty_skipped",
-                    stage="processing",
+                    stage="asr",
                     pipeline="audio",
                     item_type="transcription",
                     item_id=bvid,
@@ -504,7 +504,7 @@ async def _transcribe_segment_with_high_risk_fallback(
                 if reporter is not None:
                     await reporter.emit(
                         "asr.segment.high_risk_skipped",
-                        stage="processing",
+                        stage="asr",
                         level="WARNING",
                         pipeline="audio",
                         item_type="transcription",
@@ -549,7 +549,7 @@ async def _transcribe_segment_with_high_risk_fallback(
     if reporter is not None:
         await reporter.emit(
             "asr.segment.high_risk_split",
-            stage="processing",
+            stage="asr",
             pipeline="audio",
             item_type="transcription",
             item_id=bvid,

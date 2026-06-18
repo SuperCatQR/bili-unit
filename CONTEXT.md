@@ -24,8 +24,11 @@ _Avoid_: crawler, scraper, collector。
 第二 stage。读 fetching 的 raw_payload，筛选 / 归并 / 对象化为 typed object，可选下载图片到本地。落盘到 parsing store。
 _Avoid_: parser, transform, mapper。
 
-**processing**:
+**asr**:
 第三 stage。对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。当前仅 audio pipeline。落盘到 processing store。
+External command/API naming and the DB stage key are `asr`
+(`stage_task.stage`, `stage_error.stage`, and related payloads). `process` is
+only a backward-compatible CLI alias.
 _Avoid_: handler, worker, transformer。
 
 ### 数据形态
@@ -57,7 +60,7 @@ _Avoid_: user endpoint, top-level endpoint。
 _Avoid_: detail endpoint, sub-endpoint, child endpoint。
 
 **profile**:
-CLI `--profile {all,parsing,minimal}` 选端点子集。`all`=64、`parsing`=12（parsing 实际消费的）、`minimal`=5（smoke / CI）。
+CLI `--profile {all,parsing,minimal}` 选端点子集。`all`=64、`parsing`=13（parsing 实际消费的）、`minimal`=5（smoke / CI）。
 _Avoid_: preset, mode（mode 指抓取模式，不同概念）。
 
 **fetch run scope**:
@@ -98,7 +101,7 @@ _Avoid_: strategy, run type。
 ### 出口面
 
 **command / SQL read side**:
-bili unit 以命令行和内部写侧 command 组织流程；`command`（`BiliCommand`）驱动 sync / process。读侧由调用方直接 SQL 查询。stage 子模块（client / runner / materializer / audio）不对外，藏在 command 后。
+bili unit 以命令行和内部写侧 command 组织流程；`command`（`BiliCommand`）驱动 sync / asr（`process` 仅兼容 alias）。读侧由调用方直接 SQL 查询。stage 子模块（client / runner / materializer / audio）不对外，藏在 command 后。
 _Avoid_: service, facade, api。
 
 ## Notes

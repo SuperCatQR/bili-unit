@@ -127,7 +127,7 @@ class ProcessingRunner(_AudioMixin):
         Args:
             uid: target user.
             proc_store: per-uid processing store (writes audio_transcription
-                + stage_task[stage='processing'] + stage_error rows).
+                + stage_task[stage='asr'] + stage_error rows).
             parse_store: per-uid parsing store (read-only here — video pages
                 and subtitle payloads from main DB).
             mode: "incremental" (default) or "full".
@@ -166,7 +166,7 @@ class ProcessingRunner(_AudioMixin):
                 await reporter.start()
                 await reporter.emit(
                     "asr.run.started",
-                    stage="processing",
+                    stage="asr",
                     pipeline=_AUDIO,
                     data={
                         "mode": mode,
@@ -198,13 +198,21 @@ class ProcessingRunner(_AudioMixin):
                 max_audio_tokens=max_audio_tokens,
             )
             coverage = None
-            if self._should_audit_audio_coverage(
-                limit=limit,
-                only_bvids=only_bvids,
-                exclude_bvids=exclude_bvids,
-                retry_failed_only=retry_failed_only,
-                dry_run=dry_run,
-                budget_exceeded=budget_exceeded,
+            task_after_audio = await proc_store.get_task() or {}
+            payload_after_audio = task_after_audio.get("payload") or {}
+            pipelines_after_audio = payload_after_audio.get("pipelines") or {}
+            audio_entry_after_audio = pipelines_after_audio.get(_AUDIO) or {}
+            audio_status_after_audio = audio_entry_after_audio.get("status")
+            if (
+                audio_status_after_audio != ProcessingPipelineStatus.FAILED_PERMANENT.value
+                and self._should_audit_audio_coverage(
+                    limit=limit,
+                    only_bvids=only_bvids,
+                    exclude_bvids=exclude_bvids,
+                    retry_failed_only=retry_failed_only,
+                    dry_run=dry_run,
+                    budget_exceeded=budget_exceeded,
+                )
             ):
                 coverage = await self._audit_audio_coverage(proc_store, parse_store)
 
@@ -237,7 +245,7 @@ class ProcessingRunner(_AudioMixin):
                 }
                 await reporter.emit(
                     "asr.run.completed",
-                    stage="processing",
+                    stage="asr",
                     pipeline=_AUDIO,
                     data=summary,
                 )
@@ -250,7 +258,7 @@ class ProcessingRunner(_AudioMixin):
             if reporter is not None:
                 await reporter.emit(
                     "asr.run.failed",
-                    stage="processing",
+                    stage="asr",
                     level="ERROR",
                     pipeline=_AUDIO,
                     data={"error_type": type(exc).__name__, "error": str(exc)},
@@ -286,9 +294,9 @@ class ProcessingRunner(_AudioMixin):
 
         All other exceptions (RuntimeError, etc.) are treated as non-retryable.
         """
-        from .. import ASRConfigError
+        from .. import ASRConfigError, EmptyTranscriptError
 
-        if isinstance(exc, ASRConfigError):
+        if isinstance(exc, (ASRConfigError, EmptyTranscriptError)):
             return False
         return isinstance(exc, AudioError)
 
@@ -376,7 +384,7 @@ class ProcessingRunner(_AudioMixin):
             if reporter is not None:
                 await reporter.emit(
                     "asr.coverage.partial",
-                    stage="processing",
+                    stage="asr",
                     level="WARNING",
                     pipeline=_AUDIO,
                     data=coverage,

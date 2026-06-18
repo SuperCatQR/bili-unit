@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..._types import CredentialProvider
 from .. import (
+    EmptyTranscriptError,
     ProcessingItemStatus,
     ProcessingPipelineStatus,
 )
@@ -92,7 +93,7 @@ class _AudioMixin:
         dry_run: bool = False,
         max_audio_seconds: float | None = None,
         max_audio_tokens: int | None = None,
-    ) -> tuple[list[str], dict, list[str]]:
+    ) -> tuple[list[str], dict | None, list[str]]:
         """Phase-1 audio: discover → enqueue → workers → rollup.
 
         Returns the bvid list that survived discovery + filtering (the
@@ -122,12 +123,35 @@ class _AudioMixin:
             if self._reporter is not None:
                 await self._reporter.emit(
                     "asr.discovery.failed",
-                    stage="processing",
+                    stage="asr",
                     level="WARNING",
                     pipeline=_AUDIO,
                     data={"error_type": type(exc).__name__, "error": str(exc)},
                 )
             audio_items, skipped, subtitle_done = [], 0, 0
+            await store.record_error(
+                pipeline=_AUDIO,
+                item_type="discovery",
+                item_id=None,
+                error_type=type(exc).__name__,
+                message=str(exc),
+                retryable=False,
+                detail={"uid": uid, "mode": mode},
+            )
+            rollup = {
+                "discovery": {
+                    "total": 1,
+                    "completed": 0,
+                    "failed": 1,
+                    "skipped": 0,
+                },
+            }
+            await store.update_task_pipeline(
+                _AUDIO,
+                status=ProcessingPipelineStatus.FAILED_PERMANENT.value,
+                items=rollup,
+            )
+            return [], None, []
 
         candidates = [it.item_id for it in audio_items]
         estimate = estimate_audio_work(
@@ -155,7 +179,7 @@ class _AudioMixin:
         if self._reporter is not None:
             await self._reporter.emit(
                 "asr.discovery.completed",
-                stage="processing",
+                stage="asr",
                 pipeline=_AUDIO,
                 data={
                     "candidate_count": len(candidates),
@@ -178,7 +202,7 @@ class _AudioMixin:
             if self._reporter is not None:
                 await self._reporter.emit(
                     "asr.budget.exceeded",
-                    stage="processing",
+                    stage="asr",
                     level="WARNING",
                     pipeline=_AUDIO,
                     data={
@@ -208,7 +232,7 @@ class _AudioMixin:
             if self._reporter is not None:
                 await self._reporter.emit(
                     "asr.dry_run.completed",
-                    stage="processing",
+                    stage="asr",
                     pipeline=_AUDIO,
                     data={"candidates": candidates, "skipped": skipped},
                 )
@@ -556,7 +580,7 @@ class _AudioMixin:
                 if self._reporter is not None:
                     await self._reporter.emit(
                         "asr.worker.unexpected_error",
-                        stage="processing",
+                        stage="asr",
                         level="ERROR",
                         pipeline=_AUDIO,
                         item_type="transcription",
@@ -570,7 +594,7 @@ class _AudioMixin:
             if ok and self._reporter is not None:
                 await self._reporter.emit(
                     "asr.item.completed",
-                    stage="processing",
+                    stage="asr",
                     pipeline=_AUDIO,
                     item_type="transcription",
                     item_id=item.item_id,
@@ -616,7 +640,7 @@ class _AudioMixin:
             event_prefix="asr",
             item_type="transcription",
             item_id=bvid,
-            source_endpoints=("video_detail",),
+            source_endpoints=("video", "video_page"),
             retry_event="audio_item_retry",
             failed_event="audio_item_failed",
             log_id_field="bvid",
@@ -780,6 +804,14 @@ class _AudioMixin:
             # Bvid completed successfully — drop its resume cache.  We only
             # clear on the success path; partial-failure cache survives so
             # the next retry can resume cheaply.
+            non_empty_pages = [
+                p for p in page_results
+                if isinstance(p, dict) and str(p.get("text") or "").strip()
+            ]
+            if not non_empty_pages:
+                raise EmptyTranscriptError(
+                    f"ASR produced no non-empty transcript text for bvid {bvid}"
+                )
             asr_cache_for_clear = self._get_asr_cache()
             if asr_cache_for_clear is not None:
                 asr_cache_for_clear.clear_bvid(uid, bvid)

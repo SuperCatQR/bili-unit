@@ -191,6 +191,19 @@ def test_profile_short_flag():
     assert args.profile == "minimal"
 
 
+def test_resolve_fetch_endpoints_uses_parsing_profile_for_sync():
+    from bili_unit.__main__ import _build_parser, _resolve_fetch_endpoints
+    from bili_unit.fetching._endpoint_catalog import PROFILES
+
+    parser = _build_parser()
+    args = parser.parse_args(["sync", "1", "--profile", "parsing"])
+    endpoints = _resolve_fetch_endpoints(args)
+
+    assert endpoints is not None
+    assert set(endpoints) == set(PROFILES["parsing"])
+    assert "video_subtitle" in endpoints
+
+
 def test_profile_unknown_rejected():
     from bili_unit.__main__ import _build_parser
 

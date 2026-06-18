@@ -1,4 +1,4 @@
--- bili_unit main DB schema, version 1.
+-- bili_unit main DB schema, version 2.
 --
 -- One file per uid: data/bili/{uid}.db.
 -- Consumer contract: anything in this file is part of the public SQL surface.
@@ -143,7 +143,7 @@ CREATE INDEX IF NOT EXISTS idx_image_source ON image_asset(source_kind, source_i
 
 CREATE TABLE IF NOT EXISTS stage_task (
     stage         TEXT PRIMARY KEY
-                  CHECK (stage IN ('fetching','parsing','processing')),
+                  CHECK (stage IN ('fetching','parsing','asr')),
     status        TEXT NOT NULL,
     payload       TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL,
@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS fetch_endpoint_state (
 
 CREATE TABLE IF NOT EXISTS stage_error (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    stage          TEXT NOT NULL CHECK (stage IN ('fetching','processing')),
+    stage          TEXT NOT NULL CHECK (stage IN ('fetching','parsing','asr')),
     endpoint       TEXT,
     pipeline       TEXT,
     item_type      TEXT,
@@ -249,5 +249,5 @@ SELECT
                                                                 AS total_cache_hits,
     (SELECT COUNT(*) FROM stage_error WHERE stage = 'fetching')
                                                                 AS fetching_error_count,
-    (SELECT COUNT(*) FROM stage_error WHERE stage = 'processing')
-                                                                AS processing_error_count;
+    (SELECT COUNT(*) FROM stage_error WHERE stage = 'asr')
+                                                                AS asr_error_count;

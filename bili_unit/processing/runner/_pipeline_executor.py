@@ -43,9 +43,8 @@ if TYPE_CHECKING:
 class WorkItem:
     """A single processing work unit, addressable by (item_type, item_id).
 
-    item_data carries the typed-object dict (e.g. a VideoDetail serialised
-    via to_dict()).  Keeping this self-contained makes the work call a pure
-    function.
+    item_data carries a self-contained slice of parsed main-DB data. Keeping
+    this self-contained makes the work call a pure function.
     """
 
     item_type: str
@@ -221,7 +220,7 @@ async def run_item_with_retry(
             if reporter is not None:
                 await reporter.emit(
                     f"{ctx.event_prefix}.item.retry_scheduled",
-                    stage="processing",
+                    stage="asr",
                     pipeline=ctx.pipeline,
                     item_type=ctx.item_type,
                     item_id=ctx.item_id,
@@ -258,7 +257,7 @@ async def run_item_with_retry(
         if reporter is not None:
             await reporter.emit(
                 f"{ctx.event_prefix}.item.failed",
-                stage="processing",
+                stage="asr",
                 level="WARNING",
                 pipeline=ctx.pipeline,
                 item_type=ctx.item_type,

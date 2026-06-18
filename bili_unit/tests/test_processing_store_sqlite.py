@@ -436,7 +436,7 @@ async def test_record_error_persists_columns(store: ProcessingStore) -> None:
         (eid,),
     )
     assert row is not None
-    assert row["stage"] == "processing"
+    assert row["stage"] == "asr"
     assert row["pipeline"] == "audio"
     assert row["item_type"] == "transcription"
     assert row["item_id"] == "BV1"
@@ -563,4 +563,4 @@ async def test_list_errors_does_not_leak_other_stage_rows(
     )
     rows = await store.list_errors()
     assert len(rows) == 1
-    assert rows[0]["stage"] == "processing"
+    assert rows[0]["stage"] == "asr"

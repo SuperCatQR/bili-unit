@@ -290,7 +290,7 @@ async def _load_asr_summary(
     run_id: str | None,
     stage_tasks: dict[str, StageTaskSummary],
 ) -> AsrSummary:
-    task = stage_tasks.get("processing")
+    task = stage_tasks.get("asr")
     audio_status = None
     if task is not None:
         pipelines = task.payload.get("pipelines")

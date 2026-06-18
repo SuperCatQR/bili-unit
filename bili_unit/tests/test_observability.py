@@ -40,7 +40,7 @@ async def test_reporter_auto_starts_and_records_event() -> None:
 
     event = await reporter.emit(
         "asr.item.retry_scheduled",
-        stage="processing",
+        stage="asr",
         level="WARNING",
         pipeline="audio",
         item_type="transcription",
@@ -55,7 +55,7 @@ async def test_reporter_auto_starts_and_records_event() -> None:
     assert event.to_dict() == {
         "run_id": "run-1",
         "uid": 42,
-        "stage": "processing",
+        "stage": "asr",
         "event": "asr.item.retry_scheduled",
         "level": "WARNING",
         "ts_ms": event.ts_ms,
@@ -99,7 +99,7 @@ async def test_jsonl_sink_writes_run_and_event_records(tmp_path: Path) -> None:
 
     await reporter.emit(
         "asr.coverage.partial",
-        stage="processing",
+        stage="asr",
         data={"missing": 2},
     )
     await reporter.complete("PARTIAL", summary={"missing": 2})
@@ -311,7 +311,7 @@ async def test_run_summary_reads_current_state_without_run_records(tmp_path: Pat
     try:
         await ctx_db.main.execute(
             "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
-            "VALUES ('processing', 'PARTIAL', ?, 1, 2)",
+            "VALUES ('asr', 'PARTIAL', ?, 1, 2)",
             (
                 json.dumps({
                     "pipelines": {
@@ -435,7 +435,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
                 "run-new",
                 2000 + idx,
                 level,
-                "processing",
+                "asr",
                 event,
                 "audio",
                 "transcription",
@@ -475,7 +475,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
         "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
         "VALUES (?, ?, ?, ?, ?)",
         (
-            "processing",
+            "asr",
             "PARTIAL",
             json.dumps({
                 "pipelines": {

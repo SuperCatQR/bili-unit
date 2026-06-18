@@ -381,14 +381,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_proc = sub.add_parser(
         "asr",
         aliases=["process"],
-        help="Run audio ASR for a uid",
+        help="Run audio ASR for a uid (process is a compatibility alias)",
     )
     p_proc.add_argument("uid", type=int, help="Target Bilibili user uid")
     p_proc.add_argument(
         "--mode", "-m",
         choices=["incremental", "full"],
         default="incremental",
-        help="ASR mode (default: incremental)",
+        help="ASR mode (default: incremental; internal DB stage remains 'processing')",
     )
     p_proc.add_argument(
         "--asr-backend", "-b",

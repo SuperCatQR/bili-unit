@@ -58,7 +58,7 @@ async def _spy_process_audio_one(runner, uid, item, credential):
             "total_duration": 0.0,
             "total_chars": 0,
         },
-        "source_endpoints": ["video_detail"],
+        "source_endpoints": ["video", "video_page"],
         "processed_at": now,
     }
     await runner._store.save_audio_transcription(
@@ -130,7 +130,7 @@ async def _seed_audio_status(
                 "item_id": bvid,
                 "status": status.upper(),
                 "result": None,
-                "source_endpoints": ["video_detail"],
+                "source_endpoints": ["video", "video_page"],
                 "processed_at": 0,
             },
             processed_at_ms=0,
@@ -283,7 +283,7 @@ async def test_dry_run_skips_worker_dispatch(cmd, settings):
     assert result.dry_run_candidates is not None
     assert sorted(result.dry_run_candidates) == sorted(bvids)
 
-    # stage_task[stage='processing'] still seeded.
+    # stage_task[stage='asr'] still seeded.
     task = await _read_processing_task(settings, uid)
     assert task is not None
     pipelines = task["payload"].get("pipelines", {})
@@ -298,7 +298,7 @@ async def test_dry_run_skips_worker_dispatch(cmd, settings):
 
 
 async def test_dry_run_with_no_videos_returns_success(cmd):
-    """Dry-run on a uid with no video_detail data �?SUCCESS, empty candidates."""
+    """Dry-run on a uid with no parsed video rows returns empty candidates."""
     uid = 8005
 
     result = await cmd.process_uid(uid, dry_run=True)

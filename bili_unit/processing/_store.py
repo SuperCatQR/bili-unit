@@ -8,10 +8,10 @@
 # Storage layout (main DB only; processing does not touch the raw DB):
 #
 #   * audio_transcription  -- per-bvid pipeline output (ASR / subtitle / official).
-#   * stage_task[stage='processing']
+#   * stage_task[stage='asr']
 #       Top-level task envelope. ``payload`` JSON carries the pipeline rollup:
 #           {"pipelines": {"audio": {"status": "PENDING", "items": {...}}}}
-#   * stage_error[stage='processing']
+#   * stage_error[stage='asr']
 #       Per-item error sink (auto-increment id). Carries pipeline / item_type /
 #       item_id columns; consumers who only care about audio can filter on
 #       ``pipeline='audio'``.
@@ -37,7 +37,7 @@ from typing import Any
 
 from .._db import UidContext
 
-_PROCESSING_STAGE = "processing"
+_PROCESSING_STAGE = "asr"
 
 
 def _now_ms() -> int:
@@ -186,11 +186,11 @@ class ProcessingStore:
         return {str(r["bvid"]): str(r["status"]) for r in rows}
 
     # ------------------------------------------------------------------
-    # task state (stage_task[stage='processing'])
+    # task state (stage_task[stage='asr'])
     # ------------------------------------------------------------------
 
     async def init_task(self, pipelines: list[str]) -> None:
-        """Seed ``stage_task[stage='processing']`` with PENDING pipeline entries.
+        """Seed ``stage_task[stage='asr']`` with PENDING pipeline entries.
 
         Idempotent: re-running with the same (or overlapping) pipeline list
         uses ``INSERT OR IGNORE`` so any existing pipeline status / items are
@@ -314,7 +314,7 @@ class ProcessingStore:
         }
 
     # ------------------------------------------------------------------
-    # error sink (stage_error[stage='processing'])
+    # error sink (stage_error[stage='asr'])
     # ------------------------------------------------------------------
 
     async def record_error(

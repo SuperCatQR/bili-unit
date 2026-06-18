@@ -128,6 +128,9 @@ async def test_manifest_summary_view_works_on_empty_db(
     assert int(row["schema_version"]) == SUPPORTED_MAIN_SCHEMA_VERSION
     assert row["video_count"] == 0
     assert row["transcribed_count"] == 0
+    columns = set(row.keys())
+    assert "asr_error_count" in columns
+    assert "processing_error_count" not in columns
 
 
 # ---------------------------------------------------------------------------
@@ -197,37 +200,50 @@ async def test_open_main_rejects_unknown_schema_version(tmp_path: Path) -> None:
         await open_main(55, tmp_path)
 
 
-async def test_open_main_adds_image_asset_data_column_to_existing_v1(
-    tmp_path: Path,
-) -> None:
+async def test_open_main_rejects_v1_without_auto_migration(tmp_path: Path) -> None:
     db_path = tmp_path / f"77{MAIN_DB_SUFFIX}"
     raw = sqlite3.connect(str(db_path))
     raw.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     raw.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '1')")
-    raw.execute(
-        """
-        CREATE TABLE image_asset (
-            url_hash TEXT PRIMARY KEY,
-            source_kind TEXT NOT NULL,
-            source_id TEXT NOT NULL,
-            url TEXT NOT NULL,
-            file_path TEXT,
-            bytes INTEGER,
-            status TEXT NOT NULL,
-            downloaded_at_ms INTEGER NOT NULL
-        )
-        """,
-    )
     raw.commit()
     raw.close()
 
-    conn = await open_main(77, tmp_path)
-    try:
-        rows = await conn.fetch_all("PRAGMA table_info(image_asset)")
-        columns = {row["name"]: row["type"].upper() for row in rows}
-        assert columns["data"] == "BLOB"
-    finally:
-        await conn.close()
+    with pytest.raises(SchemaMismatchError):
+        await open_main(77, tmp_path)
+
+
+async def test_main_v2_stage_task_accepts_fetching_parsing_asr_only(
+    main_conn: Connection,
+) -> None:
+    for stage in ("fetching", "parsing", "asr"):
+        await main_conn.execute(
+            "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
+            "VALUES (?, 'ok', '{}', 1, 1)",
+            (stage,),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await main_conn.execute(
+            "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
+            "VALUES ('processing', 'ok', '{}', 1, 1)",
+        )
+
+
+async def test_main_v2_stage_error_accepts_fetching_parsing_asr_only(
+    main_conn: Connection,
+) -> None:
+    for stage in ("fetching", "parsing", "asr"):
+        await main_conn.execute(
+            "INSERT INTO stage_error(stage, error_type, message, occurred_at_ms) "
+            "VALUES (?, 'Error', 'boom', 1)",
+            (stage,),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await main_conn.execute(
+            "INSERT INTO stage_error(stage, error_type, message, occurred_at_ms) "
+            "VALUES ('processing', 'Error', 'boom', 1)",
+        )
 
 
 # ---------------------------------------------------------------------------

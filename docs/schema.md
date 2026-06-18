@@ -1,7 +1,7 @@
 # schema —— bili_unit SQLite 数据契约
 
-> 真相源：[main_v1.sql](../bili_unit/_db/ddl/main_v1.sql)、[raw_v1.sql](../bili_unit/_db/ddl/raw_v1.sql)
-> 适用版本：`schema_version = 1`（main DB 与 raw DB 各自独立编号）
+> 真相源：[main_v2.sql](../bili_unit/_db/ddl/main_v2.sql)、[raw_v1.sql](../bili_unit/_db/ddl/raw_v1.sql)
+> 适用版本：main DB `schema_version = 2`；raw DB `schema_version = 1`（各自独立编号）
 
 bili_unit 自 Phase 3 起将自己重新定位为「被动持久化数据存储」：写侧通过 `BiliCommand` 编排三 stage，读侧 **直接 SQL 查询**——不再有 Python query facade。本文件描述消费方需要的 SQL 表面。
 
@@ -35,7 +35,7 @@ sqlite3 output/bili/123456.db "SELECT * FROM manifest_summary;"
 
 ### Schema versioning
 
-`meta.schema_version` 当前为 `'1'`。迁移策略：DDL 不兼容修改时 bump major（`schema_version = 2` 等），并附带 `tools/migrate_*` 脚本；新增列、新增 view、新增 index 不算不兼容。运行时连接器检测到 `schema_version` 高于自己支持的最大版本会抛 `SchemaMismatchError`。
+main DB `meta.schema_version` 当前为 `'2'`；raw DB `meta.schema_version` 当前为 `'1'`。迁移策略：DDL 不兼容修改时 bump major，并附带 `tools/migrate_*` 脚本；新增列、新增 view、新增 index 不算不兼容。运行时连接器检测到 `schema_version` 高于自己支持的最大版本会抛 `SchemaMismatchError`。
 
 ## 2. Path helpers
 
@@ -59,7 +59,7 @@ sqlite3 output/bili/123456.db "SELECT * FROM manifest_summary;"
 | 列 | 类型 | 说明 |
 |----|------|------|
 | `key` | TEXT PK | 见下方约定 |
-| `value` | TEXT NOT NULL | 字符串化的值（`schema_version='1'`、`uid='123456'`、ms-epoch 的 `'1718000000000'` 等） |
+| `value` | TEXT NOT NULL | 字符串化的值（main DB `schema_version='2'`、raw DB `schema_version='1'`、`uid='123456'`、ms-epoch 的 `'1718000000000'` 等） |
 
 约定 keys：`schema_version`、`uid`、`created_at_ms`、`last_fetched_at_ms`、`last_parsed_at_ms`、`last_processed_at_ms`。后三个是 stage 入口在写入收尾时刷新的「最近一次成功跑完时间」。
 
@@ -146,10 +146,12 @@ PK：`url_hash`（即 url 的 md5，便于按 url 唯一去重）。
 ## 4. Producer state 表（仅 debug 用）
 
 > ⚠️ 这三张表 **不属于消费方契约**，可能在 minor 版本调整列。需要稳定的话只读 §3 / §5。
+> Naming note: the user-facing command/event name and DB stage key are `asr`.
+> `process` remains only a CLI compatibility alias.
 
 ### 4.1 `stage_task`
 
-PK：`stage`，CHECK IN (`'fetching'`,`'parsing'`,`'processing'`)。一个 stage 一行，覆盖式写入。`payload` JSON 内含 `endpoints` / `models` / `pipelines` 子状态、`failed_item_ids`、`item_progress` 等运行时细节，结构与旧版 task.json 同源。
+PK：`stage`，CHECK IN (`'fetching'`,`'parsing'`,`'asr'`)。一个 stage 一行，覆盖式写入。`payload` JSON 内含 `endpoints` / `models` / `pipelines` 子状态、`failed_item_ids`、`item_progress` 等运行时细节，结构与旧版 task.json 同源。
 
 ### 4.2 `fetch_endpoint_state`
 
@@ -157,7 +159,7 @@ PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error
 
 ### 4.3 `stage_error`
 
-`id INTEGER PK AUTOINCREMENT`，CHECK `stage IN ('fetching','processing')`。列：`endpoint` / `pipeline` / `item_type` / `item_id` / `error_type` / `message` / `retryable` / `detail` / `occurred_at_ms`。索引 `idx_stage_error_stage(stage, occurred_at_ms)`。
+`id INTEGER PK AUTOINCREMENT`，CHECK `stage IN ('fetching','asr')`。列：`endpoint` / `pipeline` / `item_type` / `item_id` / `error_type` / `message` / `retryable` / `detail` / `occurred_at_ms`。索引 `idx_stage_error_stage(stage, occurred_at_ms)`。
 
 `parsing` 阶段不写错误行——parsing 失败粒度到 model，记录在
 `stage_task.payload.models[*].status` 与 `stage_event` 的 `parse.model.failed`
@@ -212,7 +214,7 @@ LEFT JOIN：尚未处理的视频也会出现，转写列均 NULL。
 | `transcribed_count` | `audio_transcription WHERE status='success'` |
 | `transcription_failed_count` | `audio_transcription WHERE status='failed'` |
 | `total_audio_tokens` / `total_audio_seconds` / `total_cache_hits` | `COALESCE(SUM(...), 0)` over audio_transcription |
-| `fetching_error_count` / `processing_error_count` | `stage_error WHERE stage=…` |
+| `fetching_error_count` / `asr_error_count` | `stage_error WHERE stage=…` |
 
 注意 meta 来源列保持 TEXT（因 `meta.value` 是 TEXT），数值列做 SUM/COUNT 后是 INTEGER/REAL；消费方拿到 `last_*_at_ms` 时按需 `int(row["last_fetched_at_ms"])`。
 
@@ -258,7 +260,7 @@ FROM video_full
 WHERE bvid = ?;
 ```
 
-`transcription_status IS NULL` 表示 processing 还没跑过这个视频。
+`transcription_status IS NULL` 表示 ASR 还没跑过这个视频。
 
 ### 7.3 找出尚未转写的视频
 

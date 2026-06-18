@@ -30,14 +30,14 @@ def get_endpoint(name: str) -> EndpointSpec | None:
 
 # Profiles — 用于 CLI --profile 选择端点子集（issue #2）。
 #   "all"      → None sentinel，所有已注册端点（向后兼容默认）
-#   "parsing"  → parsing 层实际消费的 12 个端点（≈ 2-3 分钟 / 中等账号）
+#   "parsing"  → parsing 层实际消费的 13 个端点（≈ 2-3 分钟 / 中等账号）
 #   "minimal"  → 5 个 listing 端点，用于 smoke / CI
 PARSING_PROFILE: frozenset[str] = frozenset({
     "user_info", "relation_info", "up_stat", "overview_stat",
     "articles", "article_detail", "article_list_detail",
     "opus", "opus_detail",
     "dynamics",
-    "videos", "video_detail",
+    "videos", "video_detail", "video_subtitle",
 })
 MINIMAL_PROFILE: frozenset[str] = frozenset({
     "user_info", "videos", "articles", "opus", "dynamics",

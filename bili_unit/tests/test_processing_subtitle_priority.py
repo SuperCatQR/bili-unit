@@ -4,11 +4,11 @@
 # ASR and writes a SUCCESS row sourced from the subtitle segments. The
 # fallback path (partial / missing subtitle) still runs the ASR worker.
 #
-# Storage flips from file-KV to per-uid SQLite:
-#   * raw video_detail payload 鈫?``FetchingStore.save_raw_payload``
-#   * parsed VideoSubtitle      鈫?``ParsingStore.save_video_subtitle``
-#   * audio result              鈫?``ProcessingStore.save_audio_transcription``
-#                                 (read back through ``get_audio_payload``).
+# Storage is per-uid SQLite:
+#   * parsed video/video_page    -> main DB
+#   * parsed VideoSubtitle       -> ``ParsingStore.save_video_subtitle``
+#   * audio result               -> ``ProcessingStore.save_audio_transcription``
+#                                  (read back through ``get_audio_payload``).
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ async def _spy_process_audio_one(runner, uid, item, credential):
             "total_chars": 0,
             "transcription_source": "asr",
         },
-        "source_endpoints": ["video_detail"],
+        "source_endpoints": ["video", "video_page"],
         "processed_at": now,
     }
     await runner._store.save_audio_transcription(

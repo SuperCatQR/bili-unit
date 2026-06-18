@@ -80,6 +80,10 @@ class ASRAPIError(AudioError):
     """ASR API 返回错误。"""
 
 
+class EmptyTranscriptError(AudioError):
+    """ASR completed but produced no non-empty text for the bvid."""
+
+
 class AudioSizeError(AudioError):
     """音频超出大小限制。"""
 
@@ -157,6 +161,7 @@ __all__ = [
     "AudioSizeError",
     "ConvertError",
     "DownloadError",
+    "EmptyTranscriptError",
     "ProcessingCommandResult",
     "ProcessingError",
     "ProcessingItemStatus",

@@ -20,9 +20,11 @@ import pytest_asyncio
 from bili_unit._db import UidContext
 from bili_unit._env import BiliSettings
 from bili_unit.processing import (
+    ASRAPIError,
     AudioError,
     DownloadError,
     ProcessingItemStatus,
+    ProcessingPipelineStatus,
     ProcessingTaskStatus,
 )
 from bili_unit.processing._store import ProcessingStore
@@ -75,7 +77,7 @@ async def _fake_process_audio_one(runner, uid, item, credential):
             "total_chars": len(f"mock transcription for {bvid}"),
             "transcription_source": "asr",
         },
-        "source_endpoints": ["video_detail"],
+        "source_endpoints": ["video", "video_page"],
         "processed_at": now,
     }
     await runner._store.save_audio_transcription(
@@ -231,6 +233,16 @@ async def _list_stage_runs(settings: BiliSettings, uid: int) -> list[dict]:
             }
             for row in rows
         ]
+    finally:
+        await ctx.close()
+
+
+async def _read_processing_task(settings: BiliSettings, uid: int) -> dict | None:
+    ctx = UidContext(uid, settings.bili_db_dir)
+    await ctx.open()
+    try:
+        store = ProcessingStore(ctx)
+        return await store.get_task()
     finally:
         await ctx.close()
 
@@ -413,6 +425,48 @@ async def test_audio_pipeline_failure_records_error(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_audio_discovery_error_records_stage_error_and_fails(tmp_path):
+    s = _make_settings(tmp_path)
+    uid = 806
+
+    cmd = ProcessingCommand(
+        s,
+        credential_provider=AsyncMock(return_value=None),
+    )
+    with patch.object(
+        ProcessingRunner,
+        "_discover_audio_items",
+        new=AsyncMock(side_effect=RuntimeError("discovery boom")),
+    ):
+        result = await cmd.process_uid(uid)
+
+    assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
+    assert result.estimate is None
+    assert await _list_audio_items(s, uid) == []
+
+    task = await _read_processing_task(s, uid)
+    assert task is not None
+    assert task["status"] == ProcessingTaskStatus.FAILED_PERMANENT.value
+    audio = task["payload"]["pipelines"]["audio"]
+    assert audio["status"] == ProcessingPipelineStatus.FAILED_PERMANENT.value
+    assert audio["items"]["discovery"]["failed"] == 1
+
+    errs = await _list_processing_errors(s, uid)
+    assert len(errs) == 1
+    assert errs[0]["pipeline"] == "audio"
+    assert errs[0]["item_type"] == "discovery"
+    assert errs[0]["item_id"] is None
+    assert errs[0]["error_type"] == "RuntimeError"
+    assert errs[0]["message"] == "discovery boom"
+    assert errs[0]["retryable"] is False
+
+    runs = await _list_stage_runs(s, uid)
+    assert runs[0]["status"] == "FAILED"
+    assert runs[0]["summary"]["status"] == ProcessingTaskStatus.FAILED_PERMANENT.value
+    await cmd.close()
+
+
+@pytest.mark.asyncio
 async def test_audio_pipeline_no_video_detail(cmd, settings):
     uid = 803
     result = await cmd.process_uid(uid)
@@ -491,6 +545,8 @@ async def test_audio_retry_exhausts_then_fails(tmp_path):
 
 @pytest.mark.asyncio
 async def test_audio_retry_succeeds_after_first_failure(tmp_path):
+    from bili_unit.processing.audio import Mp3Segment
+
     s = _make_settings(tmp_path, max_retries=2, retry_delays="0,0")
     uid = 901
     await _seed_video_pages(s, uid, ["BVretryOk"])
@@ -501,7 +557,9 @@ async def test_audio_retry_succeeds_after_first_failure(tmp_path):
     )
     mock_dl.download_to_file = AsyncMock()
 
-    mock_convert = AsyncMock(return_value=[])
+    seg = Mp3Segment(tmp_path / "retry-ok.mp3", 0.0, 60.0)
+    seg.path.write_bytes(b"x")
+    mock_convert = AsyncMock(return_value=[seg])
 
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(return_value=type("R", (), {"text": "hi", "duration": 60})())
@@ -574,6 +632,63 @@ async def test_audio_zero_max_retries_immediate_fail(tmp_path):
     assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
     errs = await _list_processing_errors(s, uid)
     assert len(errs) == 1
+    assert errs[0]["retryable"] is False
+    await cmd.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_all_empty_transcript_fails_persistently(tmp_path):
+    from bili_unit.processing.audio import Mp3Segment
+
+    s = _make_settings(tmp_path, max_retries=2, retry_delays="0,0")
+    uid = 904
+    bvid = "BVemptyAll"
+    await _seed_video_pages(s, uid, [bvid])
+
+    mock_dl = AsyncMock()
+    mock_dl.get_audio_url = AsyncMock(return_value={"url": "https://cdn/x", "duration": 3.5})
+    mock_dl.download_to_file = AsyncMock()
+
+    seg = Mp3Segment(tmp_path / "tail.mp3", 0.0, 3.5)
+    seg.path.write_bytes(b"x")
+    mock_convert = AsyncMock(return_value=[seg])
+
+    mock_asr = AsyncMock()
+    mock_asr.transcribe = AsyncMock(
+        side_effect=ASRAPIError(
+            "MiMo ASR returned empty transcription text; inspect the video manually"
+        )
+    )
+    mock_asr.model = "mock-asr"
+    mock_asr.close = AsyncMock()
+
+    cmd = ProcessingCommand(
+        s,
+        asr_backend=mock_asr,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+
+    result = await cmd.process_uid(uid)
+
+    assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
+    assert mock_asr.transcribe.await_count == 1
+
+    rows = await _list_audio_items(s, uid)
+    assert len(rows) == 1
+    assert rows[0]["bvid"] == bvid
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["transcript"] is None
+    assert rows[0]["payload"]["status"] == ProcessingItemStatus.FAILED.value
+
+    errs = await _list_processing_errors(s, uid)
+    assert len(errs) == 1
+    assert errs[0]["pipeline"] == "audio"
+    assert errs[0]["item_type"] == "transcription"
+    assert errs[0]["item_id"] == bvid
+    assert errs[0]["error_type"] == "EmptyTranscriptError"
+    assert "no non-empty transcript text" in errs[0]["message"]
     assert errs[0]["retryable"] is False
     await cmd.close()
 
