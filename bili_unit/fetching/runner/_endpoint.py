@@ -275,6 +275,21 @@ class _EndpointMixin:
         pagination_loop_detected = False
         seen_page_requests: set[tuple[tuple[str, str], ...]] = set()
 
+        async def _emit_pagination_loop(params: dict[str, Any]) -> None:
+            reporter = getattr(self, "_reporter", None)
+            if reporter is None:
+                return
+            await reporter.emit(
+                "fetch.endpoint.pagination_loop_detected",
+                stage="fetching",
+                level="WARNING",
+                endpoint=ep_name,
+                data={
+                    "request_params": params,
+                    "page_count": len(pages_this_run),
+                },
+            )
+
         async def _fetch_one_page(params: dict[str, Any]):
             await self._rl.acquire(spec.rate_limit_key)
             return await self._fetch_fn(
@@ -441,6 +456,7 @@ class _EndpointMixin:
                             "request_params": request_params,
                         },
                     )
+                    await _emit_pagination_loop(request_params)
                     break
                 seen_page_requests.add(request_key)
 
@@ -470,6 +486,18 @@ class _EndpointMixin:
                     },
                     fetched_at_ms=now_ms,
                 )
+                reporter = getattr(self, "_reporter", None)
+                if reporter is not None:
+                    await reporter.emit(
+                        "fetch.endpoint.page_saved",
+                        stage="fetching",
+                        endpoint=ep_name,
+                        data={
+                            "page_count": len(stored_pages_base) + len(pages_this_run),
+                            "next_request": page.next_request,
+                            "is_last_page": page.is_last_page,
+                        },
+                    )
 
             # -- incremental mode: check item IDs --
             if known_ids is not None and spec.pagination_strategy != "none" and id_paths is not None:
@@ -544,6 +572,7 @@ class _EndpointMixin:
                             "request_params": next_params,
                         },
                     )
+                    await _emit_pagination_loop(next_params)
                     break
 
             request_params = next_params

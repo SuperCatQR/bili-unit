@@ -1065,8 +1065,10 @@ async def test_anchor_pagination_loop_stops_and_saves_pages(tmp_path: Path):
             )
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
+            reporter=_reporter(ctx, 302, mode="full", endpoints=["upower_qa"]),
         )
         result = await runner.run_task(302, endpoints=["upower_qa"])
 
@@ -1081,6 +1083,31 @@ async def test_anchor_pagination_loop_stops_and_saves_pages(tmp_path: Path):
         progress = await store.get_progress("upower_qa")
         assert progress is not None
         assert progress["cursor"] is None
+
+        events = await _list_stage_events(ctx)
+        names = [event["event"] for event in events]
+        assert names == [
+            "fetch.run.started",
+            "fetch.endpoint.started",
+            "fetch.endpoint.page_saved",
+            "fetch.endpoint.page_saved",
+            "fetch.endpoint.page_saved",
+            "fetch.endpoint.pagination_loop_detected",
+            "fetch.endpoint.completed",
+            "fetch.run.completed",
+        ]
+        page_saved = [
+            event for event in events
+            if event["event"] == "fetch.endpoint.page_saved"
+        ]
+        assert [event["data"]["page_count"] for event in page_saved] == [1, 2, 3]
+        loop_event = next(
+            event for event in events
+            if event["event"] == "fetch.endpoint.pagination_loop_detected"
+        )
+        assert loop_event["level"] == "WARNING"
+        assert loop_event["endpoint"] == "upower_qa"
+        assert loop_event["data"]["request_params"] == {"anchor": 100}
     finally:
         await ctx.close()
 
