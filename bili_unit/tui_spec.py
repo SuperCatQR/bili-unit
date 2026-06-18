@@ -85,6 +85,12 @@ TUI_MVP_PANELS: tuple[TuiPanelSpec, ...] = (
 )
 
 TUI_MVP_ACTIONS: tuple[TuiActionSpec, ...] = (
+    # Default mode across all stage actions is "incremental".  This is a
+    # deliberate TUI policy that diverges from the underlying BiliCommand
+    # defaults (parse/fetch default to "full" / "incremental" respectively
+    # at the API surface): an interactive workbench should always do the
+    # cheap, safe thing on a single keypress and let users escalate to
+    # "full" via the CLI when they actually want a forced rerun.
     TuiActionSpec(
         id="add_uid",
         label="Add UID",
