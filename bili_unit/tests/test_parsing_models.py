@@ -251,6 +251,12 @@ class TestUpProfile:
         assert restored.overview == profile.overview
         assert restored.avatar_local == profile.avatar_local
 
+    def test_from_dict_legacy_avatar_key(self):
+        """Pre-rename payload JSON used 'avatar'; from_dict must still read it."""
+        legacy = {"mid": 7, "name": "x", "avatar": "https://i0.hdslb.com/face.jpg"}
+        restored = UpProfile.from_dict(legacy)
+        assert restored.face_url == "https://i0.hdslb.com/face.jpg"
+
     def test_collect_image_jobs_with_avatar(self, up_profile_data):
         user_info, relation_info, up_stat, _ = up_profile_data
         profile = UpProfile.from_raw(user_info, relation_info, up_stat)
@@ -377,6 +383,26 @@ class TestVideoDetail:
         assert restored.owner.mid == video.owner.mid
         assert restored.owner.name == video.owner.name
         assert restored.pic_local == video.pic_local
+
+    def test_from_dict_legacy_keys(self):
+        """Legacy payload JSON used desc/pic/duration/pubdate (seconds-epoch).
+
+        Verify from_dict still reads those, and converts pubdate (s) -> pubdate_ms (ms).
+        """
+        legacy = {
+            "bvid": "BV1legacy0001",
+            "aid": 1,
+            "title": "old payload",
+            "desc": "legacy description",
+            "pic": "https://example.com/legacy_cover.jpg",
+            "duration": 300,           # seconds
+            "pubdate": 1_700_000_000,  # seconds-epoch
+        }
+        restored = VideoDetail.from_dict(legacy)
+        assert restored.description == "legacy description"
+        assert restored.cover_url == "https://example.com/legacy_cover.jpg"
+        assert restored.duration_s == 300
+        assert restored.pubdate_ms == 1_700_000_000_000  # *1000 conversion
 
     def test_collect_image_jobs_with_pic(self, video_detail_data):
         video = VideoDetail.from_raw(video_detail_data)

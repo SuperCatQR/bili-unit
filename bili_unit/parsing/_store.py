@@ -675,11 +675,15 @@ class ParsingStore:
     async def _read_payload(
         self, table: str, pk: str, item_id: Any,
     ) -> dict | None:
-        # Build a reverse-lookup key to find the pre-built SQL from _GET_PAYLOAD_SQL.
-        # Callers always use safe literal (table, pk) pairs defined in _MODEL_TABLE.
+        # Reverse-lookup the model key for this (table, pk) so we hit the
+        # template in _GET_PAYLOAD_SQL rather than building SQL from inputs.
         _table_pk_to_model = {(t, p): m for m, (t, p) in _MODEL_TABLE.items()}
         model_key = _table_pk_to_model.get((table, pk))
-        sql = _GET_PAYLOAD_SQL[model_key] if model_key is not None else f"SELECT payload FROM {table} WHERE {pk} = ?"  # noqa: S608
+        if model_key is None:
+            raise ValueError(
+                f"_read_payload called with unknown (table, pk) pair: ({table!r}, {pk!r})"
+            )
+        sql = _GET_PAYLOAD_SQL[model_key]
         raw = await self._ctx.main.fetch_value(
             sql,
             (item_id,),

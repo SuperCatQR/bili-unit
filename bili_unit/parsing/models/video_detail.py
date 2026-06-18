@@ -279,7 +279,13 @@ class VideoDetail:
             description=d.get("description") or d.get("desc", ""),
             duration_s=d.get("duration_s") if d.get("duration_s") is not None else d.get("duration", 0),
             ctime=d.get("ctime"),
-            pubdate_ms=d.get("pubdate_ms") if d.get("pubdate_ms") is not None else d.get("pubdate"),
+            pubdate_ms=(
+                d["pubdate_ms"]
+                if d.get("pubdate_ms") is not None
+                # Legacy payload key 'pubdate' is seconds-epoch — convert to ms
+                # so consumers always see a millisecond value on this field.
+                else (d["pubdate"] * 1000 if d.get("pubdate") is not None else None)
+            ),
             cover_url=d.get("cover_url") or d.get("pic", ""),
             pages=[PageInfo.from_dict(p) for p in d.get("pages", [])],
             tags=d.get("tags", []),

@@ -175,6 +175,10 @@ def configure_logging(
 
     root = logging.getLogger("bili_unit")
     root.setLevel(level)
+    # Stop bili_unit records from bubbling to the actual root logger, so the
+    # RedactingFilter on our handlers can't be bypassed via the root path
+    # (e.g. logging.lastResort or a host app's own root handlers).
+    root.propagate = False
     for h in list(root.handlers):
         root.removeHandler(h)
 

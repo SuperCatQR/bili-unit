@@ -132,7 +132,13 @@ async def _emit_failed(
     retry: int,
     extra_data: dict[str, Any] | None = None,
 ) -> None:
-    """Emit a .failed event.  No-op for endpoint namespace (no such event there)."""
+    """Emit a .failed event.  No-op for endpoint namespace (no such event there).
+
+    The endpoint-level retry callback in ``_endpoint.py`` deliberately omits
+    the ``fetch.endpoint.failed`` event — exhaustion is signalled by the
+    final ``EndpointStatus.FAILED_EXHAUSTED`` state write, not an event.
+    Item-level callbacks do emit ``fetch.item.failed``.
+    """
     if reporter is None or namespace == "fetch.endpoint":
         return
     data: dict[str, Any] = {"retry": retry, "error_type": type(exc).__name__}
@@ -158,7 +164,12 @@ async def _emit_unexpected_failed(
     item_id: str | None,
     exc: Exception,
 ) -> None:
-    """Emit a .failed event for unexpected (non-fetching) errors."""
+    """Emit a .failed event for unexpected (non-fetching) errors.
+
+    Same scope rule as :func:`_emit_failed` — only ``fetch.item`` emits;
+    endpoint-level unexpected errors are recorded via the store but not
+    surfaced as a discrete observability event.
+    """
     if reporter is None or namespace == "fetch.endpoint":
         return
     await reporter.emit(

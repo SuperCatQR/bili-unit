@@ -21,12 +21,6 @@ from ._adapter_core import (
     _PERMANENT_BUSINESS_CODES as _CORE_PERMANENT_BUSINESS_CODES,
 )
 from ._adapter_core import (
-    extract_list_items as _extract_list_items,
-)
-from ._adapter_core import (
-    extract_total_count as _extract_total_count,
-)
-from ._adapter_core import (
     json_safe as _json_safe,
 )
 from ._adapter_core import (
@@ -48,6 +42,9 @@ from ._adapters._subtitle import (
 )
 from ._adapters._subtitle import (
     fetch_video_subtitle_item as fetch_video_subtitle_item,
+)
+from ._adapters._video import (
+    fetch_video_public_notes_item as fetch_video_public_notes_item,
 )
 from ._endpoint_spec import EndpointSpec
 
@@ -300,31 +297,6 @@ async def fetch_upower_qa_detail_item(
 # ---------------------------------------------------------------------------
 
 
-async def fetch_video_public_notes_item(
-    bvid: str,
-    credential: Credential | None,
-    timeout: float = 30.0,
-    ps: int = 50,
-    **_kw: Any,
-) -> dict[str, Any]:
-    """Fetch all public note pages for a bvid."""
-    v = Video(bvid, credential=credential)
-    pages: list[dict[str, Any]] = []
-    pn = 1
-    while True:
-        async with _map_bilibili_errors(f"public_notes[{bvid}][{pn}]"):
-            data = await asyncio.wait_for(
-                v.get_public_notes_list(pn=pn, ps=ps),
-                timeout=timeout,
-            )
-        safe = _normalise_api_result(data)
-        pages.append(safe)
-        items = _extract_list_items(safe)
-        total = _extract_total_count(safe)
-        if not items or (total > 0 and pn * ps >= total) or (total == 0 and len(items) < ps):
-            break
-        pn += 1
-    return {"pages": pages}
 
 
 # ---------------------------------------------------------------------------
