@@ -97,8 +97,8 @@ async with bili_unit.workbench_session() as workbench:
 - `sync()` / `fetch()` / `parse()` / `asr()` / `delete_uid()`
 
 The first TUI surface is pinned by `bili_unit.tui_spec`: UID list, status, run
-summary, attention events, recent events, and actions for sync/fetch/parse/asr
-plus delete.
+summary, attention events, recent events, adding a new uid, and actions for
+sync/fetch/parse/asr plus delete.
 
 The intended full-screen layout is:
 
@@ -107,7 +107,7 @@ The intended full-screen layout is:
 │ known uids  │ │ Summary | Fetch | Parse  │
 │ active mark │ │ ASR | Events             │
 └─────────────┘ └──────────────────────────┘
-┌ action bar: Sync Fetch Parse ASR Delete ┐
+┌ action bar: Add UID Sync Fetch Parse ASR Delete ┐
 └ status bar: refresh/errors/task feedback ┘
 ```
 
@@ -116,6 +116,7 @@ Keyboard contract:
 - `r` refreshes the dashboard snapshot.
 - `j/down` and `k/up` move between uids.
 - `tab` and `shift+tab` move between detail tabs.
+- `n` prompts for a new uid and starts incremental sync after `can_start_task`.
 - `s` / `f` / `p` / `a` start sync/fetch/parse/asr after `can_start_task`
   preflight.
 - `d` requires explicit confirmation before deleting a uid.

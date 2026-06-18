@@ -15,7 +15,7 @@ class TuiState:
     snapshot: DashboardSnapshot | None = None
     selected_index: int = 0
     selected_tab_index: int = 0
-    message: str = "r refresh | tab next | s/f/p/a run | d delete | q quit"
+    message: str = "n add uid | r refresh | tab next | s/f/p/a run | d delete | q quit"
 
 
 @dataclass(frozen=True)
@@ -104,13 +104,29 @@ async def dispatch_action(
     ask: Callable[[str], str] = input,
 ) -> None:
     """Run one TUI action for the selected uid, then refresh the dashboard."""
-    item = selected_item(state)
-    if item is None:
-        state.message = "no uid selected"
-        return
     action = _action_by_id(action_id)
     if action is None:
         state.message = f"unknown action: {action_id}"
+        return
+    if action.safety == "prompt_preflight":
+        uid = _ask_uid(ask)
+        if uid is None:
+            state.message = "cancelled"
+            return
+        check = await workbench.can_start_task(uid, stages=action.stages)
+        if not check.can_start:
+            state.message = check.reason or "task blocked"
+            return
+        state.message = f"running {action.id} {uid}..."
+        await _run_action(workbench, uid, action)
+        state.snapshot = await workbench.dashboard()
+        state.selected_index = _index_for_uid(state.snapshot, uid)
+        state.message = f"{action.label} {uid} completed"
+        return
+
+    item = selected_item(state)
+    if item is None:
+        state.message = "no uid selected"
         return
     if action.safety == "confirm":
         expected = f"delete {item.uid}"
@@ -168,7 +184,7 @@ def render_screen(
             _rule(width),
             "No uid DBs found.",
             _rule(width),
-            "Actions: r refresh | q quit",
+            "Actions: n add uid | r refresh | q quit",
             "Status: no uid selected",
         ]
         return _screen(lines, width=width, height=height)
@@ -362,8 +378,9 @@ def _action_lines(item: UidDashboardSnapshot) -> list[str]:
     lines = [
         f"{action.key} {action.label} ({action.safety})"
         for action in TUI_MVP_ACTIONS
-        if action.id != "delete_uid"
+        if action.id not in {"delete_uid", "add_uid"}
     ]
+    lines.insert(0, "n Add UID (prompt)")
     lines.append("d Delete UID (confirm)")
     if item.recommended_actions:
         lines.append("recommended:")
@@ -447,6 +464,26 @@ def selected_item(state: TuiState) -> UidDashboardSnapshot | None:
     if state.snapshot is None or not state.snapshot.items:
         return None
     return state.snapshot.items[_clamp_selection(state)]
+
+
+def _ask_uid(ask: Callable[[str], str]) -> int | None:
+    raw = ask("UID to sync: ").strip()
+    if not raw:
+        return None
+    try:
+        uid = int(raw)
+    except ValueError:
+        return None
+    return uid if uid > 0 else None
+
+
+def _index_for_uid(snapshot: DashboardSnapshot | None, uid: int) -> int:
+    if snapshot is None:
+        return 0
+    for index, item in enumerate(snapshot.items):
+        if item.uid == uid:
+            return index
+    return 0
 
 
 def _item_count(state: TuiState) -> int:

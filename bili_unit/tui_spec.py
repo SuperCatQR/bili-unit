@@ -86,6 +86,18 @@ TUI_MVP_PANELS: tuple[TuiPanelSpec, ...] = (
 
 TUI_MVP_ACTIONS: tuple[TuiActionSpec, ...] = (
     TuiActionSpec(
+        id="add_uid",
+        label="Add UID",
+        stages=("fetching", "parsing"),
+        command_method="sync",
+        default_args={
+            "fetch_mode": "incremental",
+            "parse_mode": "incremental",
+        },
+        key="n",
+        safety="prompt_preflight",
+    ),
+    TuiActionSpec(
         id="sync",
         label="Sync",
         stages=("fetching", "parsing"),
@@ -212,6 +224,7 @@ TUI_KEYBINDINGS: tuple[TuiKeybindingSpec, ...] = (
     TuiKeybindingSpec("k/up", "select_previous_uid", "Select previous uid"),
     TuiKeybindingSpec("tab", "next_detail_tab", "Move to next detail tab"),
     TuiKeybindingSpec("shift+tab", "previous_detail_tab", "Move to previous detail tab"),
+    TuiKeybindingSpec("n", "add_uid", "Enter a new uid and run incremental sync"),
     TuiKeybindingSpec("s", "sync", "Run incremental sync after preflight"),
     TuiKeybindingSpec("f", "fetch", "Run incremental fetch after preflight"),
     TuiKeybindingSpec("p", "parse", "Run incremental parse after preflight"),

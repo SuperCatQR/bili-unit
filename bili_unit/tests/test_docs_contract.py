@@ -162,6 +162,7 @@ def test_current_docs_do_not_expose_removed_cli_or_storage_contracts(path: Path)
         "video_cover",
         "opus_image",
         "article_image",
+        "也能用 `s/f/p/a`",
     ]
     for phrase in forbidden:
         assert phrase not in text, f"{path} contains outdated phrase: {phrase}"
@@ -175,3 +176,11 @@ def test_user_visible_docs_expose_asr_not_processing_command() -> None:
     assert "uv run bili-unit asr <uid>" in readme
     assert "CLI does not\nexpose it" in context
     assert "→ asr" in upstream
+
+
+def test_user_visible_docs_expose_tui_add_uid() -> None:
+    readme = _read(ROOT / "README.md")
+    architecture = _read(ROOT / "docs" / "architecture.md")
+
+    assert "用 `n` 输入新 uid" in readme
+    assert "Add UID Sync Fetch Parse ASR Delete" in architecture

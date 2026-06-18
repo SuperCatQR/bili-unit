@@ -35,7 +35,7 @@ def test_render_lines_empty_dashboard(tmp_path: Path) -> None:
     assert "bili-unit workbench" in rendered
     assert f"root={tmp_path}" in rendered
     assert "No uid DBs found." in rendered
-    assert "Actions: r refresh | q quit" in rendered
+    assert "Actions: n add uid | r refresh | q quit" in rendered
     assert "Status: no uid selected" in rendered
 
 
@@ -102,7 +102,10 @@ def test_render_screen_uses_sidebar_detail_action_and_status(tmp_path: Path) -> 
     assert "UIDs" in rendered
     assert "|" in rendered
     assert "Tabs: Summary | Fetch | Parse | [ASR] | Events" in rendered
-    assert "Actions: s=Sync  f=Fetch  p=Parse  a=ASR  d=Delete UID" in rendered
+    assert (
+        "Actions: n=Add UID  s=Sync  f=Fetch  p=Parse  a=ASR  d=Delete UID"
+        in rendered
+    )
     assert "Status: uid=123 tab=asr" in rendered
 
 
@@ -145,6 +148,7 @@ def test_handle_input_navigation_and_actions(tmp_path: Path) -> None:
     assert current_tab_id(state) == "summary"
 
     assert handle_input(state, "r").needs_refresh is True
+    assert handle_input(state, "n").action_id == "add_uid"
     assert handle_input(state, "s").action_id == "sync"
     assert handle_input(state, "q").should_quit is True
 
@@ -197,6 +201,41 @@ async def test_dispatch_action_runs_preflight_action_and_refreshes(
         ("sync", 123, {"fetch_mode": "incremental", "parse_mode": "incremental"}),
         ("dashboard",),
     ]
+
+
+async def test_dispatch_action_add_uid_without_existing_selection(
+    tmp_path: Path,
+) -> None:
+    state = TuiState(
+        snapshot=DashboardSnapshot(root=tmp_path, uids=[], items=[]),
+    )
+    workbench = _FakeWorkbench(tmp_path, can_start=True, dashboard_uid=456)
+
+    await dispatch_action(workbench, state, "add_uid", ask=lambda _prompt: "456")
+
+    assert state.message == "Add UID 456 completed"
+    assert state.selected_index == 0
+    assert state.snapshot is not None
+    assert [item.uid for item in state.snapshot.items] == [456]
+    assert workbench.calls == [
+        ("can_start_task", 456, ("fetching", "parsing")),
+        ("sync", 456, {"fetch_mode": "incremental", "parse_mode": "incremental"}),
+        ("dashboard",),
+    ]
+
+
+async def test_dispatch_action_add_uid_cancels_invalid_input(
+    tmp_path: Path,
+) -> None:
+    state = TuiState(
+        snapshot=DashboardSnapshot(root=tmp_path, uids=[], items=[]),
+    )
+    workbench = _FakeWorkbench(tmp_path, can_start=True)
+
+    await dispatch_action(workbench, state, "add_uid", ask=lambda _prompt: "nope")
+
+    assert state.message == "cancelled"
+    assert workbench.calls == []
 
 
 async def test_dispatch_action_requires_delete_confirmation(tmp_path: Path) -> None:
@@ -260,9 +299,16 @@ def _uid_item(tmp_path: Path, uid: int) -> UidDashboardSnapshot:
 
 
 class _FakeWorkbench:
-    def __init__(self, root: Path, *, can_start: bool) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        can_start: bool,
+        dashboard_uid: int | None = None,
+    ) -> None:
         self.root = root
         self.can_start = can_start
+        self.dashboard_uid = dashboard_uid
         self.calls: list[tuple] = []
 
     async def can_start_task(self, uid: int, *, stages: tuple[str, ...]):
@@ -283,4 +329,10 @@ class _FakeWorkbench:
 
     async def dashboard(self):
         self.calls.append(("dashboard",))
-        return DashboardSnapshot(root=self.root, uids=[], items=[])
+        if self.dashboard_uid is None:
+            return DashboardSnapshot(root=self.root, uids=[], items=[])
+        return DashboardSnapshot(
+            root=self.root,
+            uids=[self.dashboard_uid],
+            items=[_uid_item(self.root, self.dashboard_uid)],
+        )

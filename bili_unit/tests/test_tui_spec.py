@@ -24,6 +24,7 @@ def test_tui_mvp_panels_are_ordered_for_first_screen() -> None:
 
 def test_tui_mvp_actions_map_to_workbench_methods() -> None:
     assert [action.id for action in TUI_MVP_ACTIONS] == [
+        "add_uid",
         "sync",
         "fetch",
         "parse",
@@ -37,6 +38,13 @@ def test_tui_mvp_actions_map_to_workbench_methods() -> None:
 def test_tui_mvp_actions_pin_preflight_stages_and_defaults() -> None:
     actions = {action.id: action for action in TUI_MVP_ACTIONS}
 
+    assert actions["add_uid"].stages == ("fetching", "parsing")
+    assert actions["add_uid"].default_args == {
+        "fetch_mode": "incremental",
+        "parse_mode": "incremental",
+    }
+    assert actions["add_uid"].key == "n"
+    assert actions["add_uid"].safety == "prompt_preflight"
     assert actions["sync"].stages == ("fetching", "parsing")
     assert actions["sync"].default_args == {
         "fetch_mode": "incremental",
@@ -95,6 +103,7 @@ def test_tui_keybindings_cover_navigation_and_actions() -> None:
         "select_previous_uid",
         "next_detail_tab",
         "previous_detail_tab",
+        "add_uid",
         "sync",
         "fetch",
         "parse",
