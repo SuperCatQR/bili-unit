@@ -204,7 +204,7 @@ def _recommend_actions(uid: int, summary: RunSummary) -> list[RecommendedAction]
             RecommendedAction(
                 kind="asr_retry_failed",
                 label="Retry failed ASR items",
-                command=f"uv run python -m bili_unit asr {uid} --retry-failed-only",
+                command=f"uv run bili-unit asr {uid} --retry-failed-only",
                 item_ids=tuple(summary.asr.failed_bvids),
             ),
         )
@@ -215,7 +215,7 @@ def _recommend_actions(uid: int, summary: RunSummary) -> list[RecommendedAction]
                 kind="asr_run_missing",
                 label="Run missing ASR items",
                 command=(
-                    f"uv run python -m bili_unit asr {uid} "
+                    f"uv run bili-unit asr {uid} "
                     f"--only-bvids {' '.join(bvids)}"
                 ),
                 item_ids=bvids,

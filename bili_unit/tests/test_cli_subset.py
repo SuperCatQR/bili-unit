@@ -1,6 +1,6 @@
 # Tests for the CLI exclude/include subset translator.
 #
-# The unified CLI (``python -m bili_unit``) lets users say "run everything
+# The unified CLI (``bili-unit``) lets users say "run everything
 # except X" via ``-x``. Translation from (include, exclude) → the include-list
 # downstream layers expect happens in ``_resolve_subset``. These tests pin
 # that contract so a typo in either flag fails fast.

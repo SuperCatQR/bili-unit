@@ -65,16 +65,16 @@ def test_key_types_at_top_level() -> None:
     """The helpers used by the CLI and advanced scripts are reachable from
     ``bili_unit`` directly."""
     from bili_unit import (
+        TUI_MVP_ACTIONS,
+        TUI_MVP_PANELS,
         BiliCommand,
-        BiliWorkbench,
         BiliSettings,
+        BiliWorkbench,
         CommandResult,
         ParsingCommandResult,
         ProcessingCommandResult,
         SyncCommandResult,
         TaskStartCheck,
-        TUI_MVP_ACTIONS,
-        TUI_MVP_PANELS,
         UidContext,
         assemble,
         assemble_workbench,

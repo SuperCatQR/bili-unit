@@ -17,7 +17,7 @@ _Avoid_: downstream。
 ### 三 stage
 
 **fetching**:
-第一 stage。异步抓取 64 个 B 站读取端点的原始响应，双层限流（global + endpoint QPS）+ 412 自适应降速，所有请求结果原样落盘到 fetching store。不做字段筛选。
+第一 stage。异步抓取 63 个 B 站读取端点的原始响应，双层限流（global + endpoint QPS）+ 412 自适应降速，所有请求结果原样落盘到 fetching store。不做字段筛选。
 _Avoid_: crawler, scraper, collector。
 
 **parsing**:
@@ -49,11 +49,11 @@ _Avoid_: entity, record, document。
 ### 端点与抓取
 
 **endpoint**:
-B 站一个读取接口的注册单元，`EndpointSpec` dataclass 描述其 callable / 分页策略 / 限流 key / item_id_path。共 64 个（34 uid-level + 30 item-level），在 `_endpoint_catalog.py` 声明。
+B 站一个读取接口的注册单元，`EndpointSpec` dataclass 描述其 callable / 分页策略 / 限流 key / item_id_path。共 63 个（33 uid-level + 30 item-level），在 `_endpoint_catalog.py` 声明。
 _Avoid_: api, route, source。
 
 **uid-level endpoint**:
-直接按 uid 抓取的端点（如 `user_info` / `videos` / `dynamics`）。34 个。
+直接按 uid 抓取的端点（如 `user_info` / `videos` / `dynamics`）。33 个。
 _Avoid_: user endpoint, top-level endpoint。
 
 **item-level endpoint / item-level fan-out**:
@@ -61,7 +61,7 @@ _Avoid_: user endpoint, top-level endpoint。
 _Avoid_: detail endpoint, sub-endpoint, child endpoint。
 
 **profile**:
-CLI `--profile {all,parsing,minimal}` 选端点子集。`all`=64、`parsing`=13（parsing 实际消费的）、`minimal`=5（smoke / CI）。
+CLI `--profile {all,parsing,minimal}` 选端点子集。`all`=63、`parsing`=13（parsing 实际消费的）、`minimal`=5（smoke / CI）。
 _Avoid_: preset, mode（mode 指抓取模式，不同概念）。
 
 **fetch run scope**:

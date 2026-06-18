@@ -11,6 +11,7 @@ from bili_unit._db.connection import (
     SUPPORTED_RAW_SCHEMA_VERSION,
 )
 from bili_unit._env import BiliSettings
+from bili_unit.fetching._endpoint_catalog import ENDPOINTS, resolve_profile
 
 ROOT = Path(__file__).resolve().parents[2]
 CURRENT_DOCS = [
@@ -71,6 +72,28 @@ def test_schema_doc_versions_match_supported_versions() -> None:
     assert f"schema_version` 当前为 `'{SUPPORTED_RAW_SCHEMA_VERSION}'" in schema
 
 
+def test_endpoint_counts_in_docs_match_registry() -> None:
+    readme = _read(ROOT / "README.md")
+    context = _read(ROOT / "CONTEXT.md")
+    contract = _read(ROOT / "docs" / "endpoint-contract.md")
+    total = len(ENDPOINTS)
+    uid_level = sum(1 for endpoint in ENDPOINTS if endpoint.source_endpoint is None)
+    item_level = total - uid_level
+    documented = 29
+    undocumented = total - documented
+
+    assert f"{total} 个读取端点" in readme
+    assert f"{total} 个端点的 raw_payload schema" in readme
+    assert f"{total} 个 B 站读取端点" in context
+    assert f"共 {total} 个（{uid_level} uid-level + {item_level} item-level）" in context
+    assert f"`all`={total}" in context
+    assert f"`parsing`={len(resolve_profile('parsing'))}" in context
+    assert f"`minimal`={len(resolve_profile('minimal'))}" in context
+    assert f"{documented} / {total} 个注册端点" in contract
+    assert f"剩余 {undocumented} 个端点" in contract
+    assert f"下列 {undocumented} 个端点" in contract
+
+
 def test_env_example_keys_are_real_settings_fields() -> None:
     env_text = _read(ROOT / ".env.example")
     documented_keys = set(re.findall(r"^#?\s*(BILI_[A-Z0-9_]+)=", env_text, re.MULTILINE))
@@ -108,6 +131,7 @@ def test_user_visible_cli_examples_parse() -> None:
         ["sync", "123456"],
         ["asr", "123456"],
         ["asr", "123456", "-b", "mock"],
+        ["tui"],
         ["delete-uid", "123456", "-y"],
         ["init-mimo", "--test"],
     ]
@@ -148,6 +172,6 @@ def test_user_visible_docs_expose_asr_not_processing_command() -> None:
     context = _read(ROOT / "CONTEXT.md")
     upstream = _read(ROOT / "docs" / "upstream.md")
 
-    assert "uv run python -m bili_unit asr <uid>" in readme
+    assert "uv run bili-unit asr <uid>" in readme
     assert "CLI does not\nexpose it" in context
     assert "→ asr" in upstream

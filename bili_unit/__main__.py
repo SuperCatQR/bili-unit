@@ -1,16 +1,17 @@
-# python -m bili_unit - unified CLI for the bili unit.
+# bili-unit - unified CLI for the bili unit.
 #
 # Phase 5 contract: read-side commands removed. Consumers query the SQLite
 # database file directly (see ``bili_unit.db_path``). The CLI keeps only
 # write-side actions plus auth helpers:
 #
-#   python -m bili_unit sync         <uid> [options]   run fetching + parsing
-#   python -m bili_unit fetch        <uid> [options]   run fetching only
-#   python -m bili_unit parse        <uid> [options]   run parsing only
-#   python -m bili_unit asr          <uid> [options]   run audio ASR
-#   python -m bili_unit delete-uid   <uid> [-y]        delete all data for a uid
-#   python -m bili_unit login                          QR code login
-#   python -m bili_unit init-mimo [--test]             interactive MiMo ASR setup
+#   bili-unit sync         <uid> [options]   run fetching + parsing
+#   bili-unit fetch        <uid> [options]   run fetching only
+#   bili-unit parse        <uid> [options]   run parsing only
+#   bili-unit asr          <uid> [options]   run audio ASR
+#   bili-unit delete-uid   <uid> [-y]        delete all data for a uid
+#   bili-unit tui                            open local dashboard TUI
+#   bili-unit login                          QR code login
+#   bili-unit init-mimo [--test]             interactive MiMo ASR setup
 
 from __future__ import annotations
 
@@ -296,9 +297,16 @@ async def _handle_init_mimo(args: argparse.Namespace) -> None:
         if preview:
             print(f"  preview: {preview}")
     print(
-        "\nNext run `python -m bili_unit asr <uid>` to use MiMo ASR by default."
+        "\nNext run `uv run bili-unit asr <uid>` to use MiMo ASR by default."
         "\nUse `-b mock` for a temporary no-network ASR run.",
     )
+
+
+async def _handle_tui(_args: argparse.Namespace) -> None:
+    """Open the local dashboard TUI."""
+    from bili_unit.tui import run_tui
+
+    await run_tui()
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +315,7 @@ async def _handle_init_mimo(args: argparse.Namespace) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m bili_unit",
+        prog="bili-unit",
         description="Bilibili data unit - unified CLI.",
     )
     parser.add_argument(
@@ -449,6 +457,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="After writing .env, call MiMo once with a tiny WAV probe.",
     )
 
+    sub.add_parser("tui", help="Open the local dashboard TUI")
+
     # --- delete-uid ---
     p_del = sub.add_parser("delete-uid", help="Delete all data for a uid")
     p_del.add_argument("uid", type=int, help="Target Bilibili user uid")
@@ -584,6 +594,7 @@ def main() -> None:
         "parse": _handle_parse,
         "asr": _handle_asr,
         "delete-uid": _handle_delete_uid,
+        "tui": _handle_tui,
         "login": _handle_login,
         "init-mimo": _handle_init_mimo,
     }

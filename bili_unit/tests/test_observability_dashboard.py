@@ -102,10 +102,10 @@ async def test_uid_dashboard_snapshot_recommends_asr_next_actions(tmp_path: Path
         ("asr_run_missing", ("BVmissing",)),
     ]
     assert snapshot.recommended_actions[0].command == (
-        "uv run python -m bili_unit asr 123 --retry-failed-only"
+        "uv run bili-unit asr 123 --retry-failed-only"
     )
     assert snapshot.recommended_actions[1].command == (
-        "uv run python -m bili_unit asr 123 --only-bvids BVmissing"
+        "uv run bili-unit asr 123 --only-bvids BVmissing"
     )
 
 

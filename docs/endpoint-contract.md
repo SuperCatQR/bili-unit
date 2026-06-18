@@ -13,7 +13,7 @@
 6. [已知数据特征](#6-已知数据特征)
 7. [未文档化端点](#7-未文档化端点)
 
-> **覆盖范围**：本文已为 29 / 64 个注册端点写下了 raw_payload schema。已文档化的端点是 parsing 层目前消费的全部端点，加上一批历史已实测的 T1/T2 扩展端点。剩余 35 个端点有代码注册但尚未在本文录入 schema —— 它们的真实响应需要拿目标 uid 真跑一遍 fetch 后才能补全，参见 §7。
+> **覆盖范围**：本文已为 29 / 63 个注册端点写下了 raw_payload schema。已文档化的端点是 parsing 层目前消费的全部端点，加上一批历史已实测的 T1/T2 扩展端点。剩余 34 个端点有代码注册但尚未在本文录入 schema —— 它们的真实响应需要拿目标 uid 真跑一遍 fetch 后才能补全，参见 §7。
 
 ---
 
@@ -1344,7 +1344,7 @@ processing 层通过这些父子关系，从列表端点获取 item ID 清单，
 
 ### 7. 未文档化端点
 
-下列 35 个端点已在 `bili_unit/fetching/_endpoint_catalog.py` 注册，可被 `fetch` 命令调用，但 raw_payload schema 未在本文录入。它们大多是 video 子接口的 fan-out（弹幕、播放数据等），少量是后期补充的关系类端点。要补完 schema 需要拿一个公开账号 uid 真跑一遍 `fetch <uid> -e <endpoint>`，把落盘的 `raw_payload` 摘录到本文对应小节。
+下列 34 个端点已在 `bili_unit/fetching/_endpoint_catalog.py` 注册，可被 `fetch` 命令调用，但 raw_payload schema 未在本文录入。它们大多是 video 子接口的 fan-out（弹幕、播放数据等），少量是后期补充的关系类端点。要补完 schema 需要拿一个公开账号 uid 真跑一遍 `fetch <uid> -e <endpoint>`，把落盘的 `raw_payload` 摘录到本文对应小节。
 
 **uid-level（12 个）**
 
