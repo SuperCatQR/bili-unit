@@ -30,6 +30,9 @@ asr      -> main.db
   writes content tables plus optional image blobs into `{uid}.db`.
 - `asr` reads parsed video rows from `{uid}.db`, downloads audio, performs ASR,
   and writes `audio_transcription` rows into `{uid}.db`.
+  Segment cache hits are scoped by backend namespace, model, language, and
+  timeline range, so changing ASR backend/model/language does not reuse stale
+  text from an older run.
 
 ## Modules
 

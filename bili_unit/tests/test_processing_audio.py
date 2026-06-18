@@ -161,7 +161,7 @@ def test_mimo_backend_rejects_high_risk_refusal_text():
 
 
 def test_mimo_backend_rejects_empty_transcript_text():
-    from bili_unit.processing import ASRAPIError
+    from bili_unit.processing import EmptyTranscriptError
 
     body = {
         "choices": [{"message": {"content": "   "}}],
@@ -172,7 +172,7 @@ def test_mimo_backend_rejects_empty_transcript_text():
         "model": "mimo-v2.5-asr",
     }
 
-    with pytest.raises(ASRAPIError, match="empty transcription text"):
+    with pytest.raises(EmptyTranscriptError, match="empty transcription text"):
         MimoASRBackend._parse_response(body, language="auto")
 
 

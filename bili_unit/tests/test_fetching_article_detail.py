@@ -6,10 +6,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from bili_unit.fetching import (
+    AuthError,
     Http412Error,
+    InvalidRequestError,
     RequestError,
     ResourceUnavailableError,
 )
+from bili_unit.fetching._adapter_core import map_bilibili_errors
 from bili_unit.fetching._bilibili_adapter import (
     _extract_cvids_from_articles,
     fetch_article_detail_item,
@@ -77,6 +80,38 @@ def test_article_detail_endpoint_registered():
     assert spec.rate_limit_key == "article_detail"
     assert spec.pagination_strategy == "none"
     assert spec.extract_items is not None
+    assert spec.skip_item is not None
+
+
+def test_article_detail_skips_note_opus_style_items():
+    spec = get_endpoint("article_detail")
+    assert spec is not None
+    assert spec.skip_item is not None
+
+    reason = spec.skip_item({
+        "id": 50612667,
+        "template_id": 4,
+        "origin_template_id": 5,
+        "type": 2,
+        "category": {"id": 42, "name": "全部笔记"},
+    })
+
+    assert reason is not None
+    assert "note/opus-style" in reason
+
+
+def test_article_detail_keeps_legacy_article_items():
+    spec = get_endpoint("article_detail")
+    assert spec is not None
+    assert spec.skip_item is not None
+
+    assert spec.skip_item({
+        "id": 100,
+        "template_id": 1,
+        "origin_template_id": 1,
+        "type": 0,
+        "category": {"id": 1, "name": "旧专栏"},
+    }) is None
 
 
 # ======================================================================
@@ -189,3 +224,21 @@ async def test_fetch_article_detail_item_initial_state_maps_to_unavailable():
 
         with pytest.raises(ResourceUnavailableError, match="未找到相关信息"):
             await fetch_article_detail_item("1", None)
+
+
+@pytest.mark.asyncio
+async def test_adapter_maps_missing_sdk_credential_to_auth_error():
+    from bilibili_api.exceptions import CredentialNoSessdataException
+
+    with pytest.raises(AuthError, match="credential missing"):
+        async with map_bilibili_errors("private_endpoint"):
+            raise CredentialNoSessdataException()
+
+
+@pytest.mark.asyncio
+async def test_adapter_maps_sdk_args_exception_to_non_retryable_error():
+    from bilibili_api.exceptions import ArgsException
+
+    with pytest.raises(InvalidRequestError, match="invalid SDK arguments"):
+        async with map_bilibili_errors("bad_args"):
+            raise ArgsException("bad input")

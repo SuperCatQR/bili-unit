@@ -1137,7 +1137,7 @@ async def test_runner_resource_unavailable_skips_retry(tmp_path: Path):
 
 
 async def test_item_fanout_resource_unavailable_only_skips_one_item(tmp_path: Path):
-    """item-level fan-out: ResourceUnavailableError fails one item, others succeed."""
+    """item-level fan-out: ResourceUnavailableError skips one item, others succeed."""
     ctx, store = await _open_store(tmp_path, 702)
     try:
         await store.init_task(["videos", "video_detail"])
@@ -1175,10 +1175,10 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(tmp_path: Pa
         assert call_log.count("BV_dead") == 1
         assert call_log.count("BV_ok") == 1
 
-        # video_detail status -> PARTIAL_ITEM (1 success, 1 failure).
+        # video_detail status -> SUCCESS: terminally unavailable items are skipped.
         assert (
             await store.get_endpoint_status("video_detail")
-            == EndpointStatus.PARTIAL_ITEM.value
+            == EndpointStatus.SUCCESS.value
         )
 
         # The successful item is stored.
@@ -1209,10 +1209,94 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(tmp_path: Pa
         saved = next(e for e in events if e["event"] == "fetch.item.saved")
         assert saved["item_id"] == "BV_ok"
         completed = events[-1]
-        assert completed["data"]["status"] == "PARTIAL_ITEM"
-        assert completed["data"]["completed"] == 1
-        assert completed["data"]["failed"] == 1
+        assert completed["data"]["status"] == "SUCCESS"
+        assert completed["data"]["completed"] == 2
+        assert completed["data"]["failed"] == 0
         assert completed["data"]["total"] == 2
+        assert completed["data"]["skipped_unavailable"] == 1
+        state = await store.get_endpoint_state("video_detail")
+        assert state is not None
+        assert state["item_progress"]["skipped_unavailable"] == 1
+        assert state["item_progress"]["failed"] == 0
+    finally:
+        await ctx.close()
+
+
+async def test_article_detail_fanout_filters_note_opus_style_items(tmp_path: Path):
+    ctx, store = await _open_store(tmp_path, 703)
+    try:
+        await store.init_task(["articles", "article_detail"])
+        await store.save_raw_payload("articles", "", {
+            "pages": [
+                {
+                    "articles": [
+                        {
+                            "id": 50612667,
+                            "template_id": 4,
+                            "origin_template_id": 5,
+                            "type": 2,
+                            "category": {"id": 42, "name": "全部笔记"},
+                        },
+                        {
+                            "id": 100,
+                            "template_id": 1,
+                            "origin_template_id": 1,
+                            "type": 0,
+                            "category": {"id": 1, "name": "旧专栏"},
+                        },
+                    ],
+                },
+            ],
+        })
+        await store.update_endpoint_state("articles", status=EndpointStatus.SUCCESS.value)
+        await store.update_endpoint_state(
+            "article_detail", status=EndpointStatus.PENDING.value,
+        )
+
+        call_log: list[str] = []
+
+        async def fake_item(item_id, credential, **kw):
+            call_log.append(item_id)
+            return {
+                "info": {"id": int(item_id)},
+                "markdown": f"# {item_id}",
+                "content_json": [],
+            }
+
+        spec = get_endpoint("article_detail")
+        assert spec is not None
+        runner = _runner(
+            store,
+            _settings(tmp_path),
+            reporter=_reporter(ctx, 703, mode="full", endpoints=["article_detail"]),
+        )
+        with patch.object(spec, "callable", fake_item):
+            await runner._run_item_endpoint(703, spec, credential=None, mode="full")
+
+        assert call_log == ["100"]
+        assert await store.get_raw_payload("article_detail", "100") is not None
+        assert await store.get_raw_payload("article_detail", "50612667") is None
+
+        state = await store.get_endpoint_state("article_detail")
+        assert state is not None
+        assert state["status"] == EndpointStatus.SUCCESS.value
+        assert state["item_progress"] == {
+            "total": 2,
+            "completed": 2,
+            "failed": 0,
+            "skipped": 1,
+            "skipped_existing": 0,
+            "skipped_fresh": 0,
+            "skipped_unavailable": 0,
+            "skipped_filtered": 1,
+        }
+
+        events = await _list_stage_events(ctx)
+        completed = events[-1]
+        assert completed["event"] == "fetch.endpoint.completed"
+        assert completed["data"]["total"] == 2
+        assert completed["data"]["completed"] == 2
+        assert completed["data"]["skipped_filtered"] == 1
     finally:
         await ctx.close()
 

@@ -105,6 +105,25 @@ def test_upower_qa_detail_fanout_registered():
     assert ep.extract_items is not None
 
 
+def test_endpoint_credential_flags_match_known_sdk_verify_contract():
+    expected = {
+        "uplikeimg": True,
+        "top_followers": False,
+        "followings": True,
+        "followers": True,
+        "all_followings": True,
+        "video_player_info": True,
+        "video_public_notes": True,
+        "video_subtitle": True,
+        "video_is_forbid_note": True,
+    }
+
+    for name, required in expected.items():
+        ep = get_endpoint(name)
+        assert ep is not None, name
+        assert ep.credential_required is required, name
+
+
 # ---------------------------------------------------------------------------
 # fetch_endpoint pagination strategies
 # ---------------------------------------------------------------------------

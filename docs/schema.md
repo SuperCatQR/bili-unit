@@ -84,6 +84,9 @@ PK：`uid`。典型列：`name` / `sign` / `face_url` / `level` / `follower` / `
 索引 `idx_video_pubdate` 在 `pubdate_ms DESC` 上，按时间排序无需 sort。
 
 `video_page` 用复合 PK `(bvid, page_no)`，FK `bvid → video(bvid) ON DELETE CASCADE`。列：`cid`、`part`、`duration_s`。
+重新解析同一个视频时，稳定存在的 `video_page` 行会原地 upsert；只有最新解析中
+消失的 page_no 会删除。这避免字幕页 / ASR 页这些依赖 `(bvid, page_no)` 的
+派生结果在普通重解析时被级联清空。
 
 ### 3.4 `video_subtitle` —— 字幕
 
@@ -180,6 +183,10 @@ PK：`url_hash`（即 url 的 md5，便于按 url 唯一去重）。
 
 复合索引 `idx_image_source ON image_asset(source_kind, source_id)`：按来源反查图片资产。
 
+图片下载会把图片 BLOB 写入 `image_asset.data`，并把 `*_local` 等逻辑路径写回对应
+内容行的 `payload`。这一步不会刷新内容行的 `parsed_at_ms`，因此 incremental
+parsing 仍只依据 raw payload 新鲜度判断是否需要重解析。
+
 ## 4. Producer state 表（仅 debug 用）
 
 > ⚠️ 这些表 **不属于消费方契约**，可能在 minor 版本调整列。需要稳定的话只读 §3 / §5。
@@ -192,7 +199,7 @@ PK：`stage`，CHECK IN (`'fetching'`,`'parsing'`,`'asr'`)。一个 stage 一行
 
 ### 4.2 `fetch_endpoint_state`
 
-PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error_id` / `item_progress`（fan-out 计数）/ `progress`（分页游标）/ `updated_at_ms`。`item_progress` 与 `progress` 都是 JSON。item fan-out 的 `item_progress` 常用键包括 `total` / `completed` / `failed`，以及缓存或终态跳过时的 `skipped` / `skipped_existing` / `skipped_fresh` / `skipped_unavailable`。
+PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error_id` / `item_progress`（fan-out 计数）/ `progress`（分页游标）/ `updated_at_ms`。`item_progress` 与 `progress` 都是 JSON。item fan-out 的 `item_progress` 常用键包括 `total` / `completed` / `failed`，以及缓存、过滤或终态跳过时的 `skipped` / `skipped_existing` / `skipped_fresh` / `skipped_unavailable` / `skipped_filtered`。
 
 ### 4.3 `stage_error`
 

@@ -52,14 +52,14 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         EndpointSpec(
             name="uplikeimg",
             callable=_user_method("get_uplikeimg"),
-            credential_required=False,
+            credential_required=True,
             pagination_strategy="none",
             rate_limit_key="uplikeimg",
         ),
         EndpointSpec(
             name="top_followers",
             callable=_user_method("top_followers", since=None),
-            credential_required=True,
+            credential_required=False,
             pagination_strategy="none",
             rate_limit_key="top_followers",
         ),
@@ -80,7 +80,7 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         EndpointSpec(
             name="followings",
             callable=_user_method("get_followings", pn=1, ps=100, attention=False, order=user.OrderType.desc),
-            credential_required=False,
+            credential_required=True,
             params_strategy={"pn": 1, "ps": 100},
             pagination_strategy="page",
             rate_limit_key="followings",
@@ -90,7 +90,7 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         EndpointSpec(
             name="followers",
             callable=_user_method("get_followers", pn=1, ps=100, desc=True),
-            credential_required=False,
+            credential_required=True,
             params_strategy={"pn": 1, "ps": 100},
             pagination_strategy="page",
             rate_limit_key="followers",

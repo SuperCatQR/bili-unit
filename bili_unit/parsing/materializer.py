@@ -140,9 +140,13 @@ class ParsingMaterializer:
             obj.apply_image_results(slice_results)
             offset += count
 
-            # Re-persist the dataclass so payload JSON carries `*_local`.
-            save_method = getattr(self._parse_store, _SAVE_METHODS[model_name])
-            await save_method(obj)
+            # Persist only the payload escape hatch. Image localization should
+            # not refresh parsed_at_ms or rebuild child tables.
+            await self._parse_store.update_model_payload(
+                model_name,
+                source_id,
+                obj.to_dict(),
+            )
 
             # And record one image_asset row per result (success or failure).
             source_kind = _IMAGE_SOURCE_KINDS.get(model_name, model_name)

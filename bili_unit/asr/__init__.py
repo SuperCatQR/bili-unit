@@ -13,6 +13,7 @@ from ..processing import (
     AudioSizeError,
     ConvertError,
     DownloadError,
+    EmptyTranscriptError,
     ProcessingCommandResult,
     ProcessingError,
     ProcessingItemStatus,
@@ -45,6 +46,7 @@ __all__ = [
     "AudioSizeError",
     "ConvertError",
     "DownloadError",
+    "EmptyTranscriptError",
     "QueueError",
     "assemble",
 ]

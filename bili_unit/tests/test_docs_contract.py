@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 import pytest
+from bilibili_api import user
 
 from bili_unit import __main__ as cli
 from bili_unit._db.connection import (
@@ -77,7 +78,7 @@ def test_endpoint_counts_in_docs_match_registry() -> None:
     context = _read(ROOT / "CONTEXT.md")
     contract = _read(ROOT / "docs" / "endpoint-contract.md")
     total = len(ENDPOINTS)
-    uid_level = sum(1 for endpoint in ENDPOINTS if endpoint.source_endpoint is None)
+    uid_level = sum(1 for endpoint in ENDPOINTS if endpoint.kind != "item")
     item_level = total - uid_level
     documented = 29
     undocumented = total - documented
@@ -90,8 +91,29 @@ def test_endpoint_counts_in_docs_match_registry() -> None:
     assert f"`parsing`={len(resolve_profile('parsing'))}" in context
     assert f"`minimal`={len(resolve_profile('minimal'))}" in context
     assert f"{documented} / {total} 个注册端点" in contract
+    assert f"已文档化 22 个 / 共 {uid_level} 个" in contract
+    assert f"已文档化 7 个 / 共 {item_level} 个" in contract
     assert f"剩余 {undocumented} 个端点" in contract
     assert f"下列 {undocumented} 个端点" in contract
+
+
+def test_endpoint_contract_urls_match_upstream_user_api_table() -> None:
+    contract = _read(ROOT / "docs" / "endpoint-contract.md")
+    expected_urls = [
+        user.API["info"]["article"]["url"],
+        user.API["info"]["opus"]["url"],
+        user.API["info"]["dynamic_new"]["url"],
+        user.API["info"]["article_lists"]["url"],
+        user.API["info"]["user_tag"]["url"],
+        user.API["info"]["upower_qa_list"]["url"],
+        user.API["info"]["user_medal"]["url"],
+        user.API["info"]["all_followings"]["url"],
+        user.API["info"]["elec_user_monthly"]["url"],
+        user.API["info"]["channel_list"]["url"],
+    ]
+
+    for url in expected_urls:
+        assert url in contract
 
 
 def test_env_example_keys_are_real_settings_fields() -> None:

@@ -23,4 +23,5 @@ class EndpointSpec:
     kind: str = "uid"
     source_endpoint: str | None = None
     extract_items: Callable[[dict], list[str]] | None = None
+    skip_item: Callable[[dict], str | None] | None = None
     needs_parent_uid: bool = False

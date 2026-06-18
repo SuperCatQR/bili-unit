@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from bili_unit.processing import ASRAPIError
+from bili_unit.processing import ASRAPIError, EmptyTranscriptError
 from bili_unit.processing.audio import (
     ASRCacheStore,
     ASRResult,
@@ -59,13 +59,72 @@ def test_find_matches_within_tolerance(tmp_path):
     # Reload from disk.
     page2 = cache.load_page(1, "BV1", 0)
     # Exact match.
-    assert cache.find(page2, 100.0, 200.0) is not None
+    assert cache.find(
+        page2, 100.0, 200.0, language="zh", model="m", backend="",
+    ) is not None
     # Within tolerance (well below MATCH_TOLERANCE_S).
     near = MATCH_TOLERANCE_S * 0.5
-    assert cache.find(page2, 100.0 + near, 200.0 - near) is not None
+    assert cache.find(
+        page2,
+        100.0 + near,
+        200.0 - near,
+        language="zh",
+        model="m",
+        backend="",
+    ) is not None
     # Outside tolerance.
     far = MATCH_TOLERANCE_S * 2
-    assert cache.find(page2, 100.0 + far, 200.0) is None
+    assert cache.find(
+        page2, 100.0 + far, 200.0, language="zh", model="m", backend="",
+    ) is None
+
+
+def test_find_requires_matching_asr_namespace(tmp_path):
+    cache = ASRCacheStore(tmp_path)
+    page = cache.load_page(1, "BV1", 0)
+    cache.upsert(page, CachedSegment(
+        start_s=100.0,
+        end_s=200.0,
+        text="zh text",
+        language="zh",
+        duration=100.0,
+        model="mimo-v1",
+        backend="mimo:https://a.example/v1:mimo-v1",
+    ))
+
+    page2 = cache.load_page(1, "BV1", 0)
+    assert cache.find(
+        page2,
+        100.0,
+        200.0,
+        language="zh",
+        model="mimo-v1",
+        backend="mimo:https://a.example/v1:mimo-v1",
+    ) is not None
+    assert cache.find(
+        page2,
+        100.0,
+        200.0,
+        language="en",
+        model="mimo-v1",
+        backend="mimo:https://a.example/v1:mimo-v1",
+    ) is None
+    assert cache.find(
+        page2,
+        100.0,
+        200.0,
+        language="zh",
+        model="mimo-v2",
+        backend="mimo:https://a.example/v1:mimo-v2",
+    ) is None
+    assert cache.find(
+        page2,
+        100.0,
+        200.0,
+        language="zh",
+        model="mimo-v1",
+        backend="mimo:https://b.example/v1:mimo-v1",
+    ) is None
 
 
 def test_upsert_replaces_within_tolerance(tmp_path):
@@ -159,6 +218,7 @@ class _StubASRBackend:
     """Minimal ASR backend stub: pops a queue of ASRResult per call."""
 
     model = "stub-asr-v1"
+    cache_namespace = "stub-asr"
 
     def __init__(self, results):
         self._results = list(results)
@@ -265,10 +325,12 @@ async def test_transcribe_page_segments_mixed_cache_and_fresh(tmp_path):
     cache.upsert(page, CachedSegment(
         start_s=0.0, end_s=300.0, text="cached-1",
         language="zh", duration=300.0, model="stub-asr-v1",
+        backend="stub-asr",
     ))
     cache.upsert(page, CachedSegment(
         start_s=300.0, end_s=600.0, text="cached-2",
         language="zh", duration=300.0, model="stub-asr-v1",
+        backend="stub-asr",
     ))
 
     seg_files = [
@@ -296,6 +358,38 @@ async def test_transcribe_page_segments_mixed_cache_and_fresh(tmp_path):
     for s in segs:
         assert s["model"] == "stub-asr-v1"
         assert s["duration"] == 300.0
+
+
+@pytest.mark.asyncio
+async def test_transcribe_page_language_change_misses_cache(tmp_path):
+    cache = ASRCacheStore(tmp_path / "cache")
+    page = cache.load_page(4, "BVlang", 0)
+    cache.upsert(page, CachedSegment(
+        start_s=0.0,
+        end_s=30.0,
+        text="cached zh",
+        language="zh",
+        duration=30.0,
+        model="stub-asr-v1",
+        backend="stub-asr",
+    ))
+
+    backend = _StubASRBackend([
+        ASRResult(text="fresh en", duration=30.0, model="stub-asr-v1"),
+    ])
+    trans = await audio_transcribe_page(
+        backend,
+        cache,
+        uid=4,
+        bvid="BVlang",
+        page_index=0,
+        segments=[_make_seg(tmp_path, "s0.mp3", 0.0, 30.0)],
+        asr_language="en",
+    )
+
+    assert backend.calls == 1
+    assert trans["cache_hits"] == 0
+    assert trans["text"] == "fresh en"
 
 
 @pytest.mark.asyncio
@@ -585,7 +679,7 @@ async def test_transcribe_page_skips_short_empty_segment(tmp_path):
         async def transcribe(self, audio_data, mime_type="audio/mp3", language="auto"):
             self.calls += 1
             if self.calls == 2:
-                raise ASRAPIError(
+                raise EmptyTranscriptError(
                     "MiMo ASR returned empty transcription text; inspect the "
                     "video manually"
                 )
@@ -626,14 +720,14 @@ async def test_transcribe_page_long_empty_segment_still_fails(tmp_path):
         model = "stub-asr-v1"
 
         async def transcribe(self, audio_data, mime_type="audio/mp3", language="auto"):
-            raise ASRAPIError(
+            raise EmptyTranscriptError(
                 "MiMo ASR returned empty transcription text; inspect the video manually"
             )
 
         async def close(self):
             return None
 
-    with pytest.raises(ASRAPIError, match="empty transcription text"):
+    with pytest.raises(EmptyTranscriptError, match="empty transcription text"):
         await audio_transcribe_page(
             _EmptyBackend(),
             ASRCacheStore(tmp_path / "cache"),

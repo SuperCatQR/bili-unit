@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import ASRAPIError
+from .. import ASRAPIError, EmptyTranscriptError
 from ..audio._asr_cache import ASRCacheStore, CachedSegment
 from ..audio._converter import Mp3Segment, convert_at_points
 from ..audio._stitch import stitch_transcripts
@@ -134,6 +134,7 @@ async def audio_transcribe_page(
     segment_texts: list[str] = []
     segments_out: list[dict] = []
     backend_model = getattr(asr_backend, "model", "")
+    backend_namespace = _cache_backend_namespace(asr_backend)
     audio_tokens_total: int = 0
     asr_seconds_total: float = 0.0
     fresh_segment_count: int = 0
@@ -142,7 +143,14 @@ async def audio_transcribe_page(
 
     for seg in segments:
         cached: CachedSegment | None = (
-            asr_cache.find(page_cache, seg.start_s, seg.end_s)
+            asr_cache.find(
+                page_cache,
+                seg.start_s,
+                seg.end_s,
+                language=asr_language,
+                model=backend_model,
+                backend=backend_namespace,
+            )
             if asr_cache is not None and page_cache is not None
             else None
         )
@@ -257,9 +265,20 @@ def _is_high_risk_error(exc: Exception) -> bool:
 
 def _is_empty_transcript_error(exc: Exception) -> bool:
     return (
-        isinstance(exc, ASRAPIError)
-        and "empty transcription text" in str(exc).lower()
+        isinstance(exc, EmptyTranscriptError)
+        or (
+            isinstance(exc, ASRAPIError)
+            and "empty transcription text" in str(exc).lower()
+        )
     )
+
+
+def _cache_backend_namespace(asr_backend: ASRBackend) -> str:
+    backend_id = getattr(asr_backend, "cache_namespace", None)
+    if isinstance(backend_id, str) and backend_id.strip():
+        return backend_id.strip()
+    cls = type(asr_backend)
+    return f"{cls.__module__}.{cls.__qualname__}"
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -326,6 +345,11 @@ async def _transcribe_segment_once(
     asr_result = await asr_backend.transcribe(
         audio_bytes, mime_type="audio/mp3", language=asr_language,
     )
+    if not str(asr_result.text or "").strip():
+        raise EmptyTranscriptError(
+            "ASR returned empty transcription text; inspect the video manually "
+            "(it may have no speech, or the backend response may be abnormal)."
+        )
     audio_tokens = getattr(asr_result, "audio_tokens", None)
     model = getattr(asr_backend, "model", "") or asr_result.model
     item = {
@@ -349,6 +373,7 @@ async def _transcribe_segment_once(
             duration=asr_result.duration,
             model=model,
             audio_tokens=audio_tokens,
+            backend=_cache_backend_namespace(asr_backend),
         ))
     return item
 
@@ -482,6 +507,10 @@ async def _transcribe_segment_with_high_risk_fallback(
                 **_skipped_segment(seg, reason="empty"),
                 "model": getattr(asr_backend, "model", ""),
             }]
+        if _is_empty_transcript_error(exc):
+            if isinstance(exc, EmptyTranscriptError):
+                raise
+            raise EmptyTranscriptError(str(exc)) from exc
         high_risk_exc = exc
         should_split = (
             high_risk_split_enabled
@@ -575,7 +604,14 @@ async def _transcribe_segment_with_high_risk_fallback(
     for path, (start_s, end_s) in zip(paths, points, strict=True):
         sub_seg = Mp3Segment(path, start_s, end_s)
         cached: CachedSegment | None = (
-            asr_cache.find(page_cache, sub_seg.start_s, sub_seg.end_s)
+            asr_cache.find(
+                page_cache,
+                sub_seg.start_s,
+                sub_seg.end_s,
+                language=asr_language,
+                model=getattr(asr_backend, "model", ""),
+                backend=_cache_backend_namespace(asr_backend),
+            )
             if asr_cache is not None and page_cache is not None
             else None
         )

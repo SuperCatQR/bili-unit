@@ -8,11 +8,21 @@ from typing import Any
 
 from bilibili_api.exceptions import (
     ApiException,
+    ArgsException,
+    CredentialNoBiliJctException,
+    CredentialNoSessdataException,
     NetworkException,
     ResponseCodeException,
 )
 
-from . import Http5xxError, Http412Error, RequestError, ResourceUnavailableError
+from . import (
+    AuthError,
+    Http5xxError,
+    Http412Error,
+    InvalidRequestError,
+    RequestError,
+    ResourceUnavailableError,
+)
 
 _PERMANENT_BUSINESS_CODES: frozenset[int] = frozenset({
     -400, 22115, 22118, 53013, 53016, 88214,
@@ -49,6 +59,10 @@ async def map_bilibili_errors(
         raise Http5xxError(f"{label}: network error {exc}") from exc
     except passthrough:
         raise
+    except (CredentialNoSessdataException, CredentialNoBiliJctException) as exc:
+        raise AuthError(f"{label}: credential missing: {exc}") from exc
+    except ArgsException as exc:
+        raise InvalidRequestError(f"{label}: invalid SDK arguments: {exc}") from exc
     except ApiException as exc:
         raise RequestError(f"{label}: {exc}") from exc
     except Exception as exc:

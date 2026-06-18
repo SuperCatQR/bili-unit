@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 
-from .. import ASRAPIError, ASRConfigError, ASRConnectionError
+from .. import ASRAPIError, ASRConfigError, ASRConnectionError, EmptyTranscriptError
 from ._asr_backend import ASRResult
 
 if TYPE_CHECKING:
@@ -113,6 +113,10 @@ class MimoASRBackend:
     @property
     def auth_style(self) -> str:
         return self._auth_style
+
+    @property
+    def cache_namespace(self) -> str:
+        return f"mimo:{self._base_url}:{self._model}"
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -220,7 +224,7 @@ class MimoASRBackend:
             raise ASRAPIError("unexpected MiMo response shape: content is not text")
         text = text.strip()
         if not text:
-            raise ASRAPIError(
+            raise EmptyTranscriptError(
                 "MiMo ASR returned empty transcription text; inspect the video "
                 "manually (it may have no speech, or the backend response may be abnormal)."
             )

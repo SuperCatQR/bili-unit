@@ -48,6 +48,10 @@ class RequestError(FetchingError):
     """HTTP request-level failure."""
 
 
+class InvalidRequestError(FetchingError):
+    """Non-retryable invalid SDK/request arguments."""
+
+
 class Http412Error(RequestError):
     """Bilibili 412 — too many requests."""
 

@@ -23,6 +23,7 @@ from bili_unit.processing import (
     ASRAPIError,
     AudioError,
     DownloadError,
+    EmptyTranscriptError,
     ProcessingItemStatus,
     ProcessingPipelineStatus,
     ProcessingTaskStatus,
@@ -724,7 +725,7 @@ async def test_audio_all_empty_transcript_fails_persistently(tmp_path):
 
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(
-        side_effect=ASRAPIError(
+        side_effect=EmptyTranscriptError(
             "MiMo ASR returned empty transcription text; inspect the video manually"
         )
     )
@@ -758,6 +759,51 @@ async def test_audio_all_empty_transcript_fails_persistently(tmp_path):
     assert errs[0]["item_id"] == bvid
     assert errs[0]["error_type"] == "EmptyTranscriptError"
     assert "no non-empty transcript text" in errs[0]["message"]
+    assert errs[0]["retryable"] is False
+    await cmd.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_legacy_empty_transcript_api_error_no_retry(tmp_path):
+    from bili_unit.processing.audio import Mp3Segment
+
+    s = _make_settings(tmp_path, max_retries=2, retry_delays="0,0")
+    uid = 905
+    bvid = "BVlegacyEmpty"
+    await _seed_video_pages(s, uid, [bvid])
+
+    mock_dl = AsyncMock()
+    mock_dl.get_audio_url = AsyncMock(return_value={"url": "https://cdn/x", "duration": 30})
+    mock_dl.download_to_file = AsyncMock()
+
+    seg = Mp3Segment(tmp_path / "empty.mp3", 0.0, 30.0)
+    seg.path.write_bytes(b"x")
+    mock_convert = AsyncMock(return_value=[seg])
+
+    mock_asr = AsyncMock()
+    mock_asr.transcribe = AsyncMock(
+        side_effect=ASRAPIError(
+            "MiMo ASR returned empty transcription text; inspect the video manually"
+        )
+    )
+    mock_asr.model = "mock-asr"
+    mock_asr.close = AsyncMock()
+
+    cmd = ProcessingCommand(
+        s,
+        asr_backend=mock_asr,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+
+    result = await cmd.process_uid(uid)
+
+    assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
+    assert mock_asr.transcribe.await_count == 1
+    errs = await _list_processing_errors(s, uid)
+    assert len(errs) == 1
+    assert errs[0]["error_type"] == "EmptyTranscriptError"
     assert errs[0]["retryable"] is False
     await cmd.close()
 
@@ -901,8 +947,8 @@ async def test_audio_asr_cache_skips_segments_on_retry(tmp_path):
 
     cache = ASRCacheStore(s.bili_processing_asr_cache_dir)
     page = cache.load_page(uid, bvid, 0)
-    cache.upsert(page, CachedSegment(start_s=0.0, end_s=830.0, text="cached-A", language="auto", duration=830.0, model="m"))
-    cache.upsert(page, CachedSegment(start_s=830.0, end_s=1660.0, text="cached-B", language="auto", duration=830.0, model="m"))
+    cache.upsert(page, CachedSegment(start_s=0.0, end_s=830.0, text="cached-A", language="auto", duration=830.0, model="m", backend="test-asr"))
+    cache.upsert(page, CachedSegment(start_s=830.0, end_s=1660.0, text="cached-B", language="auto", duration=830.0, model="m", backend="test-asr"))
 
     work_item = WorkItem(
         item_type="audio", item_id=bvid,
@@ -932,6 +978,7 @@ async def test_audio_asr_cache_skips_segments_on_retry(tmp_path):
     mock_asr = AsyncMock()
     mock_asr.transcribe = fake_transcribe
     mock_asr.model = "m"
+    mock_asr.cache_namespace = "test-asr"
 
     runner = _make_unit_runner(
         s,

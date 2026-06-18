@@ -318,6 +318,24 @@ async def test_save_video_preserves_child_rows_on_resave(store_and_ctx):
         """,
         (video.bvid,),
     )
+    await ctx.main.execute(
+        """
+        INSERT INTO audio_transcription_page(
+            bvid, page_no, page_index, cid, duration_s, language, asr_model,
+            transcript_text, transcript_char_count, segment_count
+        ) VALUES (?, 1, 0, 111, 1.0, 'zh', 'mimo', 'ok', 2, 1)
+        """,
+        (video.bvid,),
+    )
+    await ctx.main.execute(
+        """
+        INSERT INTO audio_transcription_segment(
+            bvid, page_no, segment_no, start_seconds, end_seconds,
+            duration_s, transcript_text, language, asr_model
+        ) VALUES (?, 1, 1, 0.0, 1.0, 1.0, 'ok', 'zh', 'mimo')
+        """,
+        (video.bvid,),
+    )
 
     video.title = "resaved"
     await store.save_video(video)
@@ -330,8 +348,28 @@ async def test_save_video_preserves_child_rows_on_resave(store_and_ctx):
         "SELECT COUNT(*) FROM audio_transcription WHERE bvid = ?",
         (video.bvid,),
     )
+    subtitle_page_count = await ctx.main.fetch_value(
+        "SELECT COUNT(*) FROM video_subtitle_page WHERE bvid = ?",
+        (video.bvid,),
+    )
+    subtitle_segment_count = await ctx.main.fetch_value(
+        "SELECT COUNT(*) FROM video_subtitle_segment WHERE bvid = ?",
+        (video.bvid,),
+    )
+    audio_page_count = await ctx.main.fetch_value(
+        "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
+        (video.bvid,),
+    )
+    audio_segment_count = await ctx.main.fetch_value(
+        "SELECT COUNT(*) FROM audio_transcription_segment WHERE bvid = ?",
+        (video.bvid,),
+    )
     assert subtitle_count == 1
     assert audio_count == 1
+    assert subtitle_page_count == 1
+    assert subtitle_segment_count == 1
+    assert audio_page_count == 1
+    assert audio_segment_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +799,29 @@ async def test_save_image_asset_upserts_on_same_url(store_and_ctx):
     assert rows[0]["status"] == "ok"
     assert rows[0]["bytes"] == 3
     assert rows[0]["data"] == b"new"
+
+
+async def test_update_model_payload_preserves_parsed_at_ms(store_and_ctx):
+    store, ctx = store_and_ctx
+    video = _video()
+    await store.save_video(video)
+    before = await ctx.main.fetch_one(
+        "SELECT payload, parsed_at_ms FROM video WHERE bvid = ?",
+        (video.bvid,),
+    )
+    assert before is not None
+    updated_payload = json.loads(before["payload"])
+    updated_payload["cover_local"] = "video/cover.jpg"
+
+    await store.update_model_payload("video_work", video.bvid, updated_payload)
+
+    after = await ctx.main.fetch_one(
+        "SELECT payload, parsed_at_ms FROM video WHERE bvid = ?",
+        (video.bvid,),
+    )
+    assert after is not None
+    assert json.loads(after["payload"])["cover_local"] == "video/cover.jpg"
+    assert after["parsed_at_ms"] == before["parsed_at_ms"]
 
 
 async def test_list_image_assets_returns_dict_rows(store_and_ctx):

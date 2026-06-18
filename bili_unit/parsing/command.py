@@ -21,7 +21,7 @@ from . import (
 )
 from ._store import ParsingStore
 from .materializer import MissingRequiredRawPayloadError, ParsingMaterializer
-from .specs import MODEL_ORDER
+from .specs import MODEL_ORDER, get_spec
 
 if TYPE_CHECKING:
     from .._env import BiliSettings
@@ -72,12 +72,16 @@ class ParsingCommand:
         if models is None:
             model_order = list(MODEL_ORDER)
         else:
-            model_order = list(models)
-            unknown = [name for name in model_order if name not in MODEL_ORDER]
+            selected = list(models)
+            unknown = [name for name in selected if name not in MODEL_ORDER]
             if unknown:
                 raise ValueError(f"unknown parsing model(s): {', '.join(unknown)}")
-            if not model_order:
+            if not selected:
                 raise ValueError("models must not be empty")
+            model_order = sorted(
+                selected,
+                key=lambda name: (get_spec(name).priority, MODEL_ORDER.index(name)),
+            )
 
         logger.info(
             "parse_uid_received",

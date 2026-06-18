@@ -148,7 +148,7 @@ def video_endpoints() -> list[EndpointSpec]:
         EndpointSpec(
             name="video_player_info",
             callable=fetch_video_player_info_item,
-            credential_required=False,
+            credential_required=True,
             pagination_strategy="none",
             rate_limit_key="video_player_info",
             kind="item",
@@ -168,7 +168,7 @@ def video_endpoints() -> list[EndpointSpec]:
         EndpointSpec(
             name="video_public_notes",
             callable=fetch_video_public_notes_item,
-            credential_required=False,
+            credential_required=True,
             pagination_strategy="none",
             rate_limit_key="video_public_notes",
             kind="item",
@@ -208,7 +208,7 @@ def video_endpoints() -> list[EndpointSpec]:
         EndpointSpec(
             name="video_subtitle",
             callable=fetch_video_subtitle_item,
-            credential_required=False,
+            credential_required=True,
             pagination_strategy="none",
             rate_limit_key="video_subtitle",
             kind="item",
@@ -258,7 +258,7 @@ def video_endpoints() -> list[EndpointSpec]:
         EndpointSpec(
             name="video_is_forbid_note",
             callable=fetch_video_is_forbid_note_item,
-            credential_required=False,
+            credential_required=True,
             pagination_strategy="none",
             rate_limit_key="video_is_forbid_note",
             kind="item",

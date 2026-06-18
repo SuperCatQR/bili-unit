@@ -3,7 +3,14 @@
 
 import pytest
 
-from bili_unit.fetching.rate_limit import RateLimitController
+from bili_unit.fetching._endpoint_catalog import ENDPOINTS
+from bili_unit.fetching.rate_limit import _ITEM_FANOUT_ENDPOINTS, RateLimitController
+
+
+def test_all_item_endpoints_use_fanout_rate_limit_bucket():
+    item_endpoints = {endpoint.name for endpoint in ENDPOINTS if endpoint.kind == "item"}
+
+    assert item_endpoints <= _ITEM_FANOUT_ENDPOINTS
 
 
 @pytest.mark.asyncio

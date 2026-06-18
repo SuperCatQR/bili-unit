@@ -31,6 +31,7 @@ class _ItemFanoutResult(StrEnum):
     """Outcome of _process_single_item for a single item."""
     SUCCESS = "success"
     FAILED = "failed"
+    UNAVAILABLE = "unavailable"
     PERMANENT = "permanent"  # AuthError — aborts whole fan-out
 
 
@@ -43,6 +44,7 @@ class _ItemFanoutPlan:
     skipped_existing: int = 0
     skipped_fresh: int = 0
     skipped_unavailable: int = 0
+    skipped_filtered: int = 0
 
     @property
     def skipped(self) -> int:
@@ -50,6 +52,7 @@ class _ItemFanoutPlan:
             self.skipped_existing
             + self.skipped_fresh
             + self.skipped_unavailable
+            + self.skipped_filtered
         )
 
 
@@ -154,10 +157,11 @@ class _ItemFanoutMixin:
                 )
             return
 
-        plan = await self._build_item_fanout_plan(ep_name, items, mode)
+        plan = await self._build_item_fanout_plan(ep_name, items, mode, spec)
         total_items = plan.total
         completed_items = plan.skipped
         failed_items = 0
+        unavailable_items = 0
 
         settings = self._settings
         max_concurrent = max(settings.bili_fetching_item_concurrency, 1)
@@ -171,13 +175,16 @@ class _ItemFanoutMixin:
         )
 
         async def process_item(item_id: str) -> str:
-            nonlocal completed_items, failed_items
+            nonlocal completed_items, failed_items, unavailable_items
             async with semaphore:
                 result = await self._process_single_item(
                     uid, spec, credential, item_id, mode,
                 )
             if result == _ItemFanoutResult.SUCCESS:
                 completed_items += 1
+            elif result == _ItemFanoutResult.UNAVAILABLE:
+                completed_items += 1
+                unavailable_items += 1
             elif result == _ItemFanoutResult.PERMANENT:
                 # AuthError — abort the whole fan-out immediately.
                 raise FetchingError("auth_permanent_fail")
@@ -202,6 +209,13 @@ class _ItemFanoutMixin:
                     "total": total_items,
                     "completed": completed_items,
                     "failed": failed_items,
+                    "skipped": plan.skipped + unavailable_items,
+                    "skipped_existing": plan.skipped_existing,
+                    "skipped_fresh": plan.skipped_fresh,
+                    "skipped_unavailable": (
+                        plan.skipped_unavailable + unavailable_items
+                    ),
+                    "skipped_filtered": plan.skipped_filtered,
                 },
             )
             return result
@@ -240,6 +254,9 @@ class _ItemFanoutMixin:
         else:
             final_status = EndpointStatus.SUCCESS
 
+        skipped_unavailable = plan.skipped_unavailable + unavailable_items
+        skipped_total = plan.skipped + unavailable_items
+
         await self._store.save_progress(
             ep_name,
             {
@@ -256,10 +273,11 @@ class _ItemFanoutMixin:
                 "total": total_items,
                 "completed": completed_items,
                 "failed": failed_items,
-                "skipped": plan.skipped,
+                "skipped": skipped_total,
                 "skipped_existing": plan.skipped_existing,
                 "skipped_fresh": plan.skipped_fresh,
-                "skipped_unavailable": plan.skipped_unavailable,
+                "skipped_unavailable": skipped_unavailable,
+                "skipped_filtered": plan.skipped_filtered,
             },
         )
 
@@ -271,10 +289,11 @@ class _ItemFanoutMixin:
                 "completed": completed_items,
                 "failed": failed_items,
                 "total": total_items,
-                "skipped": plan.skipped,
+                "skipped": skipped_total,
                 "skipped_existing": plan.skipped_existing,
                 "skipped_fresh": plan.skipped_fresh,
-                "skipped_unavailable": plan.skipped_unavailable,
+                "skipped_unavailable": skipped_unavailable,
+                "skipped_filtered": plan.skipped_filtered,
             },
         )
         if reporter is not None:
@@ -297,10 +316,11 @@ class _ItemFanoutMixin:
                     "completed": completed_items,
                     "failed": failed_items,
                     "total": total_items,
-                    "skipped": plan.skipped,
+                    "skipped": skipped_total,
                     "skipped_existing": plan.skipped_existing,
                     "skipped_fresh": plan.skipped_fresh,
-                    "skipped_unavailable": plan.skipped_unavailable,
+                    "skipped_unavailable": skipped_unavailable,
+                    "skipped_filtered": plan.skipped_filtered,
                 },
             )
 
@@ -309,10 +329,38 @@ class _ItemFanoutMixin:
         ep_name: str,
         items: list[str],
         mode: str,
+        spec: EndpointSpec,
     ) -> _ItemFanoutPlan:
         """Classify fan-out items before execution."""
+        original_total = len(items)
+        filtered_out = 0
+        if spec.skip_item is not None and spec.source_endpoint:
+            source_payload = await self._store.get_raw_payload(spec.source_endpoint)
+            if source_payload:
+                filtered_items: list[str] = []
+                for item_id in items:
+                    source_item = self._find_source_item(source_payload, spec.source_endpoint, item_id)
+                    if source_item is not None:
+                        reason = spec.skip_item(source_item)
+                        if reason is not None:
+                            filtered_out += 1
+                            logger.info(
+                                "item_endpoint_item_filtered",
+                                extra={
+                                    "endpoint": ep_name,
+                                    "item_id": item_id,
+                                    "reason": reason,
+                                },
+                            )
+                            continue
+                    filtered_items.append(item_id)
+                items = filtered_items
         if mode == "full":
-            return _ItemFanoutPlan(total=len(items), to_fetch=list(items))
+            return _ItemFanoutPlan(
+                total=original_total,
+                to_fetch=list(items),
+                skipped_filtered=filtered_out,
+            )
 
         completed = set(await self._store.list_completed_items(ep_name))
         unavailable = set(await self._store.list_unavailable_items(ep_name))
@@ -347,12 +395,48 @@ class _ItemFanoutMixin:
             to_fetch.append(item_id)
 
         return _ItemFanoutPlan(
-            total=len(items),
+            total=original_total,
             to_fetch=to_fetch,
             skipped_existing=skipped_existing,
             skipped_fresh=skipped_fresh,
             skipped_unavailable=skipped_unavailable,
+            skipped_filtered=filtered_out,
         )
+
+    def _find_source_item(
+        self: Any,
+        source_payload: dict[str, Any],
+        source_endpoint: str,
+        item_id: str,
+    ) -> dict[str, Any] | None:
+        pages = source_payload.get("pages")
+        if source_endpoint == "articles" and isinstance(pages, list):
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                articles = page.get("articles")
+                if not isinstance(articles, list):
+                    continue
+                for article in articles:
+                    if (
+                        isinstance(article, dict)
+                        and str(article.get("id")) == item_id
+                    ):
+                        return article
+        if source_endpoint == "opus" and isinstance(pages, list):
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                items = page.get("items")
+                if not isinstance(items, list):
+                    continue
+                for opus_item in items:
+                    if (
+                        isinstance(opus_item, dict)
+                        and str(opus_item.get("opus_id")) == item_id
+                    ):
+                        return opus_item
+        return None
 
     async def _process_single_item(
         self: Any,
@@ -568,6 +652,8 @@ class _ItemFanoutMixin:
             )
         except AuthError:
             return _ItemFanoutResult.PERMANENT
+        except ResourceUnavailableError:
+            return _ItemFanoutResult.UNAVAILABLE
         except Exception:
             return _ItemFanoutResult.FAILED
 

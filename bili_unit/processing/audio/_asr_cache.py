@@ -6,9 +6,10 @@
 #   a network blip or quota exhaustion on segment 4 of 6 currently invalidates
 #   the entire page and re-bills the first 3 segments on retry.
 #
-#   This module caches each successful ASR call keyed by ``(start_s, end_s)``
-#   on the original audio timeline.  Subsequent runs that produce the same
-#   cut plan (VAD is deterministic for the same input + threshold) skip the
+#   This module caches each successful ASR call keyed by
+#   ``(start_s, end_s, language, model, backend)`` on the original audio
+#   timeline.  Subsequent runs that produce the same cut plan (VAD is
+#   deterministic for the same input + threshold) and ASR namespace skip the
 #   API call and reuse the cached text.
 #
 # Storage layout (one JSON per page, atomic-rename on write):
@@ -18,7 +19,8 @@
 #         "uid": <int>, "bvid": "<str>", "page_index": <int>,
 #         "segments": [
 #           {"start_s": <float>, "end_s": <float>, "text": <str>,
-#            "language": <str>, "duration": <float|null>, "model": <str>},
+#            "language": <str>, "duration": <float|null>, "model": <str>,
+#            "backend": <str>},
 #           ...
 #         ],
 #         "updated_at": <ms>
@@ -57,6 +59,7 @@ class CachedSegment:
     duration: float | None
     model: str
     audio_tokens: int | None = None
+    backend: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +70,7 @@ class CachedSegment:
             "duration": self.duration,
             "model": self.model,
             "audio_tokens": self.audio_tokens,
+            "backend": self.backend,
         }
 
     @classmethod
@@ -88,7 +92,30 @@ class CachedSegment:
             ),
             model=str(raw.get("model", "")),
             audio_tokens=audio_tokens,
+            backend=str(raw.get("backend", "")),
         )
+
+    def matches_namespace(self, language: str, model: str, backend: str) -> bool:
+        return (
+            _normalise_namespace(self.language) == _normalise_namespace(language)
+            and _normalise_namespace(self.model) == _normalise_namespace(model)
+            and _normalise_namespace(self.backend) == _normalise_namespace(backend)
+        )
+
+
+def _normalise_namespace(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _same_cache_key(
+    left: CachedSegment,
+    right: CachedSegment,
+) -> bool:
+    return (
+        abs(left.start_s - right.start_s) <= MATCH_TOLERANCE_S
+        and abs(left.end_s - right.end_s) <= MATCH_TOLERANCE_S
+        and left.matches_namespace(right.language, right.model, right.backend)
+    )
 
 
 @dataclass
@@ -164,12 +191,17 @@ class ASRCacheStore:
         page: _PageCache,
         start_s: float,
         end_s: float,
+        *,
+        language: str,
+        model: str,
+        backend: str,
     ) -> CachedSegment | None:
-        """Return a cached segment matching ``(start_s, end_s)`` or None."""
+        """Return a cached segment matching range and ASR namespace."""
         for s in page.segments:
             if (
                 abs(s.start_s - start_s) <= MATCH_TOLERANCE_S
                 and abs(s.end_s - end_s) <= MATCH_TOLERANCE_S
+                and s.matches_namespace(language, model, backend)
             ):
                 return s
         return None
@@ -184,10 +216,7 @@ class ASRCacheStore:
         replaced = False
         new_segments: list[CachedSegment] = []
         for existing in page.segments:
-            if (
-                abs(existing.start_s - seg.start_s) <= MATCH_TOLERANCE_S
-                and abs(existing.end_s - seg.end_s) <= MATCH_TOLERANCE_S
-            ):
+            if _same_cache_key(existing, seg):
                 new_segments.append(seg)
                 replaced = True
             else:

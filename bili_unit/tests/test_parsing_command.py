@@ -465,6 +465,32 @@ async def test_parse_uid_can_run_explicit_model_subset(
     assert tuple(task["models"].keys()) == ("video_work", "opus_post")
 
 
+async def test_parse_uid_sorts_explicit_model_subset_by_dependency_order(
+    parsing_command: ParsingCommand, settings: BiliSettings,
+):
+    seen: list[str] = []
+
+    async def fake_parse_model(self, uid, model_name, mode):
+        seen.append(model_name)
+        return 1
+
+    with patch(
+        "bili_unit.parsing.command.ParsingMaterializer.parse_model",
+        new=fake_parse_model,
+    ):
+        result = await parsing_command.parse_uid(
+            uid=7109,
+            models=["video_subtitle", "video_work"],
+        )
+
+    assert result.status == ParsingTaskStatus.SUCCESS
+    assert seen == ["video_work", "video_subtitle"]
+
+    task = await _read_task(7109, settings)
+    assert task is not None
+    assert tuple(task["models"].keys()) == ("video_work", "video_subtitle")
+
+
 async def test_parse_uid_rejects_unknown_model(
     parsing_command: ParsingCommand,
 ):

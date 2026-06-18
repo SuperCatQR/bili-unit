@@ -173,9 +173,9 @@ async def test_cost_persists_through_cache_on_second_run(tmp_path: Path):
     # the runner uses on every fresh ASR call.
     cache = ASRCacheStore(s.bili_processing_asr_cache_dir)
     page = cache.load_page(uid, bvid, 0)
-    cache.upsert(page, CachedSegment(0.0, 15.0, "a", "auto", 15.0, "m", audio_tokens=100))
-    cache.upsert(page, CachedSegment(15.0, 30.0, "b", "auto", 15.0, "m", audio_tokens=100))
-    cache.upsert(page, CachedSegment(30.0, 45.0, "c", "auto", 15.0, "m", audio_tokens=100))
+    cache.upsert(page, CachedSegment(0.0, 15.0, "a", "auto", 15.0, "m", audio_tokens=100, backend="test-asr"))
+    cache.upsert(page, CachedSegment(15.0, 30.0, "b", "auto", 15.0, "m", audio_tokens=100, backend="test-asr"))
+    cache.upsert(page, CachedSegment(30.0, 45.0, "c", "auto", 15.0, "m", audio_tokens=100, backend="test-asr"))
 
     # Second run — empty backend; everything must hit cache.
     mock_convert_second = AsyncMock(return_value=_fresh_segs())
@@ -184,6 +184,7 @@ async def test_cost_persists_through_cache_on_second_run(tmp_path: Path):
         side_effect=AssertionError("ASR must not be called on cache-hit run"),
     )
     mock_asr_second.model = "m"
+    mock_asr_second.cache_namespace = "test-asr"
 
     runner_second = _make_unit_runner(
         s, mock_asr=mock_asr_second, mock_dl=mock_dl,
@@ -210,8 +211,8 @@ async def test_cost_aggregates_mixed_cache_and_fresh(tmp_path: Path):
     # Pre-seed two cached segments — third one will be fresh.
     cache = ASRCacheStore(s.bili_processing_asr_cache_dir)
     page = cache.load_page(uid, bvid, 0)
-    cache.upsert(page, CachedSegment(0.0, 15.0, "a", "auto", 15.0, "m", audio_tokens=100))
-    cache.upsert(page, CachedSegment(15.0, 30.0, "b", "auto", 15.0, "m", audio_tokens=100))
+    cache.upsert(page, CachedSegment(0.0, 15.0, "a", "auto", 15.0, "m", audio_tokens=100, backend="test-asr"))
+    cache.upsert(page, CachedSegment(15.0, 30.0, "b", "auto", 15.0, "m", audio_tokens=100, backend="test-asr"))
 
     work_item = WorkItem(
         item_type="audio", item_id=bvid,
@@ -237,6 +238,7 @@ async def test_cost_aggregates_mixed_cache_and_fresh(tmp_path: Path):
         ASRResult(text="c", duration=15.0, model="m", audio_tokens=100),
     ])
     mock_asr.model = "m"
+    mock_asr.cache_namespace = "test-asr"
 
     runner = _make_unit_runner(
         s, mock_asr=mock_asr, mock_dl=mock_dl, mock_convert=mock_convert,

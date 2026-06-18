@@ -10,6 +10,7 @@ from .. import (
     AuthError,
     EndpointStatus,
     FetchingError,
+    InvalidRequestError,
     ResourceUnavailableError,
 )
 
@@ -31,7 +32,7 @@ class FetchFailureState:
 
 def classify_fetching_exception(exc: Exception) -> RetryClassification:
     """Classify fetching exceptions for RetryDriver."""
-    if isinstance(exc, (AuthError, ResourceUnavailableError)):
+    if isinstance(exc, (AuthError, InvalidRequestError, ResourceUnavailableError)):
         return RetryClassification.PERMANENT
     if isinstance(exc, FetchingError):
         return RetryClassification.RETRYABLE

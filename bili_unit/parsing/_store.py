@@ -134,8 +134,9 @@ class ParsingStore:
           * danmaku, reply, favorite, coin, share        ← stat[…] (passthrough)
           * like_count  ← stat["like"]
 
-        video_page rows are delete-then-insert: re-parsing a video that lost
-        a P-page (rare) cleanly drops the orphan row.
+        Existing video_page rows are upserted in place.  Only pages that
+        disappeared from the latest parse are deleted, so stable page rows do
+        not cascade-delete subtitle/ASR page results.
         """
         if not video.bvid:
             raise ValueError("VideoDetail.bvid is required to persist a video row")
@@ -146,10 +147,6 @@ class ParsingStore:
         pubdate_ms = _s_to_ms(video.pubdate)
 
         statements: list[tuple[str, tuple[Any, ...]]] = [
-            (
-                "DELETE FROM video_page WHERE bvid = ?",
-                (video.bvid,),
-            ),
             (
                 """
                 INSERT INTO video
@@ -195,6 +192,23 @@ class ParsingStore:
                 ),
             ),
         ]
+        page_numbers = tuple(range(1, len(video.pages) + 1))
+        if page_numbers:
+            placeholders = ", ".join("?" for _ in page_numbers)
+            statements.append(
+                (
+                    f"DELETE FROM video_page WHERE bvid = ? "
+                    f"AND page_no NOT IN ({placeholders})",
+                    (video.bvid, *page_numbers),
+                ),
+            )
+        else:
+            statements.append(
+                (
+                    "DELETE FROM video_page WHERE bvid = ?",
+                    (video.bvid,),
+                ),
+            )
         for idx, page in enumerate(video.pages, start=1):
             statements.append(
                 (
@@ -202,6 +216,10 @@ class ParsingStore:
                     INSERT INTO video_page
                         (bvid, page_no, cid, part, duration_s)
                     VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(bvid, page_no) DO UPDATE SET
+                        cid = excluded.cid,
+                        part = excluded.part,
+                        duration_s = excluded.duration_s
                     """,
                     (
                         video.bvid,
@@ -511,6 +529,27 @@ class ParsingStore:
         if row is None:
             return None
         return int(row["parsed_at_ms"])
+
+    async def update_model_payload(
+        self,
+        model: str,
+        item_id: str,
+        payload: dict,
+    ) -> None:
+        """Update only a parsed object's payload JSON.
+
+        Image localization mutates payload escape-hatch fields, but it is not
+        a fresh parse of upstream raw data.  Preserving ``parsed_at_ms`` keeps
+        incremental parsing tied to raw payload freshness.
+        """
+        try:
+            table, pk = _MODEL_TABLE[model]
+        except KeyError as exc:
+            raise ValueError(f"unknown parsing model: {model!r}") from exc
+        await self._ctx.main.execute(
+            f"UPDATE {table} SET payload = ? WHERE {pk} = ?",
+            (json.dumps(payload, ensure_ascii=False), item_id),
+        )
 
     async def get_video_payload(self, bvid: str) -> dict | None:
         """Return the JSON payload for ``bvid`` (or None if absent)."""
