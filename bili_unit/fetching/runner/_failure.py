@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..._retry import RetryClassification
 from .. import (
@@ -91,9 +92,193 @@ async def record_unexpected_endpoint_failure(
     return err_id
 
 
+async def _emit_retry_scheduled(
+    reporter: Any | None,
+    *,
+    namespace: Literal["fetch.endpoint", "fetch.item"],
+    ep_name: str,
+    item_id: str | None,
+    exc: Exception,
+    retry: int,
+    delay_s: float,
+) -> None:
+    """Emit a retry_scheduled event for endpoint- or item-scope."""
+    if reporter is None:
+        return
+    kw: dict[str, Any] = dict(
+        stage="fetching",
+        level="WARNING",
+        endpoint=ep_name,
+        message=str(exc),
+        data={
+            "retry": retry,
+            "delay_s": delay_s,
+            "error_type": type(exc).__name__,
+        },
+    )
+    if namespace == "fetch.item":
+        kw["item_type"] = ep_name
+        kw["item_id"] = item_id
+    await reporter.emit(f"{namespace}.retry_scheduled", **kw)
+
+
+async def _emit_failed(
+    reporter: Any | None,
+    *,
+    namespace: Literal["fetch.endpoint", "fetch.item"],
+    ep_name: str,
+    item_id: str | None,
+    exc: Exception,
+    retry: int,
+    extra_data: dict[str, Any] | None = None,
+) -> None:
+    """Emit a .failed event.  No-op for endpoint namespace (no such event there)."""
+    if reporter is None or namespace == "fetch.endpoint":
+        return
+    data: dict[str, Any] = {"retry": retry, "error_type": type(exc).__name__}
+    if extra_data:
+        data.update(extra_data)
+    await reporter.emit(
+        f"{namespace}.failed",
+        stage="fetching",
+        level="ERROR",
+        endpoint=ep_name,
+        item_type=ep_name,
+        item_id=item_id,
+        message=str(exc),
+        data=data,
+    )
+
+
+async def _emit_unexpected_failed(
+    reporter: Any | None,
+    *,
+    namespace: Literal["fetch.endpoint", "fetch.item"],
+    ep_name: str,
+    item_id: str | None,
+    exc: Exception,
+) -> None:
+    """Emit a .failed event for unexpected (non-fetching) errors."""
+    if reporter is None or namespace == "fetch.endpoint":
+        return
+    await reporter.emit(
+        f"{namespace}.failed",
+        stage="fetching",
+        level="ERROR",
+        endpoint=ep_name,
+        item_type=ep_name,
+        item_id=item_id,
+        message=str(exc),
+        data={"error_type": type(exc).__name__},
+    )
+
+
+async def _emit_unavailable(
+    reporter: Any | None,
+    *,
+    namespace: Literal["fetch.endpoint", "fetch.item"],
+    ep_name: str,
+    item_id: str | None,
+    exc: Exception,
+) -> None:
+    """Emit a .unavailable event."""
+    if reporter is None:
+        return
+    kw: dict[str, Any] = dict(
+        stage="fetching",
+        level="WARNING",
+        endpoint=ep_name,
+        message=str(exc),
+    )
+    if namespace == "fetch.item":
+        kw["item_type"] = ep_name
+        kw["item_id"] = item_id
+    await reporter.emit(f"{namespace}.unavailable", **kw)
+
+
+def _log_retry_scheduled(
+    logger: logging.Logger,
+    *,
+    namespace: Literal["fetch.endpoint", "fetch.item"],
+    uid: int,
+    ep_name: str,
+    item_id: str | None,
+    retry: int,
+    wait_s: float,
+    reason: str | None = None,
+) -> None:
+    if namespace == "fetch.endpoint":
+        extra: dict[str, Any] = {
+            "uid": uid, "endpoint": ep_name,
+            "wait_s": wait_s, "retry": retry,
+        }
+        logger.info("retry_scheduled", extra=extra)
+    else:
+        extra = {
+            "uid": uid, "endpoint": ep_name,
+            "item_id": item_id, "wait_s": wait_s,
+            "retry": retry,
+        }
+        if reason is not None:
+            extra["reason"] = reason
+        logger.info("item_endpoint_retry", extra=extra)
+
+
+def _log_exhausted(
+    logger: logging.Logger,
+    *,
+    namespace: Literal["fetch.endpoint", "fetch.item"],
+    uid: int,
+    ep_name: str,
+    item_id: str | None,
+    retry: int,
+    reason: str | None = None,
+) -> None:
+    if namespace == "fetch.endpoint":
+        # endpoint side does not log on exhaustion in this branch
+        return
+    extra: dict[str, Any] = {
+        "uid": uid, "endpoint": ep_name,
+        "item_id": item_id, "retry": retry,
+    }
+    if reason is not None:
+        extra["reason"] = reason
+    logger.warning("item_endpoint_item_exhausted", extra=extra)
+
+
+def _log_unavailable(
+    logger: logging.Logger,
+    *,
+    namespace: Literal["fetch.endpoint", "fetch.item"],
+    uid: int,
+    ep_name: str,
+    item_id: str | None,
+    reason: str,
+) -> None:
+    if namespace == "fetch.endpoint":
+        logger.info(
+            "endpoint_unavailable",
+            extra={"uid": uid, "endpoint": ep_name, "reason": reason},
+        )
+    else:
+        logger.info(
+            "item_endpoint_item_unavailable",
+            extra={"uid": uid, "endpoint": ep_name, "item_id": item_id, "reason": reason},
+        )
+
+
 __all__ = [
     "FetchFailureState",
     "classify_fetching_exception",
     "record_endpoint_failure",
     "record_unexpected_endpoint_failure",
+    # emit helpers
+    "_emit_retry_scheduled",
+    "_emit_failed",
+    "_emit_unexpected_failed",
+    "_emit_unavailable",
+    # log helpers
+    "_log_retry_scheduled",
+    "_log_exhausted",
+    "_log_unavailable",
 ]

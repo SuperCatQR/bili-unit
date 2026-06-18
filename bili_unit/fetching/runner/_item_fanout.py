@@ -18,7 +18,16 @@ from .. import (
     ResourceUnavailableError,
 )
 from .._endpoint_spec import EndpointSpec
-from ._failure import classify_fetching_exception
+from ._failure import (
+    _emit_failed,
+    _emit_retry_scheduled,
+    _emit_unavailable,
+    _emit_unexpected_failed,
+    _log_exhausted,
+    _log_retry_scheduled,
+    _log_unavailable,
+    classify_fetching_exception,
+)
 
 if TYPE_CHECKING:
     from ..._env import BiliSettings
@@ -482,23 +491,10 @@ class _ItemFanoutMixin:
                     retryable=False,
                     detail={"item_id": item_id},
                 )
-                logger.info(
-                    "item_endpoint_item_unavailable",
-                    extra={
-                        "uid": uid, "endpoint": ep_name,
-                        "item_id": item_id, "reason": str(exc),
-                    },
-                )
-                if reporter is not None:
-                    await reporter.emit(
-                        "fetch.item.unavailable",
-                        stage="fetching",
-                        level="WARNING",
-                        endpoint=ep_name,
-                        item_type=ep_name,
-                        item_id=item_id,
-                        message=str(exc),
-                    )
+                _log_unavailable(logger, namespace="fetch.item", uid=uid,
+                                 ep_name=ep_name, item_id=item_id, reason=str(exc))
+                await _emit_unavailable(reporter, namespace="fetch.item",
+                                        ep_name=ep_name, item_id=item_id, exc=exc)
                 return None
 
             if isinstance(exc, Http412Error):
@@ -513,52 +509,20 @@ class _ItemFanoutMixin:
                     detail={"item_id": item_id, "retry_count": retry_state["count"]},
                 )
                 if not outcome.will_retry:
-                    logger.warning(
-                        "item_endpoint_item_exhausted",
-                        extra={
-                            "uid": uid, "endpoint": ep_name,
-                            "item_id": item_id, "retry": retry_state["count"],
-                        },
-                    )
-                    if reporter is not None:
-                        await reporter.emit(
-                            "fetch.item.failed",
-                            stage="fetching",
-                            level="ERROR",
-                            endpoint=ep_name,
-                            item_type=ep_name,
-                            item_id=item_id,
-                            message=str(exc),
-                            data={
-                                "retry": retry_state["count"],
-                                "error_type": type(exc).__name__,
-                            },
-                        )
+                    _log_exhausted(logger, namespace="fetch.item", uid=uid,
+                                   ep_name=ep_name, item_id=item_id,
+                                   retry=retry_state["count"])
+                    await _emit_failed(reporter, namespace="fetch.item",
+                                       ep_name=ep_name, item_id=item_id, exc=exc,
+                                       retry=retry_state["count"])
                     return None
                 wait = max(advice.get("wait_seconds", 0), outcome.delay_seconds)
-                logger.info(
-                    "item_endpoint_retry",
-                    extra={
-                        "uid": uid, "endpoint": ep_name,
-                        "item_id": item_id, "wait_s": wait,
-                        "retry": retry_state["count"],
-                    },
-                )
-                if reporter is not None:
-                    await reporter.emit(
-                        "fetch.item.retry_scheduled",
-                        stage="fetching",
-                        level="WARNING",
-                        endpoint=ep_name,
-                        item_type=ep_name,
-                        item_id=item_id,
-                        message=str(exc),
-                        data={
-                            "retry": retry_state["count"],
-                            "delay_s": wait,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
+                _log_retry_scheduled(logger, namespace="fetch.item", uid=uid,
+                                     ep_name=ep_name, item_id=item_id,
+                                     retry=retry_state["count"], wait_s=wait)
+                await _emit_retry_scheduled(reporter, namespace="fetch.item",
+                                            ep_name=ep_name, item_id=item_id, exc=exc,
+                                            retry=retry_state["count"], delay_s=wait)
                 return wait
 
             if isinstance(exc, FetchingError):
@@ -571,52 +535,21 @@ class _ItemFanoutMixin:
                     detail={"item_id": item_id},
                 )
                 if not outcome.will_retry:
-                    logger.warning(
-                        "item_endpoint_item_exhausted",
-                        extra={
-                            "uid": uid, "endpoint": ep_name,
-                            "item_id": item_id, "retry": retry_state["count"],
-                            "reason": str(exc),
-                        },
-                    )
-                    if reporter is not None:
-                        await reporter.emit(
-                            "fetch.item.failed",
-                            stage="fetching",
-                            level="ERROR",
-                            endpoint=ep_name,
-                            item_type=ep_name,
-                            item_id=item_id,
-                            message=str(exc),
-                            data={
-                                "retry": retry_state["count"],
-                                "error_type": type(exc).__name__,
-                            },
-                        )
+                    _log_exhausted(logger, namespace="fetch.item", uid=uid,
+                                   ep_name=ep_name, item_id=item_id,
+                                   retry=retry_state["count"], reason=str(exc))
+                    await _emit_failed(reporter, namespace="fetch.item",
+                                       ep_name=ep_name, item_id=item_id, exc=exc,
+                                       retry=retry_state["count"])
                     return None
-                logger.info(
-                    "item_endpoint_retry",
-                    extra={
-                        "uid": uid, "endpoint": ep_name,
-                        "item_id": item_id, "wait_s": outcome.delay_seconds,
-                        "retry": retry_state["count"], "reason": str(exc),
-                    },
-                )
-                if reporter is not None:
-                    await reporter.emit(
-                        "fetch.item.retry_scheduled",
-                        stage="fetching",
-                        level="WARNING",
-                        endpoint=ep_name,
-                        item_type=ep_name,
-                        item_id=item_id,
-                        message=str(exc),
-                        data={
-                            "retry": retry_state["count"],
-                            "delay_s": outcome.delay_seconds,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
+                _log_retry_scheduled(logger, namespace="fetch.item", uid=uid,
+                                     ep_name=ep_name, item_id=item_id,
+                                     retry=retry_state["count"],
+                                     wait_s=outcome.delay_seconds, reason=str(exc))
+                await _emit_retry_scheduled(reporter, namespace="fetch.item",
+                                            ep_name=ep_name, item_id=item_id, exc=exc,
+                                            retry=retry_state["count"],
+                                            delay_s=outcome.delay_seconds)
                 return None
 
             await self._store.record_error(
@@ -626,19 +559,9 @@ class _ItemFanoutMixin:
                 retryable=False,
                 detail={"item_id": item_id},
             )
-            if reporter is not None:
-                await reporter.emit(
-                    "fetch.item.failed",
-                    stage="fetching",
-                    level="ERROR",
-                    endpoint=ep_name,
-                    item_type=ep_name,
-                    item_id=item_id,
-                    message=str(exc),
-                    data={"error_type": type(exc).__name__},
-                )
+            await _emit_unexpected_failed(reporter, namespace="fetch.item",
+                                          ep_name=ep_name, item_id=item_id, exc=exc)
             return None
-
         policy = RetryPolicy(
             max_attempts=max_retries + 1,
             delays=retry_delays,

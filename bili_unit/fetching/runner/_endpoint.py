@@ -19,6 +19,10 @@ from .._adapter_core import extract_total_count
 from .._endpoint_spec import EndpointSpec
 from ._failure import (
     FetchFailureState,
+    _emit_retry_scheduled,
+    _emit_unavailable,
+    _log_retry_scheduled,
+    _log_unavailable,
     classify_fetching_exception,
     record_endpoint_failure,
     record_unexpected_endpoint_failure,
@@ -300,6 +304,7 @@ class _EndpointMixin:
         async def _on_attempt_failed(
             exc: Exception, outcome: RetryOutcome,
         ) -> int | None:
+            reporter = getattr(self, "_reporter", None)
             if isinstance(exc, AuthError):
                 await record_endpoint_failure(
                     self._store,
@@ -320,19 +325,10 @@ class _EndpointMixin:
                     exc=exc,
                     retryable=False,
                 )
-                logger.info(
-                    "endpoint_unavailable",
-                    extra={"uid": uid, "endpoint": ep_name, "reason": str(exc)},
-                )
-                reporter = getattr(self, "_reporter", None)
-                if reporter is not None:
-                    await reporter.emit(
-                        "fetch.endpoint.unavailable",
-                        stage="fetching",
-                        level="WARNING",
-                        endpoint=ep_name,
-                        message=str(exc),
-                    )
+                _log_unavailable(logger, namespace="fetch.endpoint", uid=uid,
+                                 ep_name=ep_name, item_id=None, reason=str(exc))
+                await _emit_unavailable(reporter, namespace="fetch.endpoint",
+                                        ep_name=ep_name, item_id=None, exc=exc)
                 return None
 
             if isinstance(exc, Http412Error):
@@ -340,10 +336,7 @@ class _EndpointMixin:
                 # rate-limit state is in-memory only (locked decision §11);
                 # no persistence call here.
                 retry_count = retry_state.bump()
-                detail = {
-                    "retry_count": retry_count,
-                    "params": request_params,
-                }
+                detail = {"retry_count": retry_count, "params": request_params}
                 await record_endpoint_failure(
                     self._store,
                     endpoint=ep_name,
@@ -362,27 +355,12 @@ class _EndpointMixin:
                     )
                     return None
                 wait = max(advice.get("wait_seconds", 0), outcome.delay_seconds)
-                logger.info(
-                    "retry_scheduled",
-                    extra={
-                        "uid": uid, "endpoint": ep_name,
-                        "wait_s": wait, "retry": retry_state.count,
-                    },
-                )
-                reporter = getattr(self, "_reporter", None)
-                if reporter is not None:
-                    await reporter.emit(
-                        "fetch.endpoint.retry_scheduled",
-                        stage="fetching",
-                        level="WARNING",
-                        endpoint=ep_name,
-                        message=str(exc),
-                        data={
-                            "retry": retry_state.count,
-                            "delay_s": wait,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
+                _log_retry_scheduled(logger, namespace="fetch.endpoint", uid=uid,
+                                     ep_name=ep_name, item_id=None,
+                                     retry=retry_state.count, wait_s=wait)
+                await _emit_retry_scheduled(reporter, namespace="fetch.endpoint",
+                                            ep_name=ep_name, item_id=None, exc=exc,
+                                            retry=retry_state.count, delay_s=wait)
                 return wait
 
             if isinstance(exc, FetchingError):
@@ -403,28 +381,12 @@ class _EndpointMixin:
                         last_error_id=retry_state.last_error_id,
                     )
                     return None
-                logger.info(
-                    "retry_scheduled",
-                    extra={
-                        "uid": uid, "endpoint": ep_name,
-                        "wait_s": outcome.delay_seconds,
-                        "retry": retry_count,
-                    },
-                )
-                reporter = getattr(self, "_reporter", None)
-                if reporter is not None:
-                    await reporter.emit(
-                        "fetch.endpoint.retry_scheduled",
-                        stage="fetching",
-                        level="WARNING",
-                        endpoint=ep_name,
-                        message=str(exc),
-                        data={
-                            "retry": retry_count,
-                            "delay_s": outcome.delay_seconds,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
+                _log_retry_scheduled(logger, namespace="fetch.endpoint", uid=uid,
+                                     ep_name=ep_name, item_id=None,
+                                     retry=retry_count, wait_s=outcome.delay_seconds)
+                await _emit_retry_scheduled(reporter, namespace="fetch.endpoint",
+                                            ep_name=ep_name, item_id=None, exc=exc,
+                                            retry=retry_count, delay_s=outcome.delay_seconds)
                 return None
 
             # Unexpected non-fetching error — wrap and treat as permanent.
@@ -435,7 +397,6 @@ class _EndpointMixin:
                 exc=exc,
             )
             return None
-
         policy = RetryPolicy(
             max_attempts=max_retries + 1,
             delays=retry_delays,
