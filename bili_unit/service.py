@@ -24,6 +24,17 @@ from .processing import ProcessingCommandResult
 
 
 @dataclass
+class TaskStartCheck:
+    """Preflight result for starting a task from an interactive surface."""
+
+    uid: int
+    can_start: bool
+    active_stages: tuple[str, ...] = ()
+    requested_stages: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass
 class BiliService:
     """Stable application-facing boundary for future TUI surfaces.
 
@@ -79,6 +90,41 @@ class BiliService:
             run_id=run_id,
             recent_limit=recent_limit,
             filter_events_to_run=filter_events_to_run,
+        )
+
+    async def can_start_task(
+        self,
+        uid: int,
+        *,
+        stages: tuple[str, ...] = ("fetching", "parsing", "asr"),
+    ) -> TaskStartCheck:
+        """Return whether an interactive caller should start work for ``uid``.
+
+        This is a preflight guard, not a cross-process lock. It gives a TUI a
+        stable place to decide whether to disable run buttons before stronger
+        task locking is introduced.
+        """
+        snapshot = await self.inspect_uid(uid)
+        requested = tuple(stages)
+        active = snapshot.active_stages
+        blocking = (
+            tuple(stage for stage in active if stage in requested)
+            if requested
+            else active
+        )
+        if blocking:
+            return TaskStartCheck(
+                uid=uid,
+                can_start=False,
+                active_stages=active,
+                requested_stages=requested,
+                reason=f"stage already running: {', '.join(blocking)}",
+            )
+        return TaskStartCheck(
+            uid=uid,
+            can_start=True,
+            active_stages=active,
+            requested_stages=requested,
         )
 
     async def fetch(
@@ -191,4 +237,9 @@ async def service_session(
         await service.close()
 
 
-__all__ = ["BiliService", "assemble_service", "service_session"]
+__all__ = [
+    "BiliService",
+    "TaskStartCheck",
+    "assemble_service",
+    "service_session",
+]

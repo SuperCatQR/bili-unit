@@ -108,6 +108,53 @@ async def test_service_run_summary_reads_existing_db(tmp_path: Path) -> None:
     assert summary.fetch.status == "SUCCESS"
 
 
+async def test_service_can_start_task_allows_missing_uid(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    service = BiliService(
+        command=BiliCommand(_FetchCommand(), settings=settings),
+        settings=settings,
+    )
+
+    check = await service.can_start_task(999)
+
+    assert check.uid == 999
+    assert check.can_start is True
+    assert check.active_stages == ()
+    assert check.reason is None
+
+
+async def test_service_can_start_task_blocks_requested_running_stage(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    ctx = UidContext(uid=123, root=Path(settings.bili_db_dir))
+    await ctx.open(raw=False)
+    try:
+        await ctx.main.execute(
+            "INSERT INTO stage_task("
+            "stage, status, payload, created_at_ms, updated_at_ms"
+            ") VALUES (?, ?, ?, ?, ?)",
+            ("fetching", "RUNNING", '{"endpoints":[]}', 1, 2),
+        )
+    finally:
+        await ctx.close()
+
+    service = BiliService(
+        command=BiliCommand(_FetchCommand(), settings=settings),
+        settings=settings,
+    )
+
+    blocked = await service.can_start_task(123, stages=("fetching",))
+    allowed = await service.can_start_task(123, stages=("asr",))
+
+    assert blocked.can_start is False
+    assert blocked.active_stages == ("fetching",)
+    assert blocked.requested_stages == ("fetching",)
+    assert blocked.reason == "stage already running: fetching"
+    assert allowed.can_start is True
+    assert allowed.active_stages == ("fetching",)
+
+
 async def test_service_session_closes_underlying_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

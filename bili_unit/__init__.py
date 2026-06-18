@@ -35,7 +35,12 @@ from .processing import (  # noqa: F401
     ProcessingCommandResult,
     ProcessingError,
 )
-from .service import BiliService, assemble_service, service_session  # noqa: F401
+from .service import (  # noqa: F401
+    BiliService,
+    TaskStartCheck,
+    assemble_service,
+    service_session,
+)
 
 __version__ = _pkg_version("bili-unit")
 
@@ -154,6 +159,7 @@ __all__ = [
     "ProcessingError",
     "SyncCommandResult",
     "TaskResult",
+    "TaskStartCheck",
     "TaskStatus",
     "UidContext",
     "__version__",

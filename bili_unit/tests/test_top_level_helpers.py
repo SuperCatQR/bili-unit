@@ -38,6 +38,7 @@ def test_expected_top_level_names() -> None:
         "ProcessingCommandResult",
         "SyncCommandResult",
         "TaskResult",
+        "TaskStartCheck",
         "TaskStatus",
         "UidContext",
         "AudioError",
@@ -69,13 +70,14 @@ def test_key_types_at_top_level() -> None:
         ParsingCommandResult,
         ProcessingCommandResult,
         SyncCommandResult,
+        TaskStartCheck,
         UidContext,
         assemble,
         assemble_service,
         db_path,
         raw_db_path,
-        session,
         service_session,
+        session,
     )
 
     assert BiliCommand is not None
@@ -85,6 +87,7 @@ def test_key_types_at_top_level() -> None:
     assert ParsingCommandResult is not None
     assert ProcessingCommandResult is not None
     assert SyncCommandResult is not None
+    assert TaskStartCheck is not None
     assert UidContext is not None
     assert callable(assemble)
     assert callable(assemble_service)
