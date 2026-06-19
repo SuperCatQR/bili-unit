@@ -34,9 +34,7 @@ def test_expected_top_level_names() -> None:
         "BiliSettings",
         "CommandResult",
         "CredentialProvider",
-        "ParsingCommandResult",
         "ProcessingCommandResult",
-        "SyncCommandResult",
         "TaskResult",
         "TaskStartCheck",
         "TaskStatus",
@@ -45,7 +43,6 @@ def test_expected_top_level_names() -> None:
         "UidContext",
         "AudioError",
         "FetchingError",
-        "ParsingError",
         "ProcessingError",
         "__version__",
         "assemble",
@@ -53,7 +50,6 @@ def test_expected_top_level_names() -> None:
         "db_path",
         "get_settings",
         "list_uids",
-        "raw_db_path",
         "reload_settings",
         "session",
         "workbench_session",
@@ -71,15 +67,12 @@ def test_key_types_at_top_level() -> None:
         BiliSettings,
         BiliWorkbench,
         CommandResult,
-        ParsingCommandResult,
         ProcessingCommandResult,
-        SyncCommandResult,
         TaskStartCheck,
         UidContext,
         assemble,
         assemble_workbench,
         db_path,
-        raw_db_path,
         session,
         workbench_session,
     )
@@ -88,9 +81,7 @@ def test_key_types_at_top_level() -> None:
     assert BiliWorkbench is not None
     assert BiliSettings is not None
     assert CommandResult is not None
-    assert ParsingCommandResult is not None
     assert ProcessingCommandResult is not None
-    assert SyncCommandResult is not None
     assert TaskStartCheck is not None
     assert TUI_MVP_ACTIONS
     assert TUI_MVP_PANELS
@@ -100,4 +91,3 @@ def test_key_types_at_top_level() -> None:
     assert callable(session)
     assert callable(workbench_session)
     assert callable(db_path)
-    assert callable(raw_db_path)

@@ -51,24 +51,6 @@ class FetchSummary:
 
 
 @dataclass(frozen=True)
-class ParseModelSummary:
-    model: str
-    status: str
-    count: int
-
-
-@dataclass(frozen=True)
-class ParseSummary:
-    status: str | None = None
-    models: list[ParseModelSummary] = field(default_factory=list)
-    images: dict[str, Any] | None = None
-
-    @property
-    def status_counts(self) -> dict[str, int]:
-        return _count_by_status(self.models)
-
-
-@dataclass(frozen=True)
 class AsrSummary:
     status: str | None = None
     coverage_applicable: bool = True
@@ -111,12 +93,11 @@ class RunSummary:
     schema_version 标识 RunSummary 序列化结构版本，消费者据此判断兼容性。
     """
 
-    schema_version: int = 1
+    schema_version: int = 2
     uid: int = 0
     run: RunRecord | None = None
     stage_tasks: dict[str, StageTaskSummary] = field(default_factory=dict)
     fetch: FetchSummary = field(default_factory=FetchSummary)
-    parse: ParseSummary = field(default_factory=ParseSummary)
     asr: AsrSummary = field(default_factory=AsrSummary)
     recent_events: list[RunEventSummary] = field(default_factory=list)
     recent_attention_events: list[RunEventSummary] = field(default_factory=list)
@@ -130,12 +111,12 @@ async def load_run_summary(
     recent_limit: int = 20,
     filter_events_to_run: bool = True,
 ) -> RunSummary:
-    """Open the uid main DB and build a read-only run summary."""
+    """Open the uid DB and build a read-only run summary."""
     ctx = UidContext(uid, root)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
         return await build_run_summary(
-            ctx.main,
+            ctx.conn,
             uid=uid,
             run_id=run_id,
             recent_limit=recent_limit,
@@ -146,30 +127,30 @@ async def load_run_summary(
 
 
 async def build_run_summary(
-    main: Connection,
+    conn: Connection,
     *,
     uid: int,
     run_id: str | None = None,
     recent_limit: int = 20,
     filter_events_to_run: bool = True,
 ) -> RunSummary:
-    """Read current run/state facts from a main DB connection."""
-    run = await _load_run(main, uid=uid, run_id=run_id)
+    """Read current run/state facts from a DB connection."""
+    run = await _load_run(conn, uid=uid, run_id=run_id)
     selected_run_id = run.run_id if run is not None else None
     event_run_id = (
         selected_run_id if filter_events_to_run and selected_run_id is not None
         else run_id if filter_events_to_run
         else None
     )
-    stage_tasks = await _load_stage_tasks(main)
+    stage_tasks = await _load_stage_tasks(conn)
     events = await _load_recent_events(
-        main,
+        conn,
         uid=uid,
         run_id=event_run_id,
         limit=recent_limit,
     )
     attention_events = await _load_attention_events(
-        main,
+        conn,
         uid=uid,
         run_id=event_run_id,
         limit=recent_limit,
@@ -178,10 +159,9 @@ async def build_run_summary(
         uid=uid,
         run=run,
         stage_tasks=stage_tasks,
-        fetch=await _load_fetch_summary(main, stage_tasks),
-        parse=_load_parse_summary(stage_tasks),
+        fetch=await _load_fetch_summary(conn, stage_tasks),
         asr=await _load_asr_summary(
-            main,
+            conn,
             uid=uid,
             run_id=event_run_id,
             run=run,
@@ -193,13 +173,13 @@ async def build_run_summary(
 
 
 async def _load_run(
-    main: Connection,
+    conn: Connection,
     *,
     uid: int,
     run_id: str | None,
 ) -> RunRecord | None:
     if run_id is None:
-        row = await main.fetch_one(
+        row = await conn.fetch_one(
             "SELECT run_id, uid, command, status, started_at_ms, ended_at_ms, "
             "       args_json, summary_json "
             "FROM stage_run WHERE uid = ? "
@@ -207,7 +187,7 @@ async def _load_run(
             (uid,),
         )
     else:
-        row = await main.fetch_one(
+        row = await conn.fetch_one(
             "SELECT run_id, uid, command, status, started_at_ms, ended_at_ms, "
             "       args_json, summary_json "
             "FROM stage_run WHERE run_id = ?",
@@ -227,8 +207,8 @@ async def _load_run(
     )
 
 
-async def _load_stage_tasks(main: Connection) -> dict[str, StageTaskSummary]:
-    rows = await main.fetch_all(
+async def _load_stage_tasks(conn: Connection) -> dict[str, StageTaskSummary]:
+    rows = await conn.fetch_all(
         "SELECT stage, status, payload, created_at_ms, updated_at_ms "
         "FROM stage_task ORDER BY stage",
     )
@@ -245,10 +225,10 @@ async def _load_stage_tasks(main: Connection) -> dict[str, StageTaskSummary]:
 
 
 async def _load_fetch_summary(
-    main: Connection,
+    conn: Connection,
     stage_tasks: dict[str, StageTaskSummary],
 ) -> FetchSummary:
-    rows = await main.fetch_all(
+    rows = await conn.fetch_all(
         "SELECT endpoint, status, retry_count, last_error_id, "
         "       item_progress, progress, updated_at_ms "
         "FROM fetch_endpoint_state ORDER BY endpoint",
@@ -272,34 +252,8 @@ async def _load_fetch_summary(
     )
 
 
-def _load_parse_summary(
-    stage_tasks: dict[str, StageTaskSummary],
-) -> ParseSummary:
-    task = stage_tasks.get("parsing")
-    if task is None:
-        return ParseSummary()
-    raw_models = task.payload.get("models")
-    models: list[ParseModelSummary] = []
-    if isinstance(raw_models, dict):
-        for name, raw_entry in sorted(raw_models.items()):
-            entry = raw_entry if isinstance(raw_entry, dict) else {}
-            models.append(
-                ParseModelSummary(
-                    model=str(name),
-                    status=str(entry.get("status", "UNKNOWN")),
-                    count=int(entry.get("count", 0) or 0),
-                ),
-            )
-    images = task.payload.get("images")
-    return ParseSummary(
-        status=task.status,
-        models=models,
-        images=images if isinstance(images, dict) else None,
-    )
-
-
 async def _load_asr_summary(
-    main: Connection,
+    conn: Connection,
     *,
     uid: int,
     run_id: str | None,
@@ -315,9 +269,14 @@ async def _load_asr_summary(
             if isinstance(audio, dict):
                 audio_status = audio.get("status")
 
-    video_rows = await main.fetch_all("SELECT bvid FROM video ORDER BY bvid")
-    expected_bvids = [str(row["bvid"]) for row in video_rows]
-    rows = await main.fetch_all(
+    # Expected video universe = the bvids we have raw video_detail rows for.
+    video_rows = await conn.fetch_all(
+        "SELECT item_id FROM raw_payload "
+        "WHERE endpoint = 'video_detail' AND item_id <> '' "
+        "ORDER BY item_id",
+    )
+    expected_bvids = [str(row["item_id"]) for row in video_rows]
+    rows = await conn.fetch_all(
         "SELECT bvid, status FROM audio_transcription ORDER BY bvid",
     )
     statuses = {str(row["bvid"]): str(row["status"]) for row in rows}
@@ -330,7 +289,7 @@ async def _load_asr_summary(
         bvid for bvid in expected_bvids if statuses.get(bvid) == "failed"
     ]
     candidate_count = await _load_asr_candidate_count(
-        main,
+        conn,
         uid=uid,
         run_id=run_id,
     )
@@ -369,13 +328,13 @@ def _asr_coverage_applicable(run: RunRecord | None) -> bool:
 
 
 async def _load_asr_candidate_count(
-    main: Connection,
+    conn: Connection,
     *,
     uid: int,
     run_id: str | None,
 ) -> int | None:
     where, params = _event_where(uid=uid, run_id=run_id)
-    row = await main.fetch_one(
+    row = await conn.fetch_one(
         "SELECT e.data_json "
         "FROM stage_event e JOIN stage_run r ON r.run_id = e.run_id "
         f"WHERE {where} AND e.event = 'asr.discovery.completed' "
@@ -389,14 +348,14 @@ async def _load_asr_candidate_count(
 
 
 async def _load_recent_events(
-    main: Connection,
+    conn: Connection,
     *,
     uid: int,
     run_id: str | None,
     limit: int,
 ) -> list[RunEventSummary]:
     where, params = _event_where(uid=uid, run_id=run_id)
-    rows = await main.fetch_all(
+    rows = await conn.fetch_all(
         "SELECT e.id, e.ts_ms, e.level, e.stage, e.event, e.endpoint, "
         "       e.pipeline, e.item_type, e.item_id, e.message, e.data_json "
         "FROM stage_event e JOIN stage_run r ON r.run_id = e.run_id "
@@ -408,7 +367,7 @@ async def _load_recent_events(
 
 
 async def _load_attention_events(
-    main: Connection,
+    conn: Connection,
     *,
     uid: int,
     run_id: str | None,
@@ -422,7 +381,7 @@ async def _load_attention_events(
         "OR e.event LIKE '%.high_risk_%' "
         "OR e.event LIKE '%.failed'"
     )
-    rows = await main.fetch_all(
+    rows = await conn.fetch_all(
         "SELECT e.id, e.ts_ms, e.level, e.stage, e.event, e.endpoint, "
         "       e.pipeline, e.item_type, e.item_id, e.message, e.data_json "
         "FROM stage_event e JOIN stage_run r ON r.run_id = e.run_id "

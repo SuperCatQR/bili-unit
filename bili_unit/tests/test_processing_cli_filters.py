@@ -82,22 +82,30 @@ async def _spy_process_audio_one(runner, uid, item, credential):
 async def _seed_video_pages(
     settings: BiliSettings, uid: int, bvids: list[str],
 ) -> None:
-    """Write parsed video + video_page rows to the main DB."""
+    """Write raw video_detail payloads so the runner can discover bvids."""
+    import json as _json
+
     ctx = UidContext(uid, settings.bili_db_dir)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
         for bvid in bvids:
-            await ctx.main.execute(
-                "INSERT OR IGNORE INTO video"
-                "(bvid, title, duration_s, payload, parsed_at_ms) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (bvid, f"title-{bvid}", 60, "{}", 0),
-            )
-            await ctx.main.execute(
-                "INSERT OR IGNORE INTO video_page"
-                "(bvid, page_no, cid, part, duration_s) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (bvid, 1, 1, "P1", 60),
+            payload = _json.dumps({
+                "info": {
+                    "bvid": bvid,
+                    "title": f"title-{bvid}",
+                    "duration": 60,
+                    "pages": [{
+                        "cid": 1,
+                        "part": "P1",
+                        "duration": 60,
+                    }],
+                },
+            })
+            await ctx.conn.execute(
+                "INSERT OR REPLACE INTO raw_payload"
+                "(endpoint, item_id, payload, fetched_at_ms) "
+                "VALUES (?, ?, ?, ?)",
+                ("video_detail", bvid, payload, 1),
             )
     finally:
         await ctx.close()

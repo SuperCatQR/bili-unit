@@ -52,7 +52,7 @@ def _runner(store: FetchingStore, settings: BiliSettings, *, fetch_fn=None, **kw
 
 
 async def _list_stage_events(ctx: UidContext) -> list[dict]:
-    rows = await ctx.main.fetch_all(
+    rows = await ctx.conn.fetch_all(
         "SELECT event, level, stage, endpoint, item_type, item_id, data_json "
         "FROM stage_event ORDER BY id",
     )
@@ -71,7 +71,7 @@ async def _list_stage_events(ctx: UidContext) -> list[dict]:
 
 
 async def _list_stage_runs(ctx: UidContext) -> list[dict]:
-    rows = await ctx.main.fetch_all(
+    rows = await ctx.conn.fetch_all(
         "SELECT command, status, args_json, summary_json "
         "FROM stage_run ORDER BY started_at_ms",
     )
@@ -88,7 +88,7 @@ async def _list_stage_runs(ctx: UidContext) -> list[dict]:
 
 def _reporter(ctx: UidContext, uid: int, **args) -> RunReporter:
     run_context = RunContext.create(uid=uid, command="fetch", args=args)
-    return RunReporter(run_context, SqliteSink(ctx.main))
+    return RunReporter(run_context, SqliteSink(ctx.conn))
 
 
 class _NullProgress:
@@ -1628,7 +1628,7 @@ async def test_resume_with_explicit_endpoints_does_not_resume_old_endpoint_set(
         assert result.endpoints["user_info"] == EndpointStatus.SUCCESS
         assert "videos" not in result.endpoints
         assert seen == ["user_info"]
-        payload_json = await ctx.main.fetch_value(
+        payload_json = await ctx.conn.fetch_value(
             "SELECT payload FROM stage_task WHERE stage = 'fetching'",
         )
         assert json.loads(payload_json)["endpoints"] == ["user_info"]

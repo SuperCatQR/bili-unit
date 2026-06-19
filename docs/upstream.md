@@ -23,19 +23,17 @@ bilibili-api-python
   → EndpointSpec catalog
   → FetchingRunner
   → raw_payload SQLite rows
-  → parsing
-  → main.db
-  → asr
+  → asr (从 raw_payload 抽 bvid + pages)
 ```
 
 - `bili_unit.fetching._endpoint_catalog.ENDPOINTS` 是 endpoint 汇总表；具体注册在
   `bili_unit.fetching._endpoint_groups/*`。
 - `docs/endpoint-contract.md` 记录本项目实测和消费的 raw payload 形状。
-- 上游文档用于查 callable、参数和返回大致结构；本项目的 SQLite schema 和 typed object 才是 consumer 契约。
+- 上游文档用于查 callable、参数和返回大致结构；本项目的 SQLite schema 才是 consumer 契约。
 
 ## 维护规则
 
-1. 上游接口可能变化；升级 `bilibili-api-python` 后优先跑 fetching / parsing / asr 全量测试。
+1. 上游接口可能变化；升级 `bilibili-api-python` 后优先跑 fetching / asr 全量测试。
 2. 新增 endpoint 时，先在对应 `_endpoint_groups/*` 注册，再补 `docs/endpoint-contract.md`。
 3. 不把上游文档再次整包镜像进本仓库；需要查完整 API 时直接访问上游 GitHub / 开发文档。
 4. 任何绕过 `bilibili-api-python` 的直接 HTTP 调用，都要在 feature 文档中说明原因和返回形状。

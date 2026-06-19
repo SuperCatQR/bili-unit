@@ -85,35 +85,18 @@ TUI_MVP_PANELS: tuple[TuiPanelSpec, ...] = (
 )
 
 TUI_MVP_ACTIONS: tuple[TuiActionSpec, ...] = (
-    # Default mode across all stage actions is "incremental".  This is a
-    # deliberate TUI policy that diverges from the underlying BiliCommand
-    # defaults (parse/fetch default to "full" / "incremental" respectively
-    # at the API surface): an interactive workbench should always do the
-    # cheap, safe thing on a single keypress and let users escalate to
-    # "full" via the CLI when they actually want a forced rerun.
+    # Default mode across stage actions is "incremental": an interactive
+    # workbench should always do the cheap, safe thing on a single keypress
+    # and let users escalate to "full" via the CLI when they really want a
+    # forced rerun.
     TuiActionSpec(
         id="add_uid",
         label="Add UID",
-        stages=("fetching", "parsing"),
-        command_method="sync",
-        default_args={
-            "fetch_mode": "incremental",
-            "parse_mode": "incremental",
-        },
+        stages=("fetching",),
+        command_method="fetch",
+        default_args={"mode": "incremental"},
         key="n",
         safety="prompt_preflight",
-    ),
-    TuiActionSpec(
-        id="sync",
-        label="Sync",
-        stages=("fetching", "parsing"),
-        command_method="sync",
-        default_args={
-            "fetch_mode": "incremental",
-            "parse_mode": "incremental",
-        },
-        key="s",
-        safety="preflight",
     ),
     TuiActionSpec(
         id="fetch",
@@ -122,15 +105,6 @@ TUI_MVP_ACTIONS: tuple[TuiActionSpec, ...] = (
         command_method="fetch",
         default_args={"mode": "incremental"},
         key="f",
-        safety="preflight",
-    ),
-    TuiActionSpec(
-        id="parse",
-        label="Parse",
-        stages=("parsing",),
-        command_method="parse",
-        default_args={"mode": "incremental"},
-        key="p",
         safety="preflight",
     ),
     TuiActionSpec(
@@ -199,11 +173,6 @@ FETCH_TAB = TuiDetailTabSpec(
     title="Fetch",
     source="RunSummary.fetch.endpoints",
 )
-PARSE_TAB = TuiDetailTabSpec(
-    id="parse",
-    title="Parse",
-    source="RunSummary.parse.models + images",
-)
 ASR_TAB = TuiDetailTabSpec(
     id="asr",
     title="ASR",
@@ -218,7 +187,6 @@ EVENTS_TAB = TuiDetailTabSpec(
 TUI_DETAIL_TABS: tuple[TuiDetailTabSpec, ...] = (
     SUMMARY_TAB,
     FETCH_TAB,
-    PARSE_TAB,
     ASR_TAB,
     EVENTS_TAB,
 )
@@ -230,10 +198,8 @@ TUI_KEYBINDINGS: tuple[TuiKeybindingSpec, ...] = (
     TuiKeybindingSpec("k/up", "select_previous_uid", "Select previous uid"),
     TuiKeybindingSpec("tab", "next_detail_tab", "Move to next detail tab"),
     TuiKeybindingSpec("shift+tab", "previous_detail_tab", "Move to previous detail tab"),
-    TuiKeybindingSpec("n", "add_uid", "Enter a new uid and run incremental sync"),
-    TuiKeybindingSpec("s", "sync", "Run incremental sync after preflight"),
+    TuiKeybindingSpec("n", "add_uid", "Enter a new uid and run incremental fetch"),
     TuiKeybindingSpec("f", "fetch", "Run incremental fetch after preflight"),
-    TuiKeybindingSpec("p", "parse", "Run incremental parse after preflight"),
     TuiKeybindingSpec("a", "asr", "Run incremental ASR after preflight"),
     TuiKeybindingSpec("d", "delete_uid", "Delete uid after confirmation"),
 )

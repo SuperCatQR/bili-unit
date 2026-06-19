@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from ._db.paths import list_uids as _list_uids
 from ._env import BiliSettings, get_settings
 from ._types import CredentialProvider
-from .command import BiliCommand, SyncCommandResult
+from .command import BiliCommand
 from .fetching import CommandResult
 from .observability import (
     DashboardSnapshot,
@@ -19,7 +19,6 @@ from .observability import (
     load_run_summary,
     load_uid_dashboard_snapshot,
 )
-from .parsing import ParsingCommandResult
 from .processing import ProcessingCommandResult
 
 
@@ -96,7 +95,7 @@ class BiliWorkbench:
         self,
         uid: int,
         *,
-        stages: tuple[str, ...] = ("fetching", "parsing", "asr"),
+        stages: tuple[str, ...] = ("fetching", "asr"),
     ) -> TaskStartCheck:
         """Return whether an interactive caller should start work for ``uid``.
 
@@ -134,39 +133,6 @@ class BiliWorkbench:
         mode: str = "incremental",
     ) -> CommandResult:
         return await self.command.fetch(uid, endpoints=endpoints, mode=mode)
-
-    async def parse(
-        self,
-        uid: int,
-        mode: str = "full",
-        models: list[str] | None = None,
-        download_images: bool = False,
-    ) -> ParsingCommandResult:
-        return await self.command.parse(
-            uid,
-            mode=mode,
-            models=models,
-            download_images=download_images,
-        )
-
-    async def sync(
-        self,
-        uid: int,
-        endpoints: list[str] | None = None,
-        *,
-        fetch_mode: str = "incremental",
-        parse_mode: str = "incremental",
-        parse_models: list[str] | None = None,
-        download_images: bool = False,
-    ) -> SyncCommandResult:
-        return await self.command.sync(
-            uid,
-            endpoints=endpoints,
-            fetch_mode=fetch_mode,
-            parse_mode=parse_mode,
-            parse_models=parse_models,
-            download_images=download_images,
-        )
 
     async def asr(
         self,

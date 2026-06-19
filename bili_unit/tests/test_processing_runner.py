@@ -101,35 +101,29 @@ async def _seed_video_pages(
     settings: BiliSettings, uid: int, bvids: list[str],
     *, pages_per_bvid: int = 1,
 ) -> None:
-    """Write parsed video + video_page rows to the main DB for ``uid``."""
+    """Write raw video_detail payloads so the runner can discover ``bvids``."""
     pages_template = [
         {"cid": idx + 1, "part": f"P{idx + 1}", "duration": 60}
         for idx in range(pages_per_bvid)
     ]
     ctx = UidContext(uid, settings.bili_db_dir)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
         for bvid in bvids:
-            await ctx.main.execute(
-                "INSERT OR IGNORE INTO video"
-                "(bvid, aid, title, duration_s, payload, parsed_at_ms) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    bvid,
-                    int(bvid[2:]) if bvid[2:].isdigit() else 0,
-                    f"title-{bvid}",
-                    60 * pages_per_bvid,
-                    "{}",
-                    0,
-                ),
+            payload = json.dumps({
+                "info": {
+                    "bvid": bvid,
+                    "title": f"title-{bvid}",
+                    "duration": 60 * pages_per_bvid,
+                    "pages": pages_template,
+                },
+            })
+            await ctx.conn.execute(
+                "INSERT OR REPLACE INTO raw_payload"
+                "(endpoint, item_id, payload, fetched_at_ms) "
+                "VALUES (?, ?, ?, ?)",
+                ("video_detail", bvid, payload, 0),
             )
-            for idx, page in enumerate(pages_template, start=1):
-                await ctx.main.execute(
-                    "INSERT OR IGNORE INTO video_page"
-                    "(bvid, page_no, cid, part, duration_s) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (bvid, idx, page["cid"], page["part"], page["duration"]),
-                )
     finally:
         await ctx.close()
 
@@ -154,7 +148,7 @@ async def _list_audio_items(settings: BiliSettings, uid: int) -> list[dict]:
     ctx = UidContext(uid, settings.bili_db_dir)
     await ctx.open()
     try:
-        rows = await ctx.main.fetch_all(
+        rows = await ctx.conn.fetch_all(
             "SELECT bvid, status, transcription_source, transcript, "
             "       audio_tokens, seconds, cache_hits, payload, processed_at_ms "
             "FROM audio_transcription ORDER BY bvid",
@@ -189,9 +183,9 @@ async def _list_processing_errors(settings: BiliSettings, uid: int) -> list[dict
 
 async def _list_stage_events(settings: BiliSettings, uid: int) -> list[dict]:
     ctx = UidContext(uid, settings.bili_db_dir)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
-        rows = await ctx.main.fetch_all(
+        rows = await ctx.conn.fetch_all(
             "SELECT e.event, e.level, e.stage, e.pipeline, e.item_type, "
             "       e.item_id, e.data_json "
             "FROM stage_event e "
@@ -217,9 +211,9 @@ async def _list_stage_events(settings: BiliSettings, uid: int) -> list[dict]:
 
 async def _list_stage_runs(settings: BiliSettings, uid: int) -> list[dict]:
     ctx = UidContext(uid, settings.bili_db_dir)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
-        rows = await ctx.main.fetch_all(
+        rows = await ctx.conn.fetch_all(
             "SELECT run_id, command, status, args_json, summary_json "
             "FROM stage_run WHERE uid = ? ORDER BY started_at_ms",
             (uid,),
@@ -542,20 +536,6 @@ async def test_audio_pipeline_no_video_detail(cmd, settings):
     result = await cmd.process_uid(uid)
     assert result.status == ProcessingTaskStatus.SUCCESS
     assert await _list_audio_items(settings, uid) == []
-
-
-@pytest.mark.asyncio
-async def test_audio_pipeline_reads_main_db_without_raw_db(cmd, settings):
-    uid = 804
-    bvids = ["BVmainOnly"]
-    await _seed_video_pages(settings, uid, bvids)
-    assert await _raw_db_exists(settings, uid) is False
-
-    result = await cmd.process_uid(uid, dry_run=True)
-
-    assert result.status == ProcessingTaskStatus.DRY_RUN
-    assert result.dry_run_candidates == bvids
-    assert await _raw_db_exists(settings, uid) is False
 
 
 # ---------- retry behaviour -------------------------------------------------
@@ -1102,50 +1082,3 @@ async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path):
 # the per-stage SQL view tests).
 
 
-# -- Task 3: subtitle short-circuit exception handling ----------------------
-
-@pytest.mark.asyncio
-async def test_subtitle_shortcircuit_skips_on_db_error(tmp_path, caplog):
-    """When ParsingStore.get_video_subtitle_payload raises sqlite3.OperationalError,
-    the short-circuit is skipped (item appended to remaining) and caplog contains
-    'subtitle short-circuit failed'."""
-    import sqlite3
-    from unittest.mock import AsyncMock
-
-    from bili_unit.processing.runner import ProcessingRunner
-    from bili_unit.processing.runner._pipeline_executor import WorkItem
-
-    s = _make_settings(tmp_path)
-    uid = 123
-    bvid = "BV1testXX"
-
-    # Build a fake store
-    fake_proc_store = AsyncMock()
-    fake_proc_store.get_audio_status = AsyncMock(return_value=None)
-    fake_proc_store.save_audio_transcription = AsyncMock()
-
-    # Build a fake parse_store whose get_video_subtitle_payload raises
-    fake_parse_store = AsyncMock()
-    fake_parse_store.get_video_subtitle_payload = AsyncMock(
-        side_effect=sqlite3.OperationalError("disk I/O error")
-    )
-
-    item = WorkItem(
-        item_type="transcription",
-        item_id=bvid,
-        item_data={"pages": [{"page_index": 0, "cid": 1, "duration": 60.0, "part": "p1"}]},
-    )
-
-    runner = ProcessingRunner(s)
-    runner._store = fake_proc_store
-    runner._parse_store = fake_parse_store
-
-    with caplog.at_level("WARNING", logger="bili.processing.runner"):
-        remaining, subtitle_done = await runner._apply_subtitle_shortcuts(
-            uid, [item], dry_run=False
-        )
-
-    assert len(remaining) == 1
-    assert remaining[0].item_id == bvid
-    assert subtitle_done == 0
-    assert "subtitle short-circuit failed" in caplog.text

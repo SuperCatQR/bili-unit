@@ -1,9 +1,9 @@
 # bili_unit — Bilibili unit top-level entry.
 #
-# The project is CLI-first: commands produce per-uid SQLite files, and callers
-# read those files directly with sqlite3. A few top-level helpers remain for
-# the CLI and advanced scripts, but the package does not present a Python query
-# facade.
+# The project is CLI-first: commands produce one per-uid SQLite file
+# (``{uid}.raw.db``), and callers read it directly with sqlite3. A few
+# top-level helpers remain for the CLI and advanced scripts, but the
+# package does not present a Python query facade.
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -19,16 +19,12 @@ from .asr import (  # noqa: F401
     ASRCommandResult,
     ASRError,
 )
-from .command import BiliCommand, SyncCommandResult
+from .command import BiliCommand
 from .fetching import (  # noqa: F401 — public re-exports (write-side DTO + errors)
     CommandResult,
     FetchingError,
     TaskResult,
     TaskStatus,
-)
-from .parsing import (  # noqa: F401
-    ParsingCommandResult,
-    ParsingError,
 )
 from .processing import (  # noqa: F401
     AudioError,
@@ -51,27 +47,19 @@ __version__ = _pkg_version("bili-unit")
 # ---------------------------------------------------------------------------
 
 def db_path(uid: int, settings: BiliSettings | None = None) -> Path:
-    """Return the main SQLite DB path for ``uid`` — the consumer contract.
+    """Return the SQLite DB path for ``uid`` — the consumer contract.
 
     Open with::
 
         import sqlite3, bili_unit
         conn = sqlite3.connect(bili_unit.db_path(uid))
         conn.row_factory = sqlite3.Row
-        for row in conn.execute("SELECT * FROM video"):
+        for row in conn.execute(
+            "SELECT endpoint, item_id FROM raw_payload"
+        ):
             ...
 
-    The file may not yet exist if no fetch/parse run has touched this uid.
-    """
-    s = settings if settings is not None else get_settings()
-    return _resolve_paths(uid, s.bili_db_dir).main_db
-
-
-def raw_db_path(uid: int, settings: BiliSettings | None = None) -> Path:
-    """Return the raw-payload DB path for ``uid``.
-
-    Producer-private — most consumers do NOT need to open this. Use only when
-    re-parsing raw B站 responses without re-fetching.
+    The file may not yet exist if no fetch run has touched this uid.
     """
     s = settings if settings is not None else get_settings()
     return _resolve_paths(uid, s.bili_db_dir).raw_db
@@ -87,20 +75,14 @@ async def assemble(
     asr_backend_override: str | None = None,
     credential_provider: CredentialProvider | None = None,
 ) -> BiliCommand:
-    """Wire every stage's command behind a unified BiliCommand.
-
-    Phase 3+ contract: returns a single ``BiliCommand``. The legacy
-    ``(cmd, qry)`` tuple is gone — read side is consumer's SQL.
-    """
+    """Wire fetching + asr behind a unified :class:`BiliCommand`."""
     from .asr import assemble as _asr_assemble
     from .fetching import assemble as _fetching_assemble
-    from .parsing import assemble as _parsing_assemble
 
     if settings is None:
         settings = get_settings()
 
     fetch_cmd = await _fetching_assemble(settings)
-    parse_cmd = await _parsing_assemble(settings)
     proc_cmd = await _asr_assemble(
         settings,
         asr_backend_override=asr_backend_override,
@@ -109,7 +91,6 @@ async def assemble(
 
     return BiliCommand(
         fetch_cmd,
-        parsing=parse_cmd,
         processing=proc_cmd,
         settings=settings,
     )
@@ -122,12 +103,11 @@ async def session(
     asr_backend_override: str | None = None,
     credential_provider: CredentialProvider | None = None,
 ) -> AsyncIterator[BiliCommand]:
-    """Assemble + auto cleanup via async context manager.
-
-    Phase 3+ contract: yields a single ``BiliCommand``::
+    """Assemble + auto cleanup via async context manager::
 
         async with bili_unit.session() as cmd:
-            await cmd.sync(uid)
+            await cmd.fetch(uid)
+            await cmd.asr(uid)
 
     Read side is on the database file — open it directly with
     :func:`db_path` / :func:`sqlite3.connect`.
@@ -154,11 +134,8 @@ __all__ = [
     "CommandResult",
     "CredentialProvider",
     "FetchingError",
-    "ParsingCommandResult",
-    "ParsingError",
     "ProcessingCommandResult",
     "ProcessingError",
-    "SyncCommandResult",
     "TaskResult",
     "TaskStartCheck",
     "TaskStatus",
@@ -171,7 +148,6 @@ __all__ = [
     "db_path",
     "get_settings",
     "list_uids",
-    "raw_db_path",
     "reload_settings",
     "session",
     "workbench_session",

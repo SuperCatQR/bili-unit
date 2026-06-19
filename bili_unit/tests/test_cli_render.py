@@ -8,8 +8,6 @@ from bili_unit.observability.summary import (
     AsrSummary,
     FetchEndpointSummary,
     FetchSummary,
-    ParseModelSummary,
-    ParseSummary,
     RunEventSummary,
     RunRecord,
     RunSummary,
@@ -21,23 +19,14 @@ def _lines(stream: StringIO) -> list[str]:
     return stream.getvalue().splitlines()
 
 
-def test_basic_command_results_render_status_values() -> None:
+def test_fetch_result_renders_status_value() -> None:
     stream = StringIO()
     renderer = CliRenderer(stream)
 
     renderer.fetch_result(uid=1, status=TaskStatus.SUCCESS)
-    renderer.parse_result(uid=2, status="PARTIAL")
-    renderer.sync_result(
-        uid=3,
-        status="SUCCESS",
-        fetch_status=TaskStatus.SUCCESS,
-        parse_status="SKIPPED",
-    )
 
     assert _lines(stream) == [
         "uid=1  status=SUCCESS",
-        "uid=2  status=PARTIAL",
-        "uid=3  status=SUCCESS  fetch=SUCCESS  parse=SKIPPED",
     ]
 
 
@@ -114,14 +103,6 @@ def test_summary_rendering_surfaces_current_state_and_attention() -> None:
                 ),
             ],
         ),
-        parse=ParseSummary(
-            status="PARTIAL",
-            models=[
-                ParseModelSummary("video_work", "SUCCESS", 3),
-                ParseModelSummary("article_post", "FAILED", 1),
-            ],
-            images={"total": 2, "ok": 1, "failed": 1},
-        ),
         asr=AsrSummary(
             status="PARTIAL",
             candidate_count=3,
@@ -178,7 +159,7 @@ def test_summary_rendering_surfaces_current_state_and_attention() -> None:
     ]
 
 
-def test_fetch_parse_sync_summary_rendering() -> None:
+def test_fetch_summary_rendering() -> None:
     stream = StringIO()
     renderer = CliRenderer(stream)
     summary = RunSummary(
@@ -186,8 +167,8 @@ def test_fetch_parse_sync_summary_rendering() -> None:
         run=RunRecord(
             run_id="run-2",
             uid=7,
-            command="parse",
-            status="PARTIAL",
+            command="fetch",
+            status="SUCCESS",
             started_at_ms=1,
             ended_at_ms=2,
         ),
@@ -198,33 +179,16 @@ def test_fetch_parse_sync_summary_rendering() -> None:
                 FetchEndpointSummary("videos", "SUCCESS", 0, None, None, None, 1),
             ],
         ),
-        parse=ParseSummary(
-            status="PARTIAL",
-            models=[
-                ParseModelSummary("video_work", "SUCCESS", 3),
-                ParseModelSummary("article_post", "FAILED", 0),
-            ],
-            images={"total": 1, "ok": 0, "failed": 1},
-        ),
         asr=AsrSummary(),
         recent_events=[],
         recent_attention_events=[],
     )
 
     renderer.fetch_summary(summary)
-    renderer.parse_summary(summary)
-    renderer.sync_summary(summary)
 
     assert _lines(stream) == [
         "uid=7  status=SUCCESS",
         "  endpoints: SUCCESS=1",
-        "uid=7  status=PARTIAL",
-        "  models: FAILED=1, SUCCESS=1",
-        "  failed models: article_post",
-        "  images: total=1 ok=0 failed=1",
-        "uid=7  status=PARTIAL  fetch=SUCCESS  parse=PARTIAL",
-        "  endpoints: SUCCESS=1",
-        "  models: FAILED=1, SUCCESS=1",
     ]
 
 
@@ -234,10 +198,10 @@ def test_delete_rendering() -> None:
 
     renderer.delete_missing(uid=9)
     renderer.delete_cancelled()
-    renderer.delete_stats({"main_db": 1, "raw_db": 1})
+    renderer.delete_stats({"raw_db": 1, "workdir_files": 0})
 
     assert _lines(stream) == [
         "uid=9: no data found",
         "Cancelled",
-        "  main_db=1, raw_db=1",
+        "  raw_db=1, workdir_files=0",
     ]

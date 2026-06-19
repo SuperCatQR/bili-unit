@@ -1,6 +1,6 @@
 # bili_unit._db.ddl — DDL file loader.
 #
-# DDL is shipped as plain ``.sql`` files (not Python string literals) so it
+# DDL is shipped as a plain ``.sql`` file (not Python string literals) so it
 # stays editable / lintable with normal SQL tooling and survives schema bumps
 # without churning Python source.
 
@@ -11,10 +11,9 @@ from pathlib import Path
 _HERE = Path(__file__).parent
 
 # Whitelist of DDL files we know how to load. Keeps bumps deliberate: the
-# current main schema is v4, while raw DB is v2.
+# unit only writes one DB now (raw.db), currently at v3.
 _DDL_FILES: dict[str, str] = {
-    "main_v4": "main_v4.sql",
-    "raw_v2": "raw_v2.sql",
+    "raw_v3": "raw_v3.sql",
 }
 
 

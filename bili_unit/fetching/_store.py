@@ -1,29 +1,21 @@
 # bili_unit.fetching._store — SQLite-backed write store for the fetching stage.
 #
-# Replaces the file-directory ``DataStore`` + ``ErrorStore`` pair in
-# ``bili_unit/fetching/data.py`` and ``bili_unit/fetching/error.py``.
-#
-# Storage split:
-#   * raw DB ({uid}.raw.db)
-#       - raw_payload: every endpoint response, keyed by (endpoint, item_id).
-#         item_id='' for endpoint-level / paginated endpoints; bvid/cvid/...
-#         for fanout endpoints.
-#       - fetch_progress: pagination cursor per endpoint (commit marker for
-#         the atomic page+progress write).
-#   * main DB ({uid}.db)
-#       - stage_task[stage='fetching']: top-level task envelope (status +
-#         endpoints list in payload JSON).
-#       - fetch_endpoint_state: per-endpoint state machine row
-#         (status / retry_count / last_error_id / item_progress / progress).
-#       - stage_error[stage='fetching']: error sink (auto-increment id).
+# Storage (single raw DB, {uid}.raw.db):
+#   * raw_payload: every endpoint response, keyed by (endpoint, item_id).
+#     item_id='' for endpoint-level / paginated endpoints; bvid/cvid/...
+#     for fanout endpoints.
+#   * fetch_progress: pagination cursor per endpoint (commit marker for
+#     the atomic page+progress write).
+#   * stage_task[stage='fetching']: top-level task envelope (status +
+#     endpoints list in payload JSON).
+#   * fetch_endpoint_state: per-endpoint state machine row
+#     (status / retry_count / last_error_id / item_progress / progress).
+#   * stage_error[stage='fetching']: error sink (auto-increment id).
 #
 # Concurrency:
 #   The underlying ``Connection`` serialises writes through an asyncio.Lock,
 #   so the store needs no extra locking. Multi-statement atomic writes use
 #   ``run_transaction`` which holds the lock for the whole BEGIN/COMMIT.
-#
-# Phase 3 will rewire ``Runner`` to call this store; the call sites are
-# documented in the per-method docstrings to make that mechanical.
 
 from __future__ import annotations
 
@@ -55,8 +47,8 @@ def _load_json(value: str | None) -> dict | None:
 class FetchingStore:
     """SQLite-backed write store for the fetching stage.
 
-    Reads/writes the *raw* DB (raw_payload + fetch_progress tables) and the
-    *main* DB (stage_task[stage='fetching'] + fetch_endpoint_state +
+    Reads/writes the unit's single raw DB (raw_payload / fetch_progress /
+    stage_task[stage='fetching'] / fetch_endpoint_state /
     stage_error[stage='fetching']). Held by ``FetchingCommand`` for the
     duration of a single ``fetch_uid`` run.
     """
@@ -69,7 +61,7 @@ class FetchingStore:
         return self._ctx
 
     # ------------------------------------------------------------------
-    # raw DB writes (raw_payload + fetch_progress)
+    # raw_payload + fetch_progress writes
     # ------------------------------------------------------------------
 
     async def save_raw_payload(
@@ -86,7 +78,7 @@ class FetchingStore:
         opus_id / dynamic_id / rlid for fanout-endpoint per-item responses.
         """
         ts = _now_ms() if fetched_at_ms is None else fetched_at_ms
-        await self._ctx.raw.execute(
+        await self._ctx.conn.execute(
             "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) "
             "VALUES (?, ?, ?, ?) "
             "ON CONFLICT(endpoint, item_id) DO UPDATE SET "
@@ -144,7 +136,7 @@ class FetchingStore:
                 ),
             ),
         ]
-        await self._ctx.raw.run_transaction(statements)
+        await self._ctx.conn.run_transaction(statements)
 
     async def save_progress(
         self,
@@ -160,7 +152,7 @@ class FetchingStore:
             cursor_str: str | None = json.dumps(cursor, ensure_ascii=False)
         else:
             cursor_str = cursor
-        await self._ctx.raw.execute(
+        await self._ctx.conn.execute(
             "INSERT INTO fetch_progress(endpoint, cursor, total, fetched, updated_at_ms) "
             "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(endpoint) DO UPDATE SET "
@@ -172,14 +164,14 @@ class FetchingStore:
         )
 
     # ------------------------------------------------------------------
-    # raw DB reads (incremental-mode helpers)
+    # raw_payload + fetch_progress reads (incremental-mode helpers)
     # ------------------------------------------------------------------
 
     async def get_raw_payload(
         self, endpoint: str, item_id: str = "",
     ) -> dict | None:
         """Return the stored payload dict for (endpoint, item_id), or None."""
-        row = await self._ctx.raw.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT payload FROM raw_payload WHERE endpoint = ? AND item_id = ?",
             (endpoint, item_id),
         )
@@ -191,7 +183,7 @@ class FetchingStore:
         self, endpoint: str, item_id: str = "",
     ) -> int | None:
         """Return fetched_at_ms for (endpoint, item_id), or None if absent."""
-        row = await self._ctx.raw.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT fetched_at_ms FROM raw_payload "
             "WHERE endpoint = ? AND item_id = ?",
             (endpoint, item_id),
@@ -202,7 +194,7 @@ class FetchingStore:
 
     async def get_progress(self, endpoint: str) -> dict | None:
         """Return {cursor, total, fetched, updated_at_ms} for ``endpoint``, or None."""
-        row = await self._ctx.raw.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT cursor, total, fetched, updated_at_ms FROM fetch_progress "
             "WHERE endpoint = ?",
             (endpoint,),
@@ -232,7 +224,7 @@ class FetchingStore:
         fanout entries. Replaces ``data.list_prefix("uid:N:fetch:ep:")`` which
         the old runner used to skip already-fetched items in incremental mode.
         """
-        rows = await self._ctx.raw.fetch_all(
+        rows = await self._ctx.conn.fetch_all(
             "SELECT item_id FROM raw_payload "
             "WHERE endpoint = ? AND item_id <> '' "
             "ORDER BY item_id",
@@ -242,7 +234,7 @@ class FetchingStore:
 
     async def list_fanout_payloads(self, endpoint: str) -> dict[str, dict]:
         """Return ``{item_id: payload}`` for every fanout row of ``endpoint``."""
-        rows = await self._ctx.raw.fetch_all(
+        rows = await self._ctx.conn.fetch_all(
             "SELECT item_id, payload FROM raw_payload "
             "WHERE endpoint = ? AND item_id <> ''",
             (endpoint,),
@@ -251,7 +243,7 @@ class FetchingStore:
 
     async def list_fanout_payload_records(self, endpoint: str) -> dict[str, dict]:
         """Return fanout rows keyed by item_id, including payload and timestamp."""
-        rows = await self._ctx.raw.fetch_all(
+        rows = await self._ctx.conn.fetch_all(
             "SELECT item_id, payload, fetched_at_ms FROM raw_payload "
             "WHERE endpoint = ? AND item_id <> ''",
             (endpoint,),
@@ -266,7 +258,7 @@ class FetchingStore:
 
     async def list_item_ages_ms(self, endpoint: str) -> dict[str, int]:
         """Return ``{item_id: fetched_at_ms}`` for refresh-mode age comparisons."""
-        rows = await self._ctx.raw.fetch_all(
+        rows = await self._ctx.conn.fetch_all(
             "SELECT item_id, fetched_at_ms FROM raw_payload "
             "WHERE endpoint = ? AND item_id <> ''",
             (endpoint,),
@@ -274,7 +266,7 @@ class FetchingStore:
         return {r["item_id"]: r["fetched_at_ms"] for r in rows}
 
     # ------------------------------------------------------------------
-    # main DB writes (task + endpoint state)
+    # task + endpoint state writes
     # ------------------------------------------------------------------
 
     async def init_task(self, endpoints: list[str]) -> None:
@@ -313,7 +305,7 @@ class FetchingStore:
                     (ep, "PENDING", now),
                 ),
             )
-        await self._ctx.main.run_transaction(statements)
+        await self._ctx.conn.run_transaction(statements)
 
     async def update_task_status(self, status: str) -> None:
         """Update ``stage_task[stage='fetching'].status`` and timestamp."""
@@ -332,7 +324,7 @@ class FetchingStore:
                     ("last_fetched_at_ms", str(now)),
                 ),
             )
-        await self._ctx.main.run_transaction(statements)
+        await self._ctx.conn.run_transaction(statements)
 
     async def update_endpoint_state(
         self,
@@ -355,7 +347,7 @@ class FetchingStore:
         now = _now_ms()
         item_progress_json = _dump_json(item_progress)
         progress_json = _dump_json(progress)
-        await self._ctx.main.execute(
+        await self._ctx.conn.execute(
             "INSERT INTO fetch_endpoint_state("
             "    endpoint, status, retry_count, last_error_id, "
             "    item_progress, progress, updated_at_ms"
@@ -414,12 +406,12 @@ class FetchingStore:
                 )
 
     # ------------------------------------------------------------------
-    # main DB reads (state machine queries)
+    # task + endpoint state reads (state machine queries)
     # ------------------------------------------------------------------
 
     async def get_task_status(self) -> str | None:
         """Return ``stage_task[stage='fetching'].status`` or None."""
-        row = await self._ctx.main.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT status FROM stage_task WHERE stage = ?",
             (_FETCHING_STAGE,),
         )
@@ -429,7 +421,7 @@ class FetchingStore:
 
     async def get_task_updated_at(self) -> int | None:
         """Return ``stage_task[stage='fetching'].updated_at_ms`` or None."""
-        row = await self._ctx.main.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT updated_at_ms FROM stage_task WHERE stage = ?",
             (_FETCHING_STAGE,),
         )
@@ -439,7 +431,7 @@ class FetchingStore:
 
     async def list_endpoint_names(self) -> list[str]:
         """Return known endpoints from ``fetch_endpoint_state``."""
-        rows = await self._ctx.main.fetch_all(
+        rows = await self._ctx.conn.fetch_all(
             "SELECT endpoint FROM fetch_endpoint_state ORDER BY endpoint",
         )
         return [r["endpoint"] for r in rows]
@@ -449,13 +441,13 @@ class FetchingStore:
     ) -> dict[str, str]:
         """Return ``{endpoint: status}`` for known endpoint state rows."""
         if endpoints is None:
-            rows = await self._ctx.main.fetch_all(
+            rows = await self._ctx.conn.fetch_all(
                 "SELECT endpoint, status FROM fetch_endpoint_state ORDER BY endpoint",
             )
         else:
             rows = []
             for endpoint in endpoints:
-                row = await self._ctx.main.fetch_one(
+                row = await self._ctx.conn.fetch_one(
                     "SELECT endpoint, status FROM fetch_endpoint_state "
                     "WHERE endpoint = ?",
                     (endpoint,),
@@ -466,7 +458,7 @@ class FetchingStore:
 
     async def get_endpoint_status(self, endpoint: str) -> str | None:
         """Return the endpoint's current status string, or None if no row."""
-        row = await self._ctx.main.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT status FROM fetch_endpoint_state WHERE endpoint = ?",
             (endpoint,),
         )
@@ -481,7 +473,7 @@ class FetchingStore:
         dicts; missing/empty are returned as None (matches the old DataStore
         convention).
         """
-        row = await self._ctx.main.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT endpoint, status, retry_count, last_error_id, "
             "       item_progress, progress, updated_at_ms "
             "FROM fetch_endpoint_state WHERE endpoint = ?",
@@ -508,7 +500,7 @@ class FetchingStore:
         historical error). The result is sorted, deduplicated, and ready to
         feed back into a retry-only fetch.
         """
-        error_rows = await self._ctx.main.fetch_all(
+        error_rows = await self._ctx.conn.fetch_all(
             "SELECT detail FROM stage_error "
             "WHERE stage = ? AND endpoint = ? AND detail IS NOT NULL",
             (_FETCHING_STAGE, endpoint),
@@ -539,7 +531,7 @@ class FetchingStore:
         retry budget on them again unless a caller explicitly asks for a full
         refresh.
         """
-        error_rows = await self._ctx.main.fetch_all(
+        error_rows = await self._ctx.conn.fetch_all(
             "SELECT detail FROM stage_error "
             "WHERE stage = ? AND endpoint = ? "
             "AND error_type = ? AND retryable = 0 AND detail IS NOT NULL",
@@ -587,7 +579,7 @@ class FetchingStore:
         detail_json = _dump_json(detail)
         # SQLite 3.35+ supports INSERT ... RETURNING; we run it through
         # fetch_one to read back the new rowid in a single round-trip.
-        row = await self._ctx.main.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "INSERT INTO stage_error("
             "    stage, endpoint, pipeline, item_type, item_id, "
             "    error_type, message, retryable, detail, occurred_at_ms"
@@ -615,7 +607,7 @@ class FetchingStore:
         ``detail`` is decoded to a dict (or None when absent).
         """
         if endpoint is None:
-            rows = await self._ctx.main.fetch_all(
+            rows = await self._ctx.conn.fetch_all(
                 "SELECT id, stage, endpoint, error_type, message, retryable, "
                 "       detail, occurred_at_ms "
                 "FROM stage_error WHERE stage = ? "
@@ -623,7 +615,7 @@ class FetchingStore:
                 (_FETCHING_STAGE,),
             )
         else:
-            rows = await self._ctx.main.fetch_all(
+            rows = await self._ctx.conn.fetch_all(
                 "SELECT id, stage, endpoint, error_type, message, retryable, "
                 "       detail, occurred_at_ms "
                 "FROM stage_error WHERE stage = ? AND endpoint = ? "

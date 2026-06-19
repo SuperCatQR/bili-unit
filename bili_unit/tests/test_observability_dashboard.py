@@ -9,25 +9,23 @@ from bili_unit.observability import load_dashboard_snapshot, load_uid_dashboard_
 
 
 async def _seed_dashboard_uid(root: Path, uid: int = 123) -> None:
+    """Populate raw_payload + audio_transcription + stage_run for ``uid``."""
     ctx = UidContext(uid=uid, root=root)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
-        await ctx.main.execute(
-            "INSERT INTO video("
-            "    bvid, aid, title, description, cover_url, duration_s, "
-            "    pubdate_ms, view_count, danmaku, reply, favorite, coin, "
-            "    share, like_count, payload, parsed_at_ms"
-            ") VALUES (?, NULL, ?, '', '', 0, NULL, 0, 0, 0, 0, 0, 0, 0, '{}', 1)",
-            ("BV1", "one"),
+        await ctx.conn.execute(
+            "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) "
+            "VALUES (?, ?, ?, ?)",
+            ("video_detail", "BV1", json.dumps({"info": {"bvid": "BV1"}}), 1),
         )
-        await ctx.main.execute(
+        await ctx.conn.execute(
             "INSERT INTO audio_transcription("
             "    bvid, status, transcription_source, transcript, audio_tokens, "
             "    seconds, cache_hits, payload, processed_at_ms"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ("BV1", "success", "mock", "text", 7, 3.5, 1, "{}", 2),
         )
-        await ctx.main.execute(
+        await ctx.conn.execute(
             "INSERT INTO stage_run("
             "    run_id, uid, command, status, started_at_ms, ended_at_ms, "
             "    args_json, summary_json"
@@ -56,7 +54,7 @@ async def test_uid_dashboard_snapshot_reads_manifest_and_latest_run(tmp_path: Pa
     assert snapshot.read_error is None
     assert snapshot.manifest is not None
     assert snapshot.manifest.uid == 123
-    assert snapshot.manifest.schema_version == 4
+    assert snapshot.manifest.schema_version == 3
     assert snapshot.manifest.video_count == 1
     assert snapshot.manifest.transcribed_count == 1
     assert snapshot.manifest.total_audio_tokens == 7
@@ -73,19 +71,16 @@ async def test_uid_dashboard_snapshot_recommends_asr_next_actions(tmp_path: Path
     uid = 123
     await _seed_dashboard_uid(tmp_path, uid=uid)
     ctx = UidContext(uid=uid, root=tmp_path)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
         for bvid, status in (("BVfailed", "failed"), ("BVmissing", None)):
-            await ctx.main.execute(
-                "INSERT INTO video("
-                "    bvid, aid, title, description, cover_url, duration_s, "
-                "    pubdate_ms, view_count, danmaku, reply, favorite, coin, "
-                "    share, like_count, payload, parsed_at_ms"
-                ") VALUES (?, NULL, ?, '', '', 0, NULL, 0, 0, 0, 0, 0, 0, 0, '{}', 1)",
-                (bvid, bvid),
+            await ctx.conn.execute(
+                "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) "
+                "VALUES (?, ?, ?, ?)",
+                ("video_detail", bvid, json.dumps({"info": {"bvid": bvid}}), 1),
             )
             if status is not None:
-                await ctx.main.execute(
+                await ctx.conn.execute(
                     "INSERT INTO audio_transcription("
                     "    bvid, status, transcription_source, transcript, "
                     "    audio_tokens, seconds, cache_hits, payload, processed_at_ms"
@@ -127,26 +122,20 @@ async def test_dashboard_snapshot_handles_missing_uid(tmp_path: Path) -> None:
     assert snapshot.active_stages == ()
     assert snapshot.manifest is None
     assert snapshot.run_summary is None
-    assert snapshot.read_error == "main DB does not exist"
+    assert snapshot.read_error == "DB does not exist"
 
 
 async def test_uid_dashboard_snapshot_exposes_active_stages(tmp_path: Path) -> None:
     uid = 123
     await _seed_dashboard_uid(tmp_path, uid=uid)
     ctx = UidContext(uid=uid, root=tmp_path)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
-        await ctx.main.execute(
+        await ctx.conn.execute(
             "INSERT INTO stage_task("
             "    stage, status, payload, created_at_ms, updated_at_ms"
             ") VALUES (?, ?, ?, ?, ?)",
             ("fetching", "RUNNING", '{"endpoints":[]}', 1, 2),
-        )
-        await ctx.main.execute(
-            "INSERT INTO stage_task("
-            "    stage, status, payload, created_at_ms, updated_at_ms"
-            ") VALUES (?, ?, ?, ?, ?)",
-            ("parsing", "SUCCESS", '{"models":{}}', 1, 2),
         )
     finally:
         await ctx.close()
@@ -161,11 +150,11 @@ async def test_dashboard_snapshot_can_read_while_writer_updates(tmp_path: Path) 
     uid = 123
     await _seed_dashboard_uid(tmp_path, uid=uid)
     ctx = UidContext(uid=uid, root=tmp_path)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
         async def writer() -> None:
             for idx in range(20):
-                await ctx.main.execute(
+                await ctx.conn.execute(
                     "INSERT INTO stage_event("
                     "    run_id, ts_ms, level, stage, event, endpoint, pipeline, "
                     "    item_type, item_id, message, data_json"

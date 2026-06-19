@@ -80,15 +80,15 @@ async def test_workbench_inspect_uid_degrades_when_db_missing(tmp_path: Path) ->
 
     assert snapshot.uid == 123
     assert snapshot.run_summary is None
-    assert snapshot.read_error == "main DB does not exist"
+    assert snapshot.read_error == "DB does not exist"
 
 
 async def test_workbench_run_summary_reads_existing_db(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     ctx = UidContext(uid=123, root=Path(settings.bili_db_dir))
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
-        await ctx.main.execute(
+        await ctx.conn.execute(
             "INSERT INTO stage_task("
             "stage, status, payload, created_at_ms, updated_at_ms"
             ") VALUES (?, ?, ?, ?, ?)",
@@ -128,9 +128,9 @@ async def test_workbench_can_start_task_blocks_requested_running_stage(
 ) -> None:
     settings = _settings(tmp_path)
     ctx = UidContext(uid=123, root=Path(settings.bili_db_dir))
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
-        await ctx.main.execute(
+        await ctx.conn.execute(
             "INSERT INTO stage_task("
             "stage, status, payload, created_at_ms, updated_at_ms"
             ") VALUES (?, ?, ?, ?, ?)",

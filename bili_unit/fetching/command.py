@@ -63,7 +63,7 @@ class Command:
                 store, self._rl, self._settings,
                 stale_running_threshold_ms=self._stale_running_threshold_ms,
                 fetch_fn=self._fetch_fn,
-                reporter=RunReporter(run_context, SqliteSink(ctx.main)),
+                reporter=RunReporter(run_context, SqliteSink(ctx.conn)),
                 progress_factory=default_progress_factory,
             )
             result = await runner.run_or_resume(uid, endpoints, mode=mode)

@@ -9,8 +9,8 @@
 #   * No data / error / fetching_query / parsing_query parameters; the
 #     command holds only stable, cross-uid state (settings, asr_backend,
 #     credential_provider, optional downloader / convert injectors).
-#   * Each ``asr_uid(uid, ...)`` call opens its own main-DB ``UidContext`` +
-#     ``ProcessingStore`` / ``ParsingStore`` and tears them down on return.
+#   * Each ``asr_uid(uid, ...)`` call opens its own ``UidContext`` +
+#     ``ProcessingStore`` and tears them down on return.
 #   * ``delete_uid`` is a no-op (returns ``{}``); ``BiliCommand.delete_uid``
 #     handles the file-IO removal of the per-uid databases and workdir.
 
@@ -105,9 +105,9 @@ class ProcessingCommand:
     ) -> ProcessingCommandResult:
         """Trigger ASR for a uid.
 
-        Opens a fresh main-DB :class:`UidContext`, binds
-        :class:`ProcessingStore` / :class:`ParsingStore` to it, and dispatches
-        to the runner. The context is closed on return regardless of outcome.
+        Opens a fresh :class:`UidContext`, binds :class:`ProcessingStore`
+        to it, and dispatches to the runner. The context is closed on
+        return regardless of outcome.
 
         Args:
             mode: "incremental" (default) | "full".
@@ -126,7 +126,6 @@ class ProcessingCommand:
         """
         from .._db import UidContext
         from ..observability import RunContext, RunReporter, SqliteSink
-        from ..parsing._store import ParsingStore
         from ._store import ProcessingStore
 
         logger.info(
@@ -145,10 +144,9 @@ class ProcessingCommand:
         )
 
         ctx = UidContext(uid, self._settings.bili_db_dir)
-        await ctx.open(raw=False)
+        await ctx.open()
         try:
             proc_store = ProcessingStore(ctx)
-            parse_store = ParsingStore(ctx)
             run_context = RunContext.create(
                 uid=uid,
                 command="asr",
@@ -163,11 +161,10 @@ class ProcessingCommand:
                     "max_audio_tokens": max_audio_tokens,
                 },
             )
-            reporter = RunReporter(run_context, SqliteSink(ctx.main))
+            reporter = RunReporter(run_context, SqliteSink(ctx.conn))
             status, candidates, estimate, budget_exceeded, coverage = await self._runner.run(
                 uid,
                 proc_store=proc_store,
-                parse_store=parse_store,
                 reporter=reporter,
                 mode=mode,
                 limit=limit,
@@ -191,13 +188,12 @@ class ProcessingCommand:
         )
 
     async def delete_uid(self, uid: int) -> dict[str, int]:
-        """No-op in Phase 3.
+        """No-op for the processing stage.
 
-        ``BiliCommand.delete_uid`` removes ``{uid}.db`` / ``{uid}.raw.db``
-        / ``{db_dir}/{uid}/`` directly. The processing stage's per-uid
-        files (audio temp + ASR cache) live OUTSIDE that workdir and are
-        not cleaned up by this stage today; see the open question in the
-        Phase 3.3 deliverable.
+        ``BiliCommand.delete_uid`` removes ``{uid}.raw.db`` and the per-uid
+        workdir directly. The processing stage's per-uid files (audio temp +
+        ASR cache) live OUTSIDE that workdir and are not cleaned up by this
+        stage today.
         """
         return {}
 

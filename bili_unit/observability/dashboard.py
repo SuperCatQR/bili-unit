@@ -17,12 +17,10 @@ class ManifestSnapshot:
     uid: int
     schema_version: int | None = None
     last_fetched_at_ms: int | None = None
-    last_parsed_at_ms: int | None = None
     last_processed_at_ms: int | None = None
+    endpoint_count: int = 0
+    raw_payload_count: int = 0
     video_count: int = 0
-    article_count: int = 0
-    opus_count: int = 0
-    dynamic_count: int = 0
     transcribed_count: int = 0
     transcription_failed_count: int = 0
     total_audio_tokens: int = 0
@@ -43,8 +41,7 @@ class RecommendedAction:
 @dataclass(frozen=True)
 class UidDashboardSnapshot:
     uid: int
-    main_db: Path
-    raw_db: Path
+    db: Path
     workdir: Path
     manifest: ManifestSnapshot | None
     run_summary: RunSummary | None
@@ -108,19 +105,18 @@ async def load_uid_dashboard_snapshot(
     """Load one uid's manifest and latest run summary without mutating state."""
     root_path = Path(root)
     paths = resolve_paths(uid, root_path)
-    if not paths.main_db.exists():
+    if not paths.raw_db.exists():
         return UidDashboardSnapshot(
             uid=uid,
-            main_db=paths.main_db,
-            raw_db=paths.raw_db,
+            db=paths.raw_db,
             workdir=paths.workdir,
             manifest=None,
             run_summary=None,
-            read_error="main DB does not exist",
+            read_error="DB does not exist",
         )
 
     try:
-        manifest = await _load_manifest(paths.main_db, uid=uid)
+        manifest = await _load_manifest(paths.raw_db, uid=uid)
         run_summary = await load_run_summary(
             uid=uid,
             root=root_path,
@@ -129,8 +125,7 @@ async def load_uid_dashboard_snapshot(
     except Exception as exc:  # noqa: BLE001 - dashboard should degrade per uid
         return UidDashboardSnapshot(
             uid=uid,
-            main_db=paths.main_db,
-            raw_db=paths.raw_db,
+            db=paths.raw_db,
             workdir=paths.workdir,
             manifest=None,
             run_summary=None,
@@ -139,8 +134,7 @@ async def load_uid_dashboard_snapshot(
 
     return UidDashboardSnapshot(
         uid=uid,
-        main_db=paths.main_db,
-        raw_db=paths.raw_db,
+        db=paths.raw_db,
         workdir=paths.workdir,
         manifest=manifest,
         run_summary=run_summary,
@@ -165,12 +159,10 @@ def _load_manifest_sync(path: Path, uid: int) -> ManifestSnapshot:
             uid=_int_or(uid, row["uid"]),
             schema_version=_optional_int(row["schema_version"]),
             last_fetched_at_ms=_optional_int(row["last_fetched_at_ms"]),
-            last_parsed_at_ms=_optional_int(row["last_parsed_at_ms"]),
             last_processed_at_ms=_optional_int(row["last_processed_at_ms"]),
+            endpoint_count=_int_or(0, row["endpoint_count"]),
+            raw_payload_count=_int_or(0, row["raw_payload_count"]),
             video_count=_int_or(0, row["video_count"]),
-            article_count=_int_or(0, row["article_count"]),
-            opus_count=_int_or(0, row["opus_count"]),
-            dynamic_count=_int_or(0, row["dynamic_count"]),
             transcribed_count=_int_or(0, row["transcribed_count"]),
             transcription_failed_count=_int_or(
                 0, row["transcription_failed_count"],

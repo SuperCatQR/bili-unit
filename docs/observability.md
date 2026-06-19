@@ -4,16 +4,15 @@ This document describes the current run-observability read side.
 
 ## Current Shape
 
-The core data flow is unchanged:
+The core data flow is:
 
 ```text
-fetching -> raw.db
-parsing  -> raw.db -> main.db
-asr      -> main.db
+fetching -> raw.db (raw_payload + fetch_progress)
+asr      -> raw.db (audio_transcription + page + segment)
 ```
 
 Runners now also emit semantic run events through `RunReporter`. The SQLite
-sink persists those events into the uid main DB:
+sink persists those events into the same uid DB:
 
 - `stage_run`: one row per command run.
 - `stage_event`: append-only semantic timeline for that run.
@@ -40,7 +39,6 @@ Stable semantic event names use the user-visible stage prefix:
 | Prefix | Meaning |
 | --- | --- |
 | `fetch.*` | fetching command, endpoint, and item events |
-| `parse.*` | parsing command, model, and image events |
 | `asr.*` | ASR command, item, segment, and coverage events |
 
 Do not use implementation prefixes such as `audio.item.*` for stable events.
@@ -52,7 +50,7 @@ messages. Those log names are not read-side facts.
 ## Run Summary
 
 `bili_unit.observability.summary` provides the read-side aggregation. Every
-`RunSummary` carries a `schema_version: int` field (currently `1`) that lets
+`RunSummary` carries a `schema_version: int` field (currently `2`) that lets
 consumers reject incompatible serialisations as the structure evolves.
 
 ```python
@@ -61,8 +59,8 @@ from bili_unit.observability import load_run_summary
 summary = await load_run_summary(uid=123, root="output/bili")
 ```
 
-Use `build_run_summary(main, uid=..., run_id=...)` when a caller already has an
-open main DB connection.
+Use `build_run_summary(conn, uid=..., run_id=...)` when a caller already has an
+open DB connection.
 
 For CLI final output, command results carry the exact `run_id` produced by the
 write-side command. The CLI loads `RunSummary` with that `run_id`; selecting the
@@ -85,10 +83,10 @@ The summary combines:
 - recent `stage_event` rows
 - attention events: warnings/errors/retries/rate limits/high-risk/failures
 - fetch endpoint current state
-- parse model current state
-- ASR current coverage from `video` + `audio_transcription`
+- ASR current coverage from `raw_payload(endpoint='video_detail')` + `audio_transcription`
 
-ASR coverage treats every row in `video` as expected work. A missing
+ASR coverage treats every distinct `item_id` under
+`raw_payload(endpoint='video_detail')` as expected work. A missing
 `audio_transcription` row is reported as `missing`; a row with
 `status='failed'` is reported as `failed`.
 
@@ -106,7 +104,7 @@ from bili_unit.observability import load_dashboard_snapshot
 snapshot = await load_dashboard_snapshot(root="output/bili")
 ```
 
-The snapshot lists known uid DBs, resolves each uid's main/raw/workdir paths,
+The snapshot lists known uid DBs, resolves each uid's DB / workdir paths,
 reads `manifest_summary`, embeds the latest `RunSummary`, and derives
 recommended next actions such as retrying failed ASR rows or running missing
 bvids with `--only-bvids`. It is read-only and degrades per uid with
@@ -123,10 +121,6 @@ commands still produce output.
 Current final summary behavior:
 
 - `fetch`: task status, endpoint status counts, failed endpoints, attention events.
-- `parse`: task status, model status counts, failed models, image summary,
-  attention events.
-- `sync`: combined fetch/parse status plus endpoint/model counts and attention
-  events.
 - `asr`: ASR status, candidate count, coverage, missing/failed bvids,
   transcription row counts, attention events.
   For dry-runs, the status is `DRY_RUN` and the summary is read from run
@@ -225,27 +219,6 @@ sibling items continue. Identity comes from `endpoint` + `item_id`.
 data: {}
 ```
 
-### parse.model.completed
-
-Emitted after a parsing model finishes successfully.
-
-```
-data: {
-  "status": str,  # ParsingModelStatus value, e.g. "SUCCESS"
-  "count":  int,  # number of items materialised
-}
-```
-
-### parse.model.failed
-
-Emitted when a parsing model raises an unexpected error.
-
-```
-data: {
-  "error_type": str,
-}
-```
-
 ### asr.discovery.completed
 
 Emitted after ASR candidate discovery completes (before worker dispatch).
@@ -254,7 +227,6 @@ Emitted after ASR candidate discovery completes (before worker dispatch).
 data: {
   "candidate_count": int,
   "skipped":         int,
-  "subtitle_done":   int,
   "estimate":        dict,  # AudioEstimate.to_dict()
 }
 ```

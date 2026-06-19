@@ -69,31 +69,20 @@ def test_exclude_everything_raises():
 
 
 def test_argparse_layer_rejects_both_flags():
-    """``-e`` and ``-x`` are mutually exclusive on fetch-like parsers."""
+    """``-e`` and ``-x`` are mutually exclusive on the fetch parser."""
     from bili_unit.__main__ import _build_parser
 
     parser = _build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["fetch", "1", "-e", "user_info", "-x", "videos"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["sync", "1", "-e", "user_info", "-x", "videos"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["parse", "1", "-e", "video_work", "-x", "opus_post"])
 
 
 def test_default_subset_is_none_for_fetch():
-    """Without flags, fetch-like parsers leave endpoint include/exclude unset.
-
-    The ``process`` subcommand no longer takes -e/-x style item-type flags after
-    the 2026-06-14 transform deletion (only one pipeline remains: audio).
-    """
+    """Without flags, fetch parsers leave endpoint include/exclude unset."""
     from bili_unit.__main__ import _build_parser
 
     parser = _build_parser()
     args = parser.parse_args(["fetch", "1"])
-    assert args.endpoints is None
-    assert args.exclude_endpoints is None
-    args = parser.parse_args(["sync", "1"])
     assert args.endpoints is None
     assert args.exclude_endpoints is None
 
@@ -108,92 +97,15 @@ def test_fetch_accepts_generic_include_exclude_aliases():
     assert args.exclude_endpoints == ["videos"]
 
 
-def test_parse_accepts_model_include_exclude():
-    from bili_unit.__main__ import _build_parser
-
-    parser = _build_parser()
-    args = parser.parse_args(["parse", "1", "-e", "video_work", "opus_post"])
-    assert args.models == ["video_work", "opus_post"]
-    assert args.exclude_models is None
-
-    args = parser.parse_args(["parse", "1", "--exclude", "video_subtitle"])
-    assert args.models is None
-    assert args.exclude_models == ["video_subtitle"]
-
-
-def test_resolve_parse_models_validates_known_models():
-    from bili_unit.__main__ import _build_parser, _resolve_parse_models
-
-    parser = _build_parser()
-    args = parser.parse_args(["parse", "1", "-e", "video_work", "opus_post"])
-    assert _resolve_parse_models(args) == ["video_work", "opus_post"]
-
-    args = parser.parse_args(["parse", "1", "-x", "video_subtitle"])
-    assert _resolve_parse_models(args) == [
-        "user_profile",
-        "video_work",
-        "article_post",
-        "opus_post",
-        "dynamic_event",
-    ]
-
-    args = parser.parse_args(["parse", "1", "-e", "typo"])
-    with pytest.raises(SystemExit):
-        _resolve_parse_models(args)
-
-
-# --- Tests for --profile (issue #2) ----------------------------------------
+# --- Tests for --profile ----------------------------------------------------
 
 def test_profile_default_is_all():
-    """No --profile flag → defaults to "all" (backward compat)."""
+    """No --profile flag → defaults to "all"."""
     from bili_unit.__main__ import _build_parser
 
     parser = _build_parser()
     args = parser.parse_args(["fetch", "1"])
     assert args.profile == "all"
-    args = parser.parse_args(["sync", "1"])
-    assert args.profile == "all"
-
-
-def test_sync_argparse_defaults_and_modes():
-    from bili_unit.__main__ import _build_parser
-
-    parser = _build_parser()
-    args = parser.parse_args(["sync", "1"])
-    assert args.fetch_mode == "incremental"
-    assert args.parse_mode == "incremental"
-    assert args.download_images is False
-    assert args.models is None
-    assert args.exclude_models is None
-
-    args = parser.parse_args([
-        "sync", "1",
-        "--fetch-mode", "full",
-        "--parse-mode", "incremental",
-        "--download-images",
-    ])
-    assert args.fetch_mode == "full"
-    assert args.parse_mode == "incremental"
-    assert args.download_images is True
-
-    args = parser.parse_args(["sync", "1", "--models", "video_work"])
-    assert args.models == ["video_work"]
-    assert args.exclude_models is None
-
-    args = parser.parse_args(["sync", "1", "--exclude-models", "video_subtitle"])
-    assert args.models is None
-    assert args.exclude_models == ["video_subtitle"]
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(["sync", "1", "--models", "video_work", "--exclude-models", "opus_post"])
-
-
-def test_profile_parsing_chosen():
-    from bili_unit.__main__ import _build_parser
-
-    parser = _build_parser()
-    args = parser.parse_args(["fetch", "1", "--profile", "parsing"])
-    assert args.profile == "parsing"
 
 
 def test_profile_short_flag():
@@ -202,19 +114,6 @@ def test_profile_short_flag():
     parser = _build_parser()
     args = parser.parse_args(["fetch", "1", "-p", "minimal"])
     assert args.profile == "minimal"
-
-
-def test_resolve_fetch_endpoints_uses_parsing_profile_for_sync():
-    from bili_unit.__main__ import _build_parser, _resolve_fetch_endpoints
-    from bili_unit.fetching._endpoint_catalog import PROFILES
-
-    parser = _build_parser()
-    args = parser.parse_args(["sync", "1", "--profile", "parsing"])
-    endpoints = _resolve_fetch_endpoints(args)
-
-    assert endpoints is not None
-    assert set(endpoints) == set(PROFILES["parsing"])
-    assert "video_subtitle" in endpoints
 
 
 def test_profile_unknown_rejected():
@@ -230,7 +129,7 @@ def test_profile_mutually_exclusive_with_endpoints():
 
     parser = _build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["fetch", "1", "-p", "parsing", "-e", "user_info"])
+        parser.parse_args(["fetch", "1", "-p", "minimal", "-e", "user_info"])
 
 
 def test_profile_mutually_exclusive_with_exclude():
@@ -238,4 +137,4 @@ def test_profile_mutually_exclusive_with_exclude():
 
     parser = _build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["fetch", "1", "-p", "parsing", "-x", "videos"])
+        parser.parse_args(["fetch", "1", "-p", "minimal", "-x", "videos"])

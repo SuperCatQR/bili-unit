@@ -124,42 +124,41 @@ async def test_jsonl_sink_writes_run_and_event_records(tmp_path: Path) -> None:
 
 async def test_logging_sink_emits_structured_records(caplog) -> None:
     logger = logging.getLogger("test.observability")
-    ctx = RunContext.create(uid=9, command="parse", run_id="run-log")
+    ctx = RunContext.create(uid=9, command="fetch", run_id="run-log")
     reporter = RunReporter(ctx, LoggingSink(logger))
 
     with caplog.at_level(logging.INFO, logger="test.observability"):
         await reporter.emit(
-            "parse.model.failed",
-            stage="parsing",
+            "fetch.endpoint.failed",
+            stage="fetching",
             level="ERROR",
-            item_type="model",
-            item_id="article",
-            message="model failed",
+            endpoint="videos",
+            message="endpoint failed",
         )
         await reporter.complete("PARTIAL")
 
     messages = [record.getMessage() for record in caplog.records]
-    assert messages == ["run.started", "model failed", "run.completed"]
+    assert messages == ["run.started", "endpoint failed", "run.completed"]
     event_record = caplog.records[1]
     assert event_record.run_id == "run-log"
     assert event_record.uid == 9
-    assert event_record.stage == "parsing"
-    assert event_record.event == "parse.model.failed"
-    assert event_record.item_id == "article"
+    assert event_record.stage == "fetching"
+    assert event_record.event == "fetch.endpoint.failed"
+    assert event_record.endpoint == "videos"
 
 
 async def test_sqlite_sink_persists_run_and_events(tmp_path: Path) -> None:
     ctx_db = UidContext(uid=55, root=tmp_path)
-    await ctx_db.open(raw=False)
+    await ctx_db.open()
     try:
         run_ctx = RunContext.create(
             uid=55,
             command="fetch",
-            args={"profile": "parsing"},
+            args={"profile": "all"},
             run_id="run-sqlite",
             started_at_ms=2000,
         )
-        reporter = RunReporter(run_ctx, SqliteSink(ctx_db.main))
+        reporter = RunReporter(run_ctx, SqliteSink(ctx_db.conn))
 
         await reporter.emit(
             "fetch.endpoint.completed",
@@ -178,7 +177,7 @@ async def test_sqlite_sink_persists_run_and_events(tmp_path: Path) -> None:
         )
         await reporter.complete("PARTIAL", summary={"endpoints": 2})
 
-        run_row = await ctx_db.main.fetch_one(
+        run_row = await ctx_db.conn.fetch_one(
             "SELECT uid, command, status, started_at_ms, ended_at_ms, "
             "       args_json, summary_json "
             "FROM stage_run WHERE run_id = ?",
@@ -190,10 +189,10 @@ async def test_sqlite_sink_persists_run_and_events(tmp_path: Path) -> None:
         assert run_row["status"] == "PARTIAL"
         assert run_row["started_at_ms"] == 2000
         assert run_row["ended_at_ms"] > 0
-        assert json.loads(run_row["args_json"]) == {"profile": "parsing"}
+        assert json.loads(run_row["args_json"]) == {"profile": "all"}
         assert json.loads(run_row["summary_json"]) == {"endpoints": 2}
 
-        rows = await ctx_db.main.fetch_all(
+        rows = await ctx_db.conn.fetch_all(
             "SELECT level, stage, event, endpoint, item_type, item_id, "
             "       message, data_json "
             "FROM stage_event WHERE run_id = ? ORDER BY id",
@@ -217,11 +216,11 @@ async def test_sqlite_sink_persists_run_and_events(tmp_path: Path) -> None:
 
 async def test_build_run_summary_reads_current_state_and_latest_run(tmp_path: Path) -> None:
     ctx_db = UidContext(uid=66, root=tmp_path)
-    await ctx_db.open(raw=False)
+    await ctx_db.open()
     try:
         await _seed_summary_state(ctx_db)
 
-        summary = await build_run_summary(ctx_db.main, uid=66, recent_limit=10)
+        summary = await build_run_summary(ctx_db.conn, uid=66, recent_limit=10)
 
         assert summary.uid == 66
         assert summary.run is not None
@@ -236,14 +235,6 @@ async def test_build_run_summary_reads_current_state_and_latest_run(tmp_path: Pa
             "videos",
         ]
         assert summary.fetch.endpoints[0].item_progress == {"done": 1, "total": 2}
-
-        assert summary.parse.status == "PARTIAL"
-        assert summary.parse.status_counts == {"FAILED": 1, "SUCCESS": 1}
-        assert [(m.model, m.status, m.count) for m in summary.parse.models] == [
-            ("article_post", "FAILED", 1),
-            ("video_work", "SUCCESS", 3),
-        ]
-        assert summary.parse.images == {"total": 2, "ok": 1, "failed": 1}
 
         assert summary.asr.status == "PARTIAL"
         assert summary.asr.candidate_count == 3
@@ -273,11 +264,11 @@ async def test_build_run_summary_reads_current_state_and_latest_run(tmp_path: Pa
 
 async def test_build_run_summary_can_select_specific_run(tmp_path: Path) -> None:
     ctx_db = UidContext(uid=66, root=tmp_path)
-    await ctx_db.open(raw=False)
+    await ctx_db.open()
     try:
         await _seed_summary_state(ctx_db)
 
-        summary = await build_run_summary(ctx_db.main, uid=66, run_id="run-old")
+        summary = await build_run_summary(ctx_db.conn, uid=66, run_id="run-old")
 
         assert summary.run is not None
         assert summary.run.run_id == "run-old"
@@ -291,11 +282,11 @@ async def test_build_run_summary_can_select_specific_run(tmp_path: Path) -> None
 
 async def test_run_summary_candidate_count_ignores_recent_event_limit(tmp_path: Path) -> None:
     ctx_db = UidContext(uid=66, root=tmp_path)
-    await ctx_db.open(raw=False)
+    await ctx_db.open()
     try:
         await _seed_summary_state(ctx_db)
 
-        summary = await build_run_summary(ctx_db.main, uid=66, run_id="run-new", recent_limit=1)
+        summary = await build_run_summary(ctx_db.conn, uid=66, run_id="run-new", recent_limit=1)
 
         assert summary.asr.candidate_count == 3
         assert [event.event for event in summary.recent_events] == [
@@ -307,9 +298,9 @@ async def test_run_summary_candidate_count_ignores_recent_event_limit(tmp_path: 
 
 async def test_run_summary_reads_current_state_without_run_records(tmp_path: Path) -> None:
     ctx_db = UidContext(uid=77, root=tmp_path)
-    await ctx_db.open(raw=False)
+    await ctx_db.open()
     try:
-        await ctx_db.main.execute(
+        await ctx_db.conn.execute(
             "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
             "VALUES ('asr', 'PARTIAL', ?, 1, 2)",
             (
@@ -321,15 +312,12 @@ async def test_run_summary_reads_current_state_without_run_records(tmp_path: Pat
             ),
         )
         for bvid in ("BVok", "BVmissing"):
-            await ctx_db.main.execute(
-                "INSERT INTO video("
-                "    bvid, aid, title, description, cover_url, duration_s, "
-                "    pubdate_ms, view_count, danmaku, reply, favorite, coin, "
-                "    share, like_count, payload, parsed_at_ms"
-                ") VALUES (?, NULL, ?, '', '', 0, NULL, 0, 0, 0, 0, 0, 0, 0, '{}', 1)",
-                (bvid, bvid),
+            await ctx_db.conn.execute(
+                "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) "
+                "VALUES (?, ?, ?, ?)",
+                ("video_detail", bvid, json.dumps({"info": {"bvid": bvid}}), 1),
             )
-        await ctx_db.main.execute(
+        await ctx_db.conn.execute(
             "INSERT INTO audio_transcription("
             "    bvid, status, transcription_source, transcript, audio_tokens, "
             "    seconds, cache_hits, payload, processed_at_ms"
@@ -337,7 +325,7 @@ async def test_run_summary_reads_current_state_without_run_records(tmp_path: Pat
             ("BVok", "success", "mimo", "ok", 1, 1.0, 0, "{}", 2),
         )
 
-        summary = await build_run_summary(ctx_db.main, uid=77)
+        summary = await build_run_summary(ctx_db.conn, uid=77)
 
         assert summary.run is None
         assert summary.recent_events == []
@@ -350,9 +338,9 @@ async def test_run_summary_reads_current_state_without_run_records(tmp_path: Pat
         await ctx_db.close()
 
 
-async def test_load_run_summary_opens_main_db(tmp_path: Path) -> None:
+async def test_load_run_summary_opens_db(tmp_path: Path) -> None:
     ctx_db = UidContext(uid=66, root=tmp_path)
-    await ctx_db.open(raw=False)
+    await ctx_db.open()
     try:
         await _seed_summary_state(ctx_db)
     finally:
@@ -366,7 +354,7 @@ async def test_load_run_summary_opens_main_db(tmp_path: Path) -> None:
 
 
 async def _seed_summary_state(ctx_db: UidContext) -> None:
-    await ctx_db.main.execute(
+    await ctx_db.conn.execute(
         "INSERT INTO stage_run("
         "    run_id, uid, command, status, started_at_ms, ended_at_ms, "
         "    args_json, summary_json"
@@ -382,7 +370,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
             json.dumps({"endpoints": 1}),
         ),
     )
-    await ctx_db.main.execute(
+    await ctx_db.conn.execute(
         "INSERT INTO stage_run("
         "    run_id, uid, command, status, started_at_ms, ended_at_ms, "
         "    args_json, summary_json"
@@ -398,7 +386,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
             json.dumps({"status": "PARTIAL"}),
         ),
     )
-    await ctx_db.main.execute(
+    await ctx_db.conn.execute(
         "INSERT INTO stage_event("
         "    run_id, ts_ms, level, stage, event, endpoint, pipeline, "
         "    item_type, item_id, message, data_json"
@@ -426,7 +414,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
         ],
         start=1,
     ):
-        await ctx_db.main.execute(
+        await ctx_db.conn.execute(
             "INSERT INTO stage_event("
             "    run_id, ts_ms, level, stage, event, endpoint, pipeline, "
             "    item_type, item_id, message, data_json"
@@ -443,7 +431,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
                 json.dumps(data),
             ),
         )
-    await ctx_db.main.execute(
+    await ctx_db.conn.execute(
         "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
         "VALUES (?, ?, ?, ?, ?)",
         (
@@ -454,24 +442,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
             2,
         ),
     )
-    await ctx_db.main.execute(
-        "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (
-            "parsing",
-            "PARTIAL",
-            json.dumps({
-                "models": {
-                    "video_work": {"status": "SUCCESS", "count": 3},
-                    "article_post": {"status": "FAILED", "count": 1},
-                },
-                "images": {"total": 2, "ok": 1, "failed": 1},
-            }),
-            1,
-            2,
-        ),
-    )
-    await ctx_db.main.execute(
+    await ctx_db.conn.execute(
         "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
         "VALUES (?, ?, ?, ?, ?)",
         (
@@ -489,7 +460,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
             2,
         ),
     )
-    await ctx_db.main.execute(
+    await ctx_db.conn.execute(
         "INSERT INTO fetch_endpoint_state("
         "    endpoint, status, retry_count, last_error_id, "
         "    item_progress, progress, updated_at_ms"
@@ -504,7 +475,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
             2,
         ),
     )
-    await ctx_db.main.execute(
+    await ctx_db.conn.execute(
         "INSERT INTO fetch_endpoint_state("
         "    endpoint, status, retry_count, last_error_id, "
         "    item_progress, progress, updated_at_ms"
@@ -520,22 +491,19 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
         ),
     )
     for bvid in ("BV1", "BV2", "BV3"):
-        await ctx_db.main.execute(
-            "INSERT INTO video("
-            "    bvid, aid, title, description, cover_url, duration_s, "
-            "    pubdate_ms, view_count, danmaku, reply, favorite, coin, "
-            "    share, like_count, payload, parsed_at_ms"
-            ") VALUES (?, NULL, ?, '', '', 0, NULL, 0, 0, 0, 0, 0, 0, 0, '{}', 1)",
-            (bvid, bvid),
+        await ctx_db.conn.execute(
+            "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) "
+            "VALUES (?, ?, ?, ?)",
+            ("video_detail", bvid, json.dumps({"info": {"bvid": bvid}}), 1),
         )
-    await ctx_db.main.execute(
+    await ctx_db.conn.execute(
         "INSERT INTO audio_transcription("
         "    bvid, status, transcription_source, transcript, audio_tokens, "
         "    seconds, cache_hits, payload, processed_at_ms"
         ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ("BV1", "success", "mimo", "ok", 10, 1.0, 0, "{}", 2),
     )
-    await ctx_db.main.execute(
+    await ctx_db.conn.execute(
         "INSERT INTO audio_transcription("
         "    bvid, status, transcription_source, transcript, audio_tokens, "
         "    seconds, cache_hits, payload, processed_at_ms"
@@ -544,10 +512,8 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
     )
 
 
-# -- Task 5: RunSummary schema_version field ---------------------------------
-
-def test_run_summary_schema_version():
-    """RunSummary.schema_version defaults to 1."""
+def test_run_summary_schema_version() -> None:
+    """RunSummary.schema_version is now 2 after dropping ParseSummary."""
     from bili_unit.observability.summary import RunSummary
     instance = RunSummary(uid=42)
-    assert instance.schema_version == 1
+    assert instance.schema_version == 2

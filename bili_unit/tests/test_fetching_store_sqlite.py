@@ -38,7 +38,7 @@ async def test_save_raw_payload_endpoint_level(store: FetchingStore) -> None:
     payload = {"list": {"vlist": [{"aid": 1}]}, "page": {"count": 1}}
     await store.save_raw_payload("user_info", "", payload)
 
-    row = await store.ctx.raw.fetch_one(
+    row = await store.ctx.conn.fetch_one(
         "SELECT endpoint, item_id, payload, fetched_at_ms FROM raw_payload "
         "WHERE endpoint = ? AND item_id = ?",
         ("user_info", ""),
@@ -56,7 +56,7 @@ async def test_save_raw_payload_fanout_item(store: FetchingStore) -> None:
         "video_detail", "BV1abc", payload, fetched_at_ms=12345,
     )
 
-    row = await store.ctx.raw.fetch_one(
+    row = await store.ctx.conn.fetch_one(
         "SELECT payload, fetched_at_ms FROM raw_payload "
         "WHERE endpoint = ? AND item_id = ?",
         ("video_detail", "BV1abc"),
@@ -70,7 +70,7 @@ async def test_save_raw_payload_upserts_on_conflict(store: FetchingStore) -> Non
     await store.save_raw_payload("user_info", "", {"v": 1}, fetched_at_ms=100)
     await store.save_raw_payload("user_info", "", {"v": 2}, fetched_at_ms=200)
 
-    rows = await store.ctx.raw.fetch_all(
+    rows = await store.ctx.conn.fetch_all(
         "SELECT payload, fetched_at_ms FROM raw_payload WHERE endpoint = ?",
         ("user_info",),
     )
@@ -86,7 +86,7 @@ async def test_save_raw_page_and_progress_atomic(store: FetchingStore) -> None:
         "videos", "", payload, progress, fetched_at_ms=500,
     )
 
-    payload_row = await store.ctx.raw.fetch_one(
+    payload_row = await store.ctx.conn.fetch_one(
         "SELECT payload, fetched_at_ms FROM raw_payload "
         "WHERE endpoint = ? AND item_id = ?",
         ("videos", ""),
@@ -95,7 +95,7 @@ async def test_save_raw_page_and_progress_atomic(store: FetchingStore) -> None:
     assert json.loads(payload_row["payload"]) == payload
     assert payload_row["fetched_at_ms"] == 500
 
-    prog_row = await store.ctx.raw.fetch_one(
+    prog_row = await store.ctx.conn.fetch_one(
         "SELECT cursor, total, fetched, updated_at_ms FROM fetch_progress "
         "WHERE endpoint = ?",
         ("videos",),
@@ -113,7 +113,7 @@ async def test_save_raw_page_and_progress_dict_cursor(store: FetchingStore) -> N
     await store.save_raw_page_and_progress(
         "videos", "", {"x": 1}, progress,
     )
-    row = await store.ctx.raw.fetch_one(
+    row = await store.ctx.conn.fetch_one(
         "SELECT cursor FROM fetch_progress WHERE endpoint = ?", ("videos",),
     )
     assert row is not None
@@ -126,7 +126,7 @@ async def test_save_progress_alone(store: FetchingStore) -> None:
         {"cursor": None, "total": 50, "fetched": 50},
         updated_at_ms=999,
     )
-    row = await store.ctx.raw.fetch_one(
+    row = await store.ctx.conn.fetch_one(
         "SELECT cursor, total, fetched, updated_at_ms FROM fetch_progress "
         "WHERE endpoint = ?",
         ("videos",),
@@ -141,7 +141,7 @@ async def test_save_progress_alone(store: FetchingStore) -> None:
 async def test_save_progress_upserts(store: FetchingStore) -> None:
     await store.save_progress("videos", {"cursor": "a", "total": 10, "fetched": 1})
     await store.save_progress("videos", {"cursor": "b", "total": 20, "fetched": 5})
-    rows = await store.ctx.raw.fetch_all(
+    rows = await store.ctx.conn.fetch_all(
         "SELECT cursor, total, fetched FROM fetch_progress WHERE endpoint = ?",
         ("videos",),
     )
@@ -273,7 +273,7 @@ async def test_list_item_ages_ms_round_trip(store: FetchingStore) -> None:
 async def test_init_task_seeds_task_and_endpoints(store: FetchingStore) -> None:
     await store.init_task(["user_info", "videos", "video_detail"])
 
-    task_row = await store.ctx.main.fetch_one(
+    task_row = await store.ctx.conn.fetch_one(
         "SELECT stage, status, payload, created_at_ms, updated_at_ms "
         "FROM stage_task WHERE stage = ?",
         ("fetching",),
@@ -287,7 +287,7 @@ async def test_init_task_seeds_task_and_endpoints(store: FetchingStore) -> None:
     assert task_row["created_at_ms"] > 0
     assert task_row["updated_at_ms"] >= task_row["created_at_ms"]
 
-    ep_rows = await store.ctx.main.fetch_all(
+    ep_rows = await store.ctx.conn.fetch_all(
         "SELECT endpoint, status, retry_count, last_error_id, "
         "       item_progress, progress, updated_at_ms "
         "FROM fetch_endpoint_state ORDER BY endpoint",
@@ -461,7 +461,7 @@ async def test_record_error_persists_all_fields(store: FetchingStore) -> None:
         detail={"item_id": "BVxyz"},
         occurred_at_ms=12345,
     )
-    row = await store.ctx.main.fetch_one(
+    row = await store.ctx.conn.fetch_one(
         "SELECT * FROM stage_error WHERE id = ?", (err_id,),
     )
     assert row is not None
@@ -483,7 +483,7 @@ async def test_record_error_retryable_unknown_stored_as_null(
         message="?",
         retryable=None,
     )
-    row = await store.ctx.main.fetch_one(
+    row = await store.ctx.conn.fetch_one(
         "SELECT retryable FROM stage_error WHERE id = ?", (err_id,),
     )
     assert row is not None
