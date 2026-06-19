@@ -81,6 +81,10 @@ class ASRAPIError(AudioError):
     """ASR API 返回错误。"""
 
 
+class LengthTruncatedError(ASRAPIError):
+    """ASR response was truncated by max_tokens; runner should raise the cap or split."""
+
+
 class EmptyTranscriptError(AudioError):
     """ASR completed but produced no non-empty text for the bvid."""
 
@@ -163,6 +167,7 @@ __all__ = [
     "ConvertError",
     "DownloadError",
     "EmptyTranscriptError",
+    "LengthTruncatedError",
     "ProcessingCommandResult",
     "ProcessingError",
     "ProcessingItemStatus",

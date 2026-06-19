@@ -17,6 +17,7 @@ from .. import (
 )
 from .._estimate import estimate_audio_work, estimate_exceeds_budget
 from .._work_items import list_audio_work_items
+from ..audio._converter import cleanup_orphan_temp_dirs
 from ._audio_work import (
     audio_convert_page,
     audio_download_page,
@@ -102,6 +103,15 @@ class _AudioMixin:
         await store.update_task_pipeline(
             _AUDIO, status=ProcessingPipelineStatus.RUNNING.value,
         )
+
+        # A1: scrub orphan ffmpeg temp files from a previously killed process.
+        try:
+            cleanup_orphan_temp_dirs(self._temp_dir)
+        except Exception as exc:  # noqa: BLE001 — best-effort scrub
+            logger.warning(
+                "audio_orphan_cleanup_failed",
+                extra={"uid": uid, "error": str(exc)},
+            )
 
         # 1. discover audio work items (one per bvid)
         try:
@@ -561,8 +571,9 @@ class _AudioMixin:
             total_cache_hits: int = 0
             total_fresh_segments: int = 0
             total_high_risk_segment_skips: int = 0
+            total_length_truncated_segment_skips: int = 0
 
-            for page in pages:
+            for page_idx, page in enumerate(pages):
                 page_index = page["page_index"]
                 m4s_path = temp_base / f"{page_index}.m4s"
 
@@ -619,6 +630,12 @@ class _AudioMixin:
                     ),
                     ffmpeg_setting=self._settings.bili_processing_ffmpeg_path,
                     reporter=self._reporter,
+                    initial_max_tokens=int(
+                        self._settings.bili_processing_asr_max_completion_tokens
+                    ),
+                    max_tokens_cap=int(
+                        self._settings.bili_processing_asr_max_completion_tokens
+                    ),
                 )
 
                 segment_duration_sum = trans["segment_duration_sum"]
@@ -656,6 +673,22 @@ class _AudioMixin:
                 total_high_risk_segment_skips += int(
                     trans.get("high_risk_segment_skips", 0)
                 )
+                total_length_truncated_segment_skips += int(
+                    trans.get("length_truncated_segment_skips", 0)
+                )
+                if self._reporter is not None:
+                    await self._reporter.emit(
+                        "asr.item.progress",
+                        stage="asr",
+                        pipeline="audio",
+                        item_type="transcription",
+                        item_id=bvid,
+                        data={
+                            "uid": uid, "bvid": bvid,
+                            "pages_done": page_idx + 1,
+                            "pages_total": len(pages),
+                        },
+                    )
 
             result = {
                 "bvid": bvid,
@@ -670,6 +703,9 @@ class _AudioMixin:
                     "cache_hits": int(total_cache_hits),
                     "fresh_segments": int(total_fresh_segments),
                     "high_risk_segment_skips": int(total_high_risk_segment_skips),
+                    "length_truncated_segment_skips": int(
+                        total_length_truncated_segment_skips
+                    ),
                 },
             }
             # Bvid completed successfully — drop its resume cache.  We only

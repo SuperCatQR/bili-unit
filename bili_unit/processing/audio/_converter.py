@@ -19,8 +19,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +33,24 @@ from ._vad import detect_speech_segments, pick_split_points
 logger = logging.getLogger("bili.processing.audio.converter")
 
 _FFMPEG_TIMEOUT = 300  # 5 minutes per invocation
+
+
+def _subprocess_kwargs() -> dict:
+    """OS-specific Popen flags so ffmpeg children die with the parent.
+
+    Windows: CREATE_NEW_PROCESS_GROUP keeps Ctrl-C from propagating but
+    importantly creates a *new* process group we can kill cleanly via the
+    handle.  We also use a Job Object via psutil if available — but to keep
+    the dependency surface tiny, we settle for explicit ``proc.kill()`` in
+    a try/finally on the caller side, which we do already on TimeoutError.
+    The remaining concrete leak comes from ``asyncio.wait_for`` cancelling
+    the awaiting task while the subprocess is still alive — handled below.
+    """
+    import sys
+    if sys.platform == "win32":
+        import subprocess
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
 
 
 @dataclass(frozen=True)
@@ -114,19 +134,30 @@ async def convert_m4s_to_mp3(
     ]
     logger.debug("convert_m4s_to_mp3", extra={"cmd": " ".join(cmd)})
 
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **_subprocess_kwargs(),
+    )
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         _, stderr = await asyncio.wait_for(
             proc.communicate(), timeout=_FFMPEG_TIMEOUT,
         )
     except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
         raise ConvertError(
             f"ffmpeg conversion timed out after {_FFMPEG_TIMEOUT}s: {inp}"
         ) from None
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        raise
 
     if proc.returncode != 0:
         raise ConvertError(
@@ -181,19 +212,30 @@ async def convert_and_segment(
         extra={"cmd": " ".join(cmd), "segment_seconds": segment_seconds},
     )
 
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **_subprocess_kwargs(),
+    )
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         _, stderr = await asyncio.wait_for(
             proc.communicate(), timeout=_FFMPEG_TIMEOUT,
         )
     except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
         raise ConvertError(
             f"ffmpeg segmentation timed out after {_FFMPEG_TIMEOUT}s: {inp}"
         ) from None
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        raise
 
     if proc.returncode != 0:
         raise ConvertError(
@@ -252,20 +294,31 @@ async def convert_at_points(
             "-q:a", "9",
             str(out_path),
         ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **_subprocess_kwargs(),
+        )
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
             _, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=_FFMPEG_TIMEOUT,
             )
         except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
             raise ConvertError(
                 f"ffmpeg trim timed out after {_FFMPEG_TIMEOUT}s "
                 f"({start_s:.1f}-{end_s:.1f}): {inp}"
             ) from None
+        except BaseException:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            raise
         if proc.returncode != 0:
             raise ConvertError(
                 f"ffmpeg trim failed (rc={proc.returncode}) "
@@ -452,6 +505,56 @@ async def convert_single(
         inp, seg_dir, segment_seconds, ffmpeg_setting,
     )
     return _fixed_segment_ranges(paths, segment_seconds, duration_seconds)
+
+
+def cleanup_orphan_temp_dirs(
+    temp_root: Path,
+    *,
+    max_age_seconds: float = 600.0,
+) -> int:
+    """Remove stale ``full.mp3`` files left by a previously killed ffmpeg process.
+
+    Walks ``{temp_root}/**/mp3_*/full.mp3`` and removes any file that:
+    - has no sibling ``segments/`` subdirectory (i.e. the segmentation step
+      never completed, so the mp3 is an orphan from a partial run), AND
+    - has an mtime older than ``max_age_seconds`` (guards against racing with a
+      currently running conversion).
+
+    Returns the number of files successfully deleted.
+
+    Handles a missing *temp_root* gracefully (returns 0).  Individual
+    ``OSError``\\s (file held open by another process) are caught and logged as
+    warnings; the count reflects only files that were actually removed.
+    """
+    if not temp_root.exists():
+        return 0
+
+    deleted = 0
+    cutoff = time.time() - max_age_seconds
+
+    for full_mp3 in temp_root.glob("**/mp3_*/full.mp3"):
+        try:
+            # Skip if a sibling segments/ directory exists — the in-progress
+            # run already advanced past the full.mp3 stage.
+            if (full_mp3.parent / "segments").exists():
+                continue
+            stat = full_mp3.stat()
+            if stat.st_mtime >= cutoff:
+                continue  # too recent — may be actively converting
+            full_mp3.unlink(missing_ok=True)
+            deleted += 1
+        except OSError as exc:
+            logger.warning(
+                "orphan_full_mp3_unlink_failed",
+                extra={"path": str(full_mp3), "error": str(exc)},
+            )
+
+    if deleted > 0:
+        logger.info(
+            "orphan_full_mp3_cleaned",
+            extra={"count": deleted, "temp_root": str(temp_root)},
+        )
+    return deleted
 
 
 def _fixed_segment_ranges(

@@ -1634,3 +1634,48 @@ async def test_resume_with_explicit_endpoints_does_not_resume_old_endpoint_set(
         assert json.loads(payload_json)["endpoints"] == ["user_info"]
     finally:
         await ctx.close()
+
+
+async def test_pagination_loop_with_total_mismatch_reports_error(tmp_path: Path):
+    """When pagination loops with expected_total > fetched_count, level=ERROR."""
+    ctx, store = await _open_store(tmp_path, 303)
+    try:
+        async def fake_fetch(uid, spec, credential, request_params, **kw):
+            pn = request_params.get("pn", 1)
+            # page.count claims 100 archives total, but server keeps returning pn=2.
+            if pn == 1:
+                return FetchPageResult(
+                    uid=uid, endpoint="videos",
+                    raw_payload={
+                        "list": {"vlist": [{"bvid": "BV1"}]},
+                        "page": {"count": 100, "pn": 1, "ps": 30},
+                    },
+                    is_last_page=False, next_request={"pn": 2, "ps": 30},
+                )
+            return FetchPageResult(
+                uid=uid, endpoint="videos",
+                raw_payload={
+                    "list": {"vlist": [{"bvid": "BV2"}]},
+                    "page": {"count": 100, "pn": 2, "ps": 30},
+                },
+                is_last_page=False, next_request={"pn": 2, "ps": 30},
+            )
+
+        runner = _runner(
+            store, _settings(tmp_path),
+            fetch_fn=AsyncMock(side_effect=fake_fetch),
+            reporter=_reporter(ctx, 303, mode="full", endpoints=["videos"]),
+        )
+        await runner.run_task(303, endpoints=["videos"])
+
+        events = await _list_stage_events(ctx)
+        loop_event = next(
+            event for event in events
+            if event["event"] == "fetch.endpoint.pagination_loop_detected"
+        )
+        assert loop_event["level"] == "ERROR"
+        assert loop_event["data"]["mismatch"] is True
+        assert loop_event["data"]["expected_total"] == 100
+        assert loop_event["data"]["fetched_count"] == 2
+    finally:
+        await ctx.close()

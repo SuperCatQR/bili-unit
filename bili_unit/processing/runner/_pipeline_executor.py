@@ -93,6 +93,8 @@ class ItemPersistence(Protocol):
         store: ProcessingStore,
         ctx: ItemRetryContext,
         record: dict[str, Any],
+        *,
+        error: Exception | None = None,
     ) -> None: ...
 
     async def save_success(
@@ -136,7 +138,12 @@ class AudioItemPersistence:
         store: ProcessingStore,
         ctx: ItemRetryContext,
         record: dict[str, Any],
+        *,
+        error: Exception | None = None,
     ) -> None:
+        if error is not None:
+            from ._audio_work import audio_failure_category  # noqa: PLC0415
+            record = {**record, "failure_category": audio_failure_category(error)}
         await store.save_audio_transcription(
             ctx.item_id,
             status="failed",
@@ -244,7 +251,7 @@ async def run_item_with_retry(
                 ctx, ProcessingItemStatus.FAILED.value, None, now,
                 retry_count=outcome.attempt,
             )
-            await persistence.save_failure(store, ctx, record)
+            await persistence.save_failure(store, ctx, record, error=exc)
             return None
 
         # Final failure: PERMANENT or RETRYABLE-exhausted.
@@ -285,7 +292,7 @@ async def run_item_with_retry(
             ctx, ProcessingItemStatus.FAILED.value, None, now,
             retry_count=outcome.attempt if outcome.attempt > 1 else 0,
         )
-        await persistence.save_failure(store, ctx, record)
+        await persistence.save_failure(store, ctx, record, error=exc)
         return None
 
     policy = RetryPolicy(

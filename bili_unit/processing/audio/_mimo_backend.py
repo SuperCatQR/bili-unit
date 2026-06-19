@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 
-from .. import ASRAPIError, ASRConfigError, ASRConnectionError, EmptyTranscriptError
+from .. import ASRAPIError, ASRConfigError, ASRConnectionError, EmptyTranscriptError, LengthTruncatedError
 from ._asr_backend import ASRResult
 
 if TYPE_CHECKING:
@@ -136,11 +136,17 @@ class MimoASRBackend:
         audio_data: bytes,
         mime_type: str = "audio/mp3",
         language: str = "auto",
+        *,
+        max_completion_tokens: int | None = None,
     ) -> ASRResult:
         """Transcribe audio via MiMo ASR API.
 
         Builds the ``input_audio`` content part with a base64 data URI
         and maps the response to :class:`ASRResult`.
+
+        ``max_completion_tokens`` overrides the instance default for this call
+        only; pass it from the runner's doubling logic without touching the
+        instance state.
         """
         if not self._api_key:
             raise ASRConfigError(
@@ -169,12 +175,14 @@ class MimoASRBackend:
             ],
             "asr_options": {"language": language},
         }
-        # Cap completion tokens when configured.  Default OpenAI-style is
-        # 2048 which steals headroom from the 8192-token context for long
-        # audio inputs.  Setting it lower (e.g. 1024) buys ~1024 more tokens
-        # for input audio.
-        if self._max_completion_tokens is not None:
-            payload["max_tokens"] = self._max_completion_tokens
+        # Per-call override takes precedence over instance default.
+        effective_max_tokens = (
+            max_completion_tokens
+            if max_completion_tokens is not None
+            else self._max_completion_tokens
+        )
+        if effective_max_tokens is not None:
+            payload["max_tokens"] = effective_max_tokens
         headers = self._build_headers()
 
         url = f"{self._base_url}/chat/completions"
@@ -215,7 +223,7 @@ class MimoASRBackend:
             ) from exc
         finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
         if finish_reason == "length":
-            raise ASRAPIError(
+            raise LengthTruncatedError(
                 "MiMo ASR response was truncated by max_tokens; reduce "
                 "BILI_PROCESSING_ASR_MAX_SEGMENT_SECONDS or raise "
                 "BILI_PROCESSING_ASR_MAX_COMPLETION_TOKENS."

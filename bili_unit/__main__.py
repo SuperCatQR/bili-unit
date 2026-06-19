@@ -425,6 +425,13 @@ def main() -> None:
         log_file=Path(args.log_file) if args.log_file else None,
     )
 
+    import sys
+    if sys.platform == "win32":
+        # Proactor's __del__ logs noisy ConnectionResetError tracebacks during
+        # interpreter shutdown when aiohttp transports outlive the loop.
+        # Selector loop has none of that and is fine for our workload (no UDP).
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     handlers = {
         "fetch": _handle_fetch,
         "asr": _handle_asr,

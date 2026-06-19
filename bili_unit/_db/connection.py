@@ -96,6 +96,10 @@ class Connection:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
+        # busy_timeout makes a writer block until the WAL lock is free instead of
+        # returning SQLITE_BUSY immediately. 5 s is enough headroom for any
+        # legitimate writer; readers don't take this lock so they're unaffected.
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     def _apply_ddl_and_seed(self) -> None:

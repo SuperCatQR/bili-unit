@@ -108,6 +108,20 @@ uv run ruff check                                  # lint
 | 运行状态 | [docs/observability.md](docs/observability.md) | run events、Run Summary、TUI 读模型 |
 | 上游 API | [docs/upstream.md](docs/upstream.md) | bilibili-api-python 的角色、链接与维护规则 |
 
+## External monitoring
+
+bili_unit's writers use SQLite WAL with a 5-second busy_timeout, so reads
+from external scripts (your TUI, custom dashboards, etc.) don't block
+writers. When opening the DB read-only from another process, set the same
+PRAGMAs to avoid spurious "database is locked" errors during heavy ASR
+runs:
+
+```python
+conn = sqlite3.connect(path, timeout=10)
+conn.execute("PRAGMA journal_mode = WAL")
+conn.execute("PRAGMA busy_timeout = 5000")
+```
+
 ## 许可与依赖
 
 本项目以 **GPL-3.0-only** 许可发行（见 [LICENSE](LICENSE)）。

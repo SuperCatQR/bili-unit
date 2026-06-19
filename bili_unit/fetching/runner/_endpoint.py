@@ -15,7 +15,7 @@ from .. import (
     Http412Error,
     ResourceUnavailableError,
 )
-from .._adapter_core import extract_total_count
+from .._adapter_core import extract_list_items, extract_total_count
 from .._endpoint_spec import EndpointSpec
 from ._failure import (
     FetchFailureState,
@@ -327,14 +327,29 @@ class _EndpointMixin:
             reporter = getattr(self, "_reporter", None)
             if reporter is None:
                 return
+            expected_total = 0
+            for page_payload in (*pages_this_run, *stored_pages):
+                if isinstance(page_payload, dict):
+                    value = extract_total_count(page_payload)
+                    if value > 0:
+                        expected_total = int(value)
+                        break
+            fetched_count = 0
+            for page_payload in pages_this_run:
+                if isinstance(page_payload, dict):
+                    fetched_count += len(extract_list_items(page_payload, spec.items_path))
+            mismatch = expected_total > 0 and fetched_count < expected_total
             await reporter.emit(
                 "fetch.endpoint.pagination_loop_detected",
                 stage="fetching",
-                level="WARNING",
+                level="ERROR" if mismatch else "WARNING",
                 endpoint=ep_name,
                 data={
                     "request_params": params,
                     "page_count": len(pages_this_run),
+                    "expected_total": expected_total,
+                    "fetched_count": fetched_count,
+                    "mismatch": mismatch,
                 },
             )
 

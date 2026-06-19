@@ -41,3 +41,6 @@ error/
 
 # Pytest tmp_path artifacts (created when tests fail to clean up)
 .pytest-tmp/
+
+# Local runtime logs (e.g. ad-hoc monitoring scripts under tools/)
+logs/

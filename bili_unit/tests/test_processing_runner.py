@@ -1075,6 +1075,235 @@ async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path):
     assert not (tmp_path / "proc-asr-cache").exists()
 
 
+# ---------- A2: max_tokens doubling helper exercised end-to-end --------------
+
+@pytest.mark.asyncio
+async def test_transcribe_segment_with_token_doubling_grows_until_success():
+    """The doubling helper grows max_completion_tokens 1024→2048→4096→8192 on length truncation."""
+    from bili_unit.processing import LengthTruncatedError
+    from bili_unit.processing.audio import ASRResult, Mp3Segment
+    from bili_unit.processing.runner._audio_work import (
+        _transcribe_segment_with_token_doubling,
+    )
+
+    captured: list[int | None] = []
+
+    class _RecordingBackend:
+        model = "mock-asr"
+        cache_namespace = "mock"
+
+        async def transcribe(self, audio_data, *, mime_type="audio/mp3",
+                             language="auto", max_completion_tokens=None):
+            captured.append(max_completion_tokens)
+            # First three attempts (1024/2048/4096) return length-truncated;
+            # the cap (8192) succeeds.
+            if max_completion_tokens is not None and max_completion_tokens < 8192:
+                raise LengthTruncatedError("truncated")
+            return ASRResult(text="ok", duration=10.0, model="mock-asr")
+
+        async def close(self):
+            pass
+
+    seg = Mp3Segment(Path("/tmp/seg.mp3"), 0.0, 10.0)
+    # patch read_bytes to avoid real I/O
+    with patch.object(Path, "read_bytes", return_value=b"\x00" * 8):
+        out = await _transcribe_segment_with_token_doubling(
+            _RecordingBackend(),
+            asr_cache=None,
+            page_cache=None,
+            seg=seg,
+            asr_language="auto",
+            initial_max_tokens=1024,
+            max_tokens_cap=8192,
+            rate_limit_max_attempts=1,
+            rate_limit_retry_delays=(0.0,),
+        )
+
+    assert captured == [1024, 2048, 4096, 8192]
+    assert out["text"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_segment_token_doubling_exhausts_at_cap():
+    """When the cap is still length-truncated, helper re-raises LengthTruncatedError."""
+    from bili_unit.processing import LengthTruncatedError
+    from bili_unit.processing.audio import Mp3Segment
+    from bili_unit.processing.runner._audio_work import (
+        _transcribe_segment_with_token_doubling,
+    )
+
+    class _AlwaysTruncatedBackend:
+        model = "mock-asr"
+        cache_namespace = "mock"
+
+        async def transcribe(self, audio_data, *, mime_type="audio/mp3",
+                             language="auto", max_completion_tokens=None):
+            raise LengthTruncatedError("truncated")
+
+        async def close(self):
+            pass
+
+    seg = Mp3Segment(Path("/tmp/seg.mp3"), 0.0, 10.0)
+    with (
+        patch.object(Path, "read_bytes", return_value=b"\x00" * 8),
+        pytest.raises(LengthTruncatedError),
+    ):
+        await _transcribe_segment_with_token_doubling(
+            _AlwaysTruncatedBackend(),
+            asr_cache=None,
+            page_cache=None,
+            seg=seg,
+            asr_language="auto",
+            initial_max_tokens=4096,
+            max_tokens_cap=8192,
+            rate_limit_max_attempts=1,
+            rate_limit_retry_delays=(0.0,),
+        )
+
+
+# ---------- C2: asr.segment.progress + asr.item.progress events --------------
+
+@pytest.mark.asyncio
+async def test_audio_emits_segment_and_item_progress_events(tmp_path):
+    """Per-segment progress + per-page item progress events fire in order."""
+    from bili_unit.processing.audio import ASRResult, Mp3Segment
+
+    s = _make_settings(tmp_path)
+    uid = 1100
+    bvid = "BVprogress"
+    await _seed_video_pages(s, uid, [bvid])
+
+    mock_dl = AsyncMock()
+    mock_dl.get_audio_url = AsyncMock(return_value={"url": "https://cdn/x", "duration": 60.0})
+    mock_dl.download_to_file = AsyncMock()
+
+    # Two source-timeline segments → two asr.segment.progress events.
+    segs = [
+        Mp3Segment(tmp_path / "s0.mp3", 0.0, 30.0),
+        Mp3Segment(tmp_path / "s1.mp3", 30.0, 60.0),
+    ]
+    for s_path in segs:
+        s_path.path.write_bytes(b"x")
+    mock_convert = AsyncMock(return_value=segs)
+
+    mock_asr = AsyncMock()
+    mock_asr.transcribe = AsyncMock(return_value=ASRResult(text="ok", duration=30.0, model="m"))
+    mock_asr.model = "m"
+    mock_asr.close = AsyncMock()
+
+    cmd = ProcessingCommand(
+        s,
+        asr_backend=mock_asr,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+    result = await cmd.process_uid(uid)
+    assert result.status == ProcessingTaskStatus.SUCCESS
+    await cmd.close()
+
+    events = await _list_stage_events(s, uid)
+    seg_progress = [e for e in events if e["event"] == "asr.segment.progress"]
+    item_progress = [e for e in events if e["event"] == "asr.item.progress"]
+
+    assert len(seg_progress) == 2
+    assert [e["data"]["segments_done"] for e in seg_progress] == [1, 2]
+    assert all(e["data"]["segments_total"] == 2 for e in seg_progress)
+    assert all(e["item_id"] == bvid for e in seg_progress)
+
+    # One page → one item.progress with pages_done=1, pages_total=1.
+    assert len(item_progress) == 1
+    assert item_progress[0]["data"] == {
+        "uid": uid, "bvid": bvid, "pages_done": 1, "pages_total": 1,
+    }
+
+
+# ---------- C3: failure_category persisted in audio_transcription.payload ----
+
+@pytest.mark.asyncio
+async def test_audio_max_tokens_failure_records_failure_category(tmp_path):
+    """When ASR fails with LengthTruncatedError after retries, payload carries failure_category='max_tokens'."""
+    from bili_unit.processing import LengthTruncatedError
+    from bili_unit.processing.audio import Mp3Segment
+
+    # max_retries=1 (so 2 attempts total) keeps the test fast.
+    s = _make_settings(tmp_path, max_retries=1, retry_delays="0")
+    uid = 1101
+    bvid = "BVtrunc"
+    await _seed_video_pages(s, uid, [bvid])
+
+    mock_dl = AsyncMock()
+    mock_dl.get_audio_url = AsyncMock(return_value={"url": "https://cdn/x", "duration": 30.0})
+    mock_dl.download_to_file = AsyncMock()
+
+    seg = Mp3Segment(tmp_path / "trunc.mp3", 0.0, 30.0)
+    seg.path.write_bytes(b"x")
+    mock_convert = AsyncMock(return_value=[seg])
+
+    mock_asr = AsyncMock()
+    # Disable high_risk_split_enabled so split path doesn't kick in;
+    # min_segment_seconds=10 + segment is 30s so it'd otherwise split forever.
+    s.bili_processing_asr_high_risk_split_enabled = False
+    mock_asr.transcribe = AsyncMock(side_effect=LengthTruncatedError("truncated"))
+    mock_asr.model = "mock-asr"
+    mock_asr.close = AsyncMock()
+
+    cmd = ProcessingCommand(
+        s,
+        asr_backend=mock_asr,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+    result = await cmd.process_uid(uid)
+    assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
+    await cmd.close()
+
+    items = await _list_audio_items(s, uid)
+    assert len(items) == 1
+    assert items[0]["status"] == "failed"
+    assert items[0]["payload"]["failure_category"] == "max_tokens"
+
+
+@pytest.mark.asyncio
+async def test_audio_network_failure_records_failure_category_network(tmp_path):
+    """ASRConnectionError → failure_category='network' in saved payload."""
+    from bili_unit.processing import ASRConnectionError
+    from bili_unit.processing.audio import Mp3Segment
+
+    s = _make_settings(tmp_path, max_retries=1, retry_delays="0")
+    uid = 1102
+    bvid = "BVnet"
+    await _seed_video_pages(s, uid, [bvid])
+
+    mock_dl = AsyncMock()
+    mock_dl.get_audio_url = AsyncMock(return_value={"url": "https://cdn/x", "duration": 30.0})
+    mock_dl.download_to_file = AsyncMock()
+
+    seg = Mp3Segment(tmp_path / "net.mp3", 0.0, 30.0)
+    seg.path.write_bytes(b"x")
+    mock_convert = AsyncMock(return_value=[seg])
+
+    mock_asr = AsyncMock()
+    mock_asr.transcribe = AsyncMock(side_effect=ASRConnectionError("conn refused"))
+    mock_asr.model = "mock-asr"
+    mock_asr.close = AsyncMock()
+
+    cmd = ProcessingCommand(
+        s,
+        asr_backend=mock_asr,
+        credential_provider=AsyncMock(return_value=None),
+        downloader_factory=lambda credential=None: mock_dl,
+        convert_fn=mock_convert,
+    )
+    result = await cmd.process_uid(uid)
+    assert result.status == ProcessingTaskStatus.FAILED_PERMANENT
+    await cmd.close()
+
+    items = await _list_audio_items(s, uid)
+    assert items[0]["payload"]["failure_category"] == "network"
+
+
 # NOTE: the legacy ``test_processing_video_full_view_legacy_placeholder`` skip
 # stub (which referenced the deleted ``BiliQuery``/``ProcessingQuery`` surface)
 # was dropped in the Phase 6 rewrite. Aggregate-view assertions now live in

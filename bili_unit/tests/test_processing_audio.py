@@ -1164,3 +1164,168 @@ async def test_audio_downloader_timeout_set():
 
     assert len(captured_timeout) == 1
     assert captured_timeout[0].total == 42
+
+
+# ---------- cleanup_orphan_temp_dirs ----------------------------------------
+
+def test_cleanup_orphan_temp_dirs_removes_lone_full_mp3(tmp_path):
+    """A full.mp3 with no sibling 'segments' dir and old mtime is removed."""
+    import os
+    import time
+
+    from bili_unit.processing.audio._converter import cleanup_orphan_temp_dirs
+
+    temp_root = tmp_path / "asr_temp"
+    orphan = temp_root / "uid1" / "audio" / "BV1" / "mp3_0" / "full.mp3"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_bytes(b"x")
+    # Backdate mtime past the threshold.
+    old = time.time() - 3600
+    os.utime(orphan, (old, old))
+
+    n = cleanup_orphan_temp_dirs(temp_root, max_age_seconds=10.0)
+    assert n == 1
+    assert not orphan.exists()
+
+
+def test_cleanup_orphan_temp_dirs_keeps_recent_or_in_progress(tmp_path):
+    """Recent full.mp3 OR a full.mp3 with sibling 'segments/' is kept."""
+    import os
+    import time
+
+    from bili_unit.processing.audio._converter import cleanup_orphan_temp_dirs
+
+    temp_root = tmp_path / "asr_temp"
+
+    fresh = temp_root / "uid1" / "audio" / "BV1" / "mp3_0" / "full.mp3"
+    fresh.parent.mkdir(parents=True)
+    fresh.write_bytes(b"x")  # current mtime — under threshold
+
+    in_progress = temp_root / "uid1" / "audio" / "BV2" / "mp3_0" / "full.mp3"
+    in_progress.parent.mkdir(parents=True)
+    in_progress.write_bytes(b"x")
+    (in_progress.parent / "segments").mkdir()
+    old = time.time() - 3600
+    os.utime(in_progress, (old, old))
+
+    n = cleanup_orphan_temp_dirs(temp_root, max_age_seconds=60.0)
+    assert n == 0
+    assert fresh.exists()
+    assert in_progress.exists()
+
+
+def test_cleanup_orphan_temp_dirs_missing_root_returns_zero(tmp_path):
+    """Non-existent temp root returns 0 without raising."""
+    from bili_unit.processing.audio._converter import cleanup_orphan_temp_dirs
+    assert cleanup_orphan_temp_dirs(tmp_path / "does_not_exist") == 0
+
+
+# ---------- A2: LengthTruncatedError + per-call max_tokens override ----------
+
+def test_mimo_backend_raises_length_truncated_error_on_finish_reason_length():
+    """``finish_reason='length'`` raises the specific ``LengthTruncatedError``.
+
+    Subclass of ``ASRAPIError`` so existing ``except ASRAPIError`` paths keep
+    catching it, but the runner can pivot on the precise type to grow
+    ``max_completion_tokens`` and split.
+    """
+    from bili_unit.processing import ASRAPIError, LengthTruncatedError
+
+    body = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {"content": "partial transcript"},
+            },
+        ],
+        "usage": {
+            "seconds": 180,
+            "prompt_tokens_details": {"audio_tokens": 1000},
+        },
+        "model": "mimo-v2.5-asr",
+    }
+
+    with pytest.raises(LengthTruncatedError, match="truncated"):
+        MimoASRBackend._parse_response(body, language="auto")
+    # Subclass relationship — generic ASRAPIError handlers still catch it.
+    assert issubclass(LengthTruncatedError, ASRAPIError)
+
+
+@pytest.mark.asyncio
+async def test_mimo_backend_per_call_max_tokens_override():
+    """Passing ``max_completion_tokens`` to ``transcribe`` overrides the instance default."""
+    backend = MimoASRBackend(
+        api_key="tp-test-key",
+        max_completion_tokens=1024,  # instance default
+    )
+
+    captured: dict = {}
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {"seconds": 1},
+        "model": "mimo-v2.5-asr",
+    })
+    mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+    def fake_post(url, json=None, headers=None):  # noqa: ARG001
+        captured["payload"] = json
+        return mock_resp
+
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(side_effect=fake_post)
+    mock_session.closed = False
+
+    with patch.object(backend, "_get_session", new=AsyncMock(return_value=mock_session)):
+        await backend.transcribe(
+            b"\x00" * 16,
+            mime_type="audio/mp3",
+            max_completion_tokens=4096,  # per-call override
+        )
+
+    assert captured["payload"]["max_tokens"] == 4096
+
+
+# ---------- A2: _doubling_attempts pure helper -------------------------------
+
+def test_doubling_attempts_helper():
+    from bili_unit.processing.runner._audio_work import _doubling_attempts
+
+    assert _doubling_attempts(1024, 8192) == [1024, 2048, 4096, 8192]
+    assert _doubling_attempts(2048, 8192) == [2048, 4096, 8192]
+    # When start equals cap, single attempt at the cap.
+    assert _doubling_attempts(8192, 8192) == [8192]
+    # When start exceeds cap, cap is honoured (single attempt at the cap).
+    assert _doubling_attempts(16384, 8192) == [8192]
+    # Non-positive inputs return empty (no attempts) so the caller raises.
+    assert _doubling_attempts(0, 8192) == []
+    assert _doubling_attempts(1024, 0) == []
+
+
+# ---------- C3: audio_failure_category ---------------------------------------
+
+def test_audio_failure_category_covers_each_branch():
+    from bili_unit.processing import (
+        ASRAPIError,
+        ASRConnectionError,
+        EmptyTranscriptError,
+        LengthTruncatedError,
+    )
+    from bili_unit.processing.runner._audio_work import audio_failure_category
+
+    assert audio_failure_category(LengthTruncatedError("x")) == "max_tokens"
+    assert audio_failure_category(ASRConnectionError("net down")) == "network"
+    # rate-limit detection runs against the message text on ASRAPIError.
+    assert audio_failure_category(ASRAPIError("MiMo ASR returned 429: too many requests")) == "rate_limit"
+    assert audio_failure_category(ASRAPIError("rate limit exceeded")) == "rate_limit"
+    # high-risk detection ditto.
+    assert audio_failure_category(ASRAPIError("considered high risk")) == "high_risk"
+    # empty transcript via the dedicated exception.
+    assert audio_failure_category(EmptyTranscriptError("nothing said")) == "empty"
+    # Generic ASRAPIError that doesn't match a known pattern → parse_error.
+    assert audio_failure_category(ASRAPIError("malformed JSON")) == "parse_error"
+    # Anything else → unknown.
+    assert audio_failure_category(RuntimeError("boom")) == "unknown"

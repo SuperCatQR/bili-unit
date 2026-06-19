@@ -18,10 +18,17 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import ASRAPIError, EmptyTranscriptError
+from .. import ASRAPIError, EmptyTranscriptError, LengthTruncatedError
 from ..audio._asr_cache import ASRCacheStore, CachedSegment
 from ..audio._converter import Mp3Segment, convert_at_points
 from ..audio._stitch import stitch_transcripts
+
+# Default ceiling for the per-segment max_completion_tokens doubling loop.
+# Mirrors the user-tunable ``bili_processing_asr_max_completion_tokens``
+# setting; keeping a module-level fallback lets callers (and tests) build
+# a high-risk-fallback flow without threading the env-derived value through
+# every helper signature.
+_DEFAULT_MAX_COMPLETION_TOKENS_CAP = 8192
 
 if TYPE_CHECKING:
     from ..._env import BiliSettings
@@ -105,6 +112,8 @@ async def audio_transcribe_page(
     rate_limit_retry_delays: tuple[float, ...] = (10.0, 30.0, 60.0),
     ffmpeg_setting: str = "auto",
     reporter: RunReporter | None = None,
+    initial_max_tokens: int = _DEFAULT_MAX_COMPLETION_TOKENS_CAP,
+    max_tokens_cap: int = _DEFAULT_MAX_COMPLETION_TOKENS_CAP,
 ) -> dict[str, Any]:
     """Run ASR on each segment, threading results through the resume cache.
 
@@ -140,8 +149,9 @@ async def audio_transcribe_page(
     fresh_segment_count: int = 0
     empty_segment_skips: int = 0
     high_risk_segment_skips: int = 0
+    length_truncated_segment_skips: int = 0
 
-    for seg in segments:
+    for idx, seg in enumerate(segments):
         cached: CachedSegment | None = (
             asr_cache.find(
                 page_cache,
@@ -170,6 +180,21 @@ async def audio_transcribe_page(
                 "duration": cached.duration,
                 "model": cached.model,
             })
+            if reporter is not None:
+                await reporter.emit(
+                    "asr.segment.progress",
+                    stage="asr",
+                    pipeline="audio",
+                    item_type="transcription",
+                    item_id=bvid,
+                    data={
+                        "uid": uid, "bvid": bvid, "page_index": page_index,
+                        "segments_done": idx + 1,
+                        "segments_total": len(segments),
+                        "cache_hits": cache_hits,
+                        "fresh_segment_count": fresh_segment_count,
+                    },
+                )
             continue
 
         seg_results = await _transcribe_segment_with_high_risk_fallback(
@@ -189,6 +214,8 @@ async def audio_transcribe_page(
             uid=uid,
             bvid=bvid,
             page_index=page_index,
+            initial_max_tokens=int(initial_max_tokens),
+            max_tokens_cap=int(max_tokens_cap),
         )
         for item in seg_results:
             segment_texts.append(item["text"])
@@ -196,6 +223,8 @@ async def audio_transcribe_page(
                 empty_segment_skips += 1
             elif item.get("high_risk_skip"):
                 high_risk_segment_skips += 1
+            elif item.get("length_truncated_skip"):
+                length_truncated_segment_skips += 1
             elif item.get("cache_hit"):
                 cache_hits += 1
             else:
@@ -223,7 +252,26 @@ async def audio_transcribe_page(
                     "high_risk_skip": True,
                     "error": item.get("error"),
                 } if item.get("high_risk_skip") else {}),
+                **({
+                    "length_truncated_skip": True,
+                    "error": item.get("error"),
+                } if item.get("length_truncated_skip") else {}),
             })
+        if reporter is not None:
+            await reporter.emit(
+                "asr.segment.progress",
+                stage="asr",
+                pipeline="audio",
+                item_type="transcription",
+                item_id=bvid,
+                data={
+                    "uid": uid, "bvid": bvid, "page_index": page_index,
+                    "segments_done": idx + 1,
+                    "segments_total": len(segments),
+                    "cache_hits": cache_hits,
+                    "fresh_segment_count": fresh_segment_count,
+                },
+            )
 
     if cache_hits > 0:
         logger.info(
@@ -253,6 +301,7 @@ async def audio_transcribe_page(
         "fresh_segment_count": fresh_segment_count,
         "empty_segment_skips": empty_segment_skips,
         "high_risk_segment_skips": high_risk_segment_skips,
+        "length_truncated_segment_skips": length_truncated_segment_skips,
     }
 
 
@@ -293,6 +342,10 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     )
 
 
+def _is_length_truncated_error(exc: Exception) -> bool:
+    return isinstance(exc, LengthTruncatedError)
+
+
 def _skipped_segment(
     seg: Mp3Segment,
     *,
@@ -312,6 +365,9 @@ def _skipped_segment(
         item["empty_skip"] = True
     elif reason == "high_risk":
         item["high_risk_skip"] = True
+        item["error"] = str(error) if error is not None else None
+    elif reason == "length_truncated":
+        item["length_truncated_skip"] = True
         item["error"] = str(error) if error is not None else None
     return item
 
@@ -334,17 +390,47 @@ def _split_segment_ranges(
     ]
 
 
+def _doubling_attempts(start: int, cap: int) -> list[int]:
+    """Return [start, 2*start, 4*start, ..., cap] capped at cap, starting at start.
+
+    If start >= cap, returns [cap] (single attempt at the cap).
+    """
+    if start <= 0 or cap <= 0:
+        return []
+    if start >= cap:
+        return [cap]
+    out: list[int] = []
+    cur = start
+    while cur < cap:
+        out.append(cur)
+        cur *= 2
+    out.append(cap)
+    return out
+
+
 async def _transcribe_segment_once(
     asr_backend: ASRBackend,
     asr_cache: ASRCacheStore | None,
     page_cache: Any,
     seg: Mp3Segment,
     asr_language: str,
+    *,
+    max_completion_tokens_override: int | None = None,
 ) -> dict[str, Any]:
     audio_bytes = seg.path.read_bytes()
-    asr_result = await asr_backend.transcribe(
-        audio_bytes, mime_type="audio/mp3", language=asr_language,
-    )
+    transcribe_kwargs: dict[str, Any] = {
+        "mime_type": "audio/mp3",
+        "language": asr_language,
+    }
+    if max_completion_tokens_override is not None:
+        transcribe_kwargs["max_completion_tokens"] = max_completion_tokens_override
+    try:
+        asr_result = await asr_backend.transcribe(audio_bytes, **transcribe_kwargs)
+    except TypeError:
+        # Backend doesn't accept max_completion_tokens kwarg (e.g. MockASRBackend).
+        # Retry without the override so mock/future backends stay compatible.
+        transcribe_kwargs.pop("max_completion_tokens", None)
+        asr_result = await asr_backend.transcribe(audio_bytes, **transcribe_kwargs)
     if not str(asr_result.text or "").strip():
         raise EmptyTranscriptError(
             "ASR returned empty transcription text; inspect the video manually "
@@ -391,6 +477,7 @@ async def _transcribe_segment_once_with_rate_limit_retry(
     uid: int | None = None,
     bvid: str | None = None,
     page_index: int | None = None,
+    max_completion_tokens_override: int | None = None,
 ) -> dict[str, Any]:
     attempts = max(1, int(max_attempts))
     delays = tuple(max(float(delay), 0.0) for delay in retry_delays) or (0.0,)
@@ -398,6 +485,7 @@ async def _transcribe_segment_once_with_rate_limit_retry(
         try:
             return await _transcribe_segment_once(
                 asr_backend, asr_cache, page_cache, seg, asr_language,
+                max_completion_tokens_override=max_completion_tokens_override,
             )
         except Exception as exc:
             if not _is_rate_limit_error(exc) or attempt >= attempts:
@@ -440,6 +528,78 @@ async def _transcribe_segment_once_with_rate_limit_retry(
     raise ASRAPIError("ASR segment retry exhausted unexpectedly")
 
 
+async def _transcribe_segment_with_token_doubling(
+    asr_backend: ASRBackend,
+    asr_cache: ASRCacheStore | None,
+    page_cache: Any,
+    seg: Mp3Segment,
+    asr_language: str,
+    *,
+    initial_max_tokens: int,
+    max_tokens_cap: int,
+    rate_limit_max_attempts: int,
+    rate_limit_retry_delays: tuple[float, ...],
+    reporter: RunReporter | None = None,
+    uid: int | None = None,
+    bvid: str | None = None,
+    page_index: int | None = None,
+) -> dict[str, Any]:
+    """Run ASR with progressive max_tokens doubling on length truncation."""
+    attempts = _doubling_attempts(int(initial_max_tokens), int(max_tokens_cap))
+    last_exc: Exception | None = None
+    for idx, max_tokens in enumerate(attempts):
+        try:
+            return await _transcribe_segment_once_with_rate_limit_retry(
+                asr_backend, asr_cache, page_cache, seg, asr_language,
+                max_attempts=rate_limit_max_attempts,
+                retry_delays=rate_limit_retry_delays,
+                reporter=reporter,
+                uid=uid,
+                bvid=bvid,
+                page_index=page_index,
+                max_completion_tokens_override=max_tokens,
+            )
+        except Exception as exc:
+            if not _is_length_truncated_error(exc):
+                raise
+            last_exc = exc
+            is_last_attempt = idx == len(attempts) - 1
+            logger.info(
+                "asr_segment_length_truncated",
+                extra={
+                    "segment": str(seg.path),
+                    "start_s": seg.start_s,
+                    "end_s": seg.end_s,
+                    "attempt_max_tokens": max_tokens,
+                    "next_max_tokens": (
+                        attempts[idx + 1] if not is_last_attempt else None
+                    ),
+                    "error": str(exc),
+                },
+            )
+            if reporter is not None:
+                await reporter.emit(
+                    "asr.segment.length_truncated",
+                    stage="asr",
+                    pipeline="audio",
+                    item_type="transcription",
+                    item_id=bvid,
+                    data={
+                        "uid": uid, "bvid": bvid, "page_index": page_index,
+                        "segment": str(seg.path),
+                        "start_s": seg.start_s, "end_s": seg.end_s,
+                        "attempt_max_tokens": max_tokens,
+                        "next_max_tokens": (
+                            attempts[idx + 1] if not is_last_attempt else None
+                        ),
+                        "exhausted": is_last_attempt,
+                    },
+                )
+    # Cap reached and still truncated.  Re-raise so the high-risk-split path
+    # (in _transcribe_segment_with_high_risk_fallback) can split this segment.
+    raise last_exc or ASRAPIError("max_tokens doubling exhausted unexpectedly")
+
+
 async def _transcribe_segment_with_high_risk_fallback(
     asr_backend: ASRBackend,
     asr_cache: ASRCacheStore | None,
@@ -458,14 +618,18 @@ async def _transcribe_segment_with_high_risk_fallback(
     uid: int | None = None,
     bvid: str | None = None,
     page_index: int | None = None,
+    initial_max_tokens: int = _DEFAULT_MAX_COMPLETION_TOKENS_CAP,
+    max_tokens_cap: int = _DEFAULT_MAX_COMPLETION_TOKENS_CAP,
 ) -> list[dict[str, Any]]:
     high_risk_exc: Exception | None = None
     try:
         return [
-            await _transcribe_segment_once_with_rate_limit_retry(
+            await _transcribe_segment_with_token_doubling(
                 asr_backend, asr_cache, page_cache, seg, asr_language,
-                max_attempts=rate_limit_max_attempts,
-                retry_delays=rate_limit_retry_delays,
+                initial_max_tokens=initial_max_tokens,
+                max_tokens_cap=max_tokens_cap,
+                rate_limit_max_attempts=rate_limit_max_attempts,
+                rate_limit_retry_delays=rate_limit_retry_delays,
                 reporter=reporter,
                 uid=uid,
                 bvid=bvid,
@@ -514,11 +678,46 @@ async def _transcribe_segment_with_high_risk_fallback(
         high_risk_exc = exc
         should_split = (
             high_risk_split_enabled
-            and _is_high_risk_error(exc)
+            and (_is_high_risk_error(exc) or _is_length_truncated_error(exc))
             and seg.end_s > seg.start_s
             and (seg.end_s - seg.start_s) > max(float(min_segment_seconds), 0.0)
         )
         if not should_split:
+            if high_risk_split_enabled and _is_length_truncated_error(exc):
+                logger.warning(
+                    "asr_length_truncated_segment_skipped",
+                    extra={
+                        "segment": str(seg.path),
+                        "start_s": seg.start_s,
+                        "end_s": seg.end_s,
+                        "duration_s": seg.end_s - seg.start_s,
+                        "min_segment_seconds": float(min_segment_seconds),
+                    },
+                )
+                if reporter is not None:
+                    await reporter.emit(
+                        "asr.segment.length_truncated_skipped",
+                        stage="asr",
+                        level="WARNING",
+                        pipeline="audio",
+                        item_type="transcription",
+                        item_id=bvid,
+                        data={
+                            "uid": uid,
+                            "bvid": bvid,
+                            "page_index": page_index,
+                            "segment": str(seg.path),
+                            "start_s": seg.start_s,
+                            "end_s": seg.end_s,
+                            "duration_s": seg.end_s - seg.start_s,
+                            "min_segment_seconds": float(min_segment_seconds),
+                            "error": str(exc),
+                        },
+                    )
+                return [{
+                    **_skipped_segment(seg, reason="length_truncated", error=exc),
+                    "model": getattr(asr_backend, "model", ""),
+                }]
             if high_risk_split_enabled and _is_high_risk_error(exc):
                 logger.warning(
                     "asr_high_risk_segment_skipped",
@@ -643,5 +842,29 @@ async def _transcribe_segment_with_high_risk_fallback(
             uid=uid,
             bvid=bvid,
             page_index=page_index,
+            initial_max_tokens=initial_max_tokens,
+            max_tokens_cap=max_tokens_cap,
         ))
     return out
+
+
+def audio_failure_category(exc: Exception) -> str:
+    """Return a coarse failure category string for a bvid-level ASR failure.
+
+    Categories: rate_limit | max_tokens | network | parse_error | high_risk | empty | unknown
+    """
+    from .. import ASRAPIError, ASRConnectionError  # noqa: PLC0415
+
+    if isinstance(exc, LengthTruncatedError):
+        return "max_tokens"
+    if isinstance(exc, ASRConnectionError):
+        return "network"
+    if _is_rate_limit_error(exc):
+        return "rate_limit"
+    if _is_high_risk_error(exc):
+        return "high_risk"
+    if _is_empty_transcript_error(exc):
+        return "empty"
+    if isinstance(exc, ASRAPIError):
+        return "parse_error"
+    return "unknown"

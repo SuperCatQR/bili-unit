@@ -43,12 +43,12 @@ class BiliSettings(BaseSettings):
     # Network / runner config. Storage paths are derived from bili_db_dir above.
     bili_fetching_http_backend: str = "aiohttp"
     bili_fetching_impersonate: str = "chrome131"
-    bili_fetching_global_qps: float = 1.0  # was 0.5 (issue #2)
-    bili_fetching_endpoint_qps: float = 0.5
+    bili_fetching_global_qps: float = 3.0  # was 1.0 (raised after 1678-video field test)
+    bili_fetching_endpoint_qps: float = 1.5  # raised from 0.5 to keep up with 3.0 global QPS
     bili_fetching_request_timeout: float = 30.0
     bili_fetching_max_retries: int = 3
     bili_fetching_retry_delays: str = "30,60,120"
-    bili_fetching_video_detail_qps: float = 0.5
+    bili_fetching_video_detail_qps: float = 1.0  # raised from 0.5 — 412 risk verified low at 1 QPS
     bili_fetching_recovery_cooldown: float = 300.0  # seconds before QPS starts recovering after 412
     bili_fetching_item_concurrency: int = 3  # max parallel item-level fan-out requests
     bili_fetching_refresh_after_days: float = 7.0  # refresh mode: re-fetch items older than N days
@@ -60,7 +60,7 @@ class BiliSettings(BaseSettings):
     bili_processing_temp_dir: str = "output/bili/asr/temp"
 
     # Worker pools
-    bili_processing_audio_workers: int = 2
+    bili_processing_audio_workers: int = 4  # parallel ASR workers; 4 fits MiMo Token Plan budget
     bili_processing_queue_maxsize: int = 16
 
     # Audio (MVP-后批次；MVP 不使用，但留字段以便配置)
@@ -103,22 +103,10 @@ class BiliSettings(BaseSettings):
     bili_processing_asr_cdn_download_timeout_s: int = 600  # 总超时秒数
     bili_processing_asr_cdn_max_size_mb: int = 1024  # CDN 单文件硬上限
 
-    # Token-budget segmentation (root cause for 8192-token MiMo errors).
-    #
-    # MiMo mimo-v2.5-asr has an 8192-token context window.  Audio costs roughly
-    # ~6.5 tokens/sec at 16 kHz mono (measured from real responses:
-    # 134 s audio → 837 audio_tokens; failed 1033 s clip → 6502 tokens).
-    # A single long clip easily exceeds the budget *even though its file size
-    # is well under 10 MB* — so size-based segmentation alone does not protect.
-    #
-    # Strategy: when a clip's estimated input tokens
-    #   ceil(duration_s * tokens_per_second) + reserved overhead
-    # exceeds ``asr_max_input_tokens``, segment to the longest length that
-    # still fits.  Size threshold remains as a fallback for clips with no
-    # known duration.
+    # Default 8192 covers dense long livestreams; the runner halves on length truncation.
     bili_processing_asr_max_input_tokens: int = 5400
     bili_processing_asr_tokens_per_second: float = 6.5
-    bili_processing_asr_max_completion_tokens: int = 1024
+    bili_processing_asr_max_completion_tokens: int = 8192
     # Upper bound for each ASR request's source-audio duration.  The token
     # budget protects MiMo's input context; this separate cap keeps the
     # transcript output small enough to avoid max_tokens truncation.
