@@ -21,7 +21,7 @@ notes, and long per-stage feature notes are intentionally not kept here.
 | [`schema.md`](schema.md) | SQLite tables, views, indexes, and SQL recipes |
 | [`architecture.md`](architecture.md) | module responsibilities and import rules |
 | [`observability.md`](observability.md) | run events, Run Summary, dashboard snapshot |
-| [`endpoint-contract.md`](endpoint-contract.md) | raw payload shapes used by parsing |
+| [`endpoint-contract.md`](endpoint-contract.md) | raw payload shapes per Bilibili endpoint |
 | [`upstream.md`](upstream.md) | `Nemo2011/bilibili-api` role and links |
 
 ## Windows encoding

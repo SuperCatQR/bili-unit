@@ -19,7 +19,7 @@ class TuiState:
     snapshot: DashboardSnapshot | None = None
     selected_index: int = 0
     selected_tab_index: int = 0
-    message: str = "n add uid | r refresh | tab next | s/f/p/a run | d delete | q quit"
+    message: str = "n add uid | r refresh | tab next | f/a run | d delete | q quit"
 
 
 @dataclass(frozen=True)
@@ -288,10 +288,9 @@ def _uid_line(item: UidDashboardSnapshot) -> str:
         return f"{item.uid}  unavailable: {item.read_error}"
     manifest = item.manifest
     videos = manifest.video_count if manifest is not None else 0
-    articles = manifest.article_count if manifest is not None else 0
     asr = manifest.transcribed_count if manifest is not None else 0
     active = ",".join(item.active_stages) if item.active_stages else "-"
-    return f"{item.uid}  videos={videos} articles={articles} asr={asr} active={active}"
+    return f"{item.uid}  videos={videos} asr={asr} active={active}"
 
 
 def _tab_header(selected_index: int) -> str:
@@ -308,8 +307,6 @@ def _tab_lines(item: UidDashboardSnapshot, selected_tab_index: int) -> list[str]
         return _summary_lines(item)
     if tab.id == "fetch":
         return _fetch_lines(item)
-    if tab.id == "parse":
-        return _parse_lines(item)
     if tab.id == "asr":
         return _asr_lines(item)
     if tab.id == "events":
@@ -325,11 +322,10 @@ def _summary_lines(item: UidDashboardSnapshot) -> list[str]:
     lines: list[str] = []
     if manifest is not None:
         lines.append(
-            "content: "
-            f"videos={manifest.video_count} "
-            f"articles={manifest.article_count} "
-            f"opus={manifest.opus_count} "
-            f"dynamics={manifest.dynamic_count}",
+            "raw: "
+            f"endpoints={manifest.endpoint_count} "
+            f"rows={manifest.raw_payload_count} "
+            f"videos={manifest.video_count}",
         )
         lines.append(
             "asr: "
@@ -343,7 +339,6 @@ def _summary_lines(item: UidDashboardSnapshot) -> list[str]:
         lines.append(
             "stage: "
             f"fetch={summary.fetch.status or '-'} "
-            f"parse={summary.parse.status or '-'} "
             f"asr={summary.asr.status or '-'}",
         )
     return lines or ["no status"]
@@ -360,22 +355,6 @@ def _fetch_lines(item: UidDashboardSnapshot) -> list[str]:
         progress = endpoint.item_progress or endpoint.progress or {}
         suffix = f" {progress}" if progress else ""
         lines.append(f"{endpoint.endpoint}: {endpoint.status}{suffix}")
-    return lines
-
-
-def _parse_lines(item: UidDashboardSnapshot) -> list[str]:
-    summary = item.run_summary
-    if summary is None:
-        return ["no parse summary"]
-    if not summary.parse.models:
-        return [f"status={summary.parse.status or '-'}", "no model rows"]
-    lines = [f"status={summary.parse.status or '-'}"]
-    lines.extend(
-        f"{model.model}: {model.status} count={model.count}"
-        for model in summary.parse.models
-    )
-    if summary.parse.images:
-        lines.append(f"images: {summary.parse.images}")
     return lines
 
 

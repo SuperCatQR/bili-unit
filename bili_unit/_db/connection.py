@@ -1,11 +1,11 @@
 # bili_unit._db.connection — async wrapper over sqlite3.
 #
-# Why not aiosqlite: project already uses asyncio.to_thread for blocking I/O
-# (see bili_unit/_storage/_kv.py); aiosqlite is a thin to_thread wrapper.
-# Skipping the dependency keeps the supply chain smaller.
+# Why not aiosqlite: project uses asyncio.to_thread for blocking I/O and
+# aiosqlite is a thin to_thread wrapper. Skipping the dependency keeps the
+# supply chain smaller.
 #
 # Concurrency model:
-#   * One Connection instance per (uid, kind) — main and raw are separate.
+#   * One Connection instance per uid (raw.db is the only DB file).
 #   * Connection wraps a sqlite3.Connection in an asyncio.Lock so multiple
 #     awaiting writers from the same event loop can't interleave a transaction.
 #   * Cross-uid concurrency is fine: each uid has its own files.
@@ -21,18 +21,15 @@ import logging
 import sqlite3
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from .ddl import read_ddl
 
 logger = logging.getLogger("bili.db.connection")
 
 # Single source of truth for the *currently expected* schema. Bump together
-# with a new ddl/main_v{N}.sql when we ever do a real migration.
-SUPPORTED_MAIN_SCHEMA_VERSION = 4
-SUPPORTED_RAW_SCHEMA_VERSION = 2
-
-DbKind = Literal["main", "raw"]
+# with a new ddl/raw_v{N}.sql when we ever do a real migration.
+SUPPORTED_SCHEMA_VERSION = 3
 
 
 class DbError(Exception):
@@ -48,18 +45,16 @@ class Connection:
 
     Holds the connection + an asyncio.Lock. All public methods are async;
     blocking sqlite3 work runs via :func:`asyncio.to_thread` so the event loop
-    stays responsive (matches the existing JsonKVStore pattern).
+    stays responsive.
     """
 
     def __init__(
         self,
         path: Path,
         *,
-        kind: DbKind,
         uid: int,
     ) -> None:
         self._path = path
-        self._kind = kind
         self._uid = uid
         self._conn: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
@@ -67,10 +62,6 @@ class Connection:
     @property
     def path(self) -> Path:
         return self._path
-
-    @property
-    def kind(self) -> DbKind:
-        return self._kind
 
     @property
     def uid(self) -> int:
@@ -110,24 +101,12 @@ class Connection:
     def _apply_ddl_and_seed(self) -> None:
         assert self._conn is not None
         self._verify_existing_schema_version_before_ddl()
-        ddl_name = (
-            f"main_v{SUPPORTED_MAIN_SCHEMA_VERSION}"
-            if self._kind == "main"
-            else f"raw_v{SUPPORTED_RAW_SCHEMA_VERSION}"
-        )
-        ddl_sql = read_ddl(ddl_name)
+        ddl_sql = read_ddl(f"raw_v{SUPPORTED_SCHEMA_VERSION}")
         # executescript handles multi-statement DDL but auto-commits any
         # pending tx; safe here because we just opened the connection.
         self._conn.executescript(ddl_sql)
         self._seed_meta()
         self._verify_schema_version()
-
-    def _expected_schema_version(self) -> int:
-        return (
-            SUPPORTED_MAIN_SCHEMA_VERSION
-            if self._kind == "main"
-            else SUPPORTED_RAW_SCHEMA_VERSION
-        )
 
     def _verify_existing_schema_version_before_ddl(self) -> None:
         """Reject incompatible existing DBs before applying current DDL."""
@@ -151,12 +130,12 @@ class Connection:
                 f"{self._path}: existing meta.schema_version missing",
             )
         stored = int(row[0])
-        expected = self._expected_schema_version()
-        if stored != expected:
+        if stored != SUPPORTED_SCHEMA_VERSION:
             raise SchemaMismatchError(
                 f"{self._path}: schema_version={stored}, "
-                f"this build supports {expected}. "
-                f"Migration tooling for v{stored} to v{expected} is not implemented.",
+                f"this build supports {SUPPORTED_SCHEMA_VERSION}. "
+                f"Migration tooling for v{stored} to v{SUPPORTED_SCHEMA_VERSION} "
+                "is not implemented.",
             )
 
     def _seed_meta(self) -> None:
@@ -165,12 +144,11 @@ class Connection:
         import time
 
         now_ms = int(time.time() * 1000)
-        version = self._expected_schema_version()
         # INSERT OR IGNORE so re-opens don't bump created_at_ms.
         self._conn.executemany(
             "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
             [
-                ("schema_version", str(version)),
+                ("schema_version", str(SUPPORTED_SCHEMA_VERSION)),
                 ("uid", str(self._uid)),
                 ("created_at_ms", str(now_ms)),
             ],
@@ -186,12 +164,12 @@ class Connection:
                 f"{self._path}: meta.schema_version missing after DDL apply",
             )
         stored = int(row[0])
-        expected = self._expected_schema_version()
-        if stored != expected:
+        if stored != SUPPORTED_SCHEMA_VERSION:
             raise SchemaMismatchError(
                 f"{self._path}: schema_version={stored}, "
-                f"this build supports {expected}. "
-                f"Migration tooling for v{stored}→v{expected} is not implemented.",
+                f"this build supports {SUPPORTED_SCHEMA_VERSION}. "
+                f"Migration tooling for v{stored}→v{SUPPORTED_SCHEMA_VERSION} "
+                "is not implemented.",
             )
 
     async def close(self) -> None:
@@ -307,10 +285,8 @@ class Connection:
 
 
 __all__ = [
-    "SUPPORTED_MAIN_SCHEMA_VERSION",
-    "SUPPORTED_RAW_SCHEMA_VERSION",
+    "SUPPORTED_SCHEMA_VERSION",
     "Connection",
     "DbError",
-    "DbKind",
     "SchemaMismatchError",
 ]

@@ -6,69 +6,68 @@ an implementation map, not a product roadmap.
 ## Position
 
 `bili_unit` is a standalone Bilibili user-data persistence unit. Given a target
-`uid`, it writes one main SQLite DB, one raw SQLite DB, and one workdir under
-`BILI_DB_DIR`.
+`uid`, it writes one SQLite DB file (`{uid}.raw.db`) and one workdir
+(`{uid}/`) under `BILI_DB_DIR`.
 
 ```text
-Bilibili API / CDN -> bili_unit -> per-uid SQLite files
+Bilibili API / CDN -> bili_unit -> per-uid SQLite file
 ```
 
-Read-side consumers use `sqlite3` directly against the main DB. The project does
+Read-side consumers use `sqlite3` directly against the raw DB. The project does
 not expose a stable Python query facade.
 
 ## Pipeline
 
 ```text
-fetching -> raw.db
-parsing  -> raw.db -> main.db
-asr      -> main.db
+fetching -> raw.db (raw_payload + fetch_progress)
+asr      -> raw.db (audio_transcription + page + segment)
 ```
 
 - `fetching` calls registered Bilibili read endpoints and stores original
-  `raw_payload` rows in `{uid}.raw.db`.
-- `parsing` reads `raw_payload`, materializes six typed object families, and
-  writes content tables plus optional image blobs into `{uid}.db`.
-- `asr` reads parsed video rows from `{uid}.db`, downloads audio, performs ASR,
-  and writes `audio_transcription` rows into `{uid}.db`.
-  Segment cache hits are scoped by backend namespace, model, language, and
-  timeline range, so changing ASR backend/model/language does not reuse stale
-  text from an older run.
+  responses in `raw_payload`.
+- `asr` reads `raw_payload(endpoint='video_detail')` to discover bvids and
+  page metadata, downloads audio, performs ASR, and writes `audio_transcription`
+  rows. Segment cache hits are scoped by backend namespace, model, language,
+  and timeline range, so changing ASR backend/model/language does not reuse
+  stale text from an older run.
+
+A previous `parsing` stage that materialised typed dataclasses
+(`UpProfile` / `VideoDetail` / `Article` / `OpusPost` / `DynamicPost` /
+`VideoSubtitle`) and `image_asset` rows existed in earlier schema versions.
+It was removed in `schema_v3` because typed materialisation conflicted with
+the unit's "passive persistence" position — consumers that want columnar views
+build them on top of `raw_payload` themselves.
 
 ## Modules
 
 ```text
 bili_unit/
-  __main__.py        CLI entry: sync / fetch / parse / asr / delete-uid / auth
+  __main__.py        CLI entry: fetch / asr / delete-uid / login / init-mimo / tui
   __init__.py        top-level helpers, command assembly, sessions
-  workbench.py       application-facing boundary for future TUI surfaces
+  workbench.py       application-facing boundary for TUI surfaces
   tui.py             portable line-mode TUI over the workbench dashboard
-  tui_spec.py        MVP panel/action specification for the first TUI
-  command/           cross-stage write workflows such as sync
+  tui_spec.py        MVP panel/action specification for the TUI
+  command/           cross-stage write workflow (BiliCommand)
   fetching/          endpoint catalog, auth, rate limit, runner, raw store;
                      _adapters/ holds video / subtitle / pagination wrappers
-  parsing/           specs, materializer, models, image handling, main store
-  processing/        ASR command, audio runner, ASR cache/backend, main store
+  processing/        ASR command, audio runner, ASR cache/backend, raw store,
+                     _work_items.py (raw_payload → audio work items)
   observability/     run events, summaries, dashboard snapshots
-  _db/               per-uid path resolution, SQLite connections, DDL
+  _db/               per-uid path resolution, SQLite connection, DDL
   tests/             pytest contract and behavior coverage
 ```
 
 ## Storage
 
-The stable deliverable is the main SQLite DB:
+The stable deliverable is one SQLite DB per uid:
 
 ```text
-output/bili/{uid}.db        main DB, consumer-facing
-output/bili/{uid}.raw.db    raw DB, producer-private
+output/bili/{uid}.raw.db    canonical DB (raw payloads + ASR output)
 output/bili/{uid}/          workdir for audio temp/cache files
 ```
 
-Main DB content tables and views are documented in `docs/schema.md`. Raw payload
-shapes are documented in `docs/endpoint-contract.md`.
-
-Images downloaded during parsing are indexed by `image_asset` and stored in
-`image_asset.data` by default. `file_path` is a logical relative path, not the
-primary storage contract.
+Tables and views are documented in `docs/schema.md`. Raw payload shapes are
+documented in `docs/endpoint-contract.md`.
 
 ## Write Boundary
 
@@ -76,21 +75,21 @@ The write-side boundary is `BiliCommand`.
 
 ```python
 async with bili_unit.session() as cmd:
-    await cmd.sync(uid)
+    await cmd.fetch(uid)
     await cmd.asr(uid)
 ```
 
-Stage submodules such as fetching runners, parsing materializers, and audio
-workers are internal. They should not be imported by consumer code.
+Stage submodules such as fetching runners and audio workers are internal. They
+should not be imported by consumer code.
 
 ## TUI Boundary
 
-The future TUI should depend on `BiliWorkbench`, not on stage internals.
+The TUI depends on `BiliWorkbench`, not on stage internals.
 
 ```python
 async with bili_unit.workbench_session() as workbench:
     snapshot = await workbench.dashboard()
-    check = await workbench.can_start_task(uid, stages=("fetching", "parsing"))
+    check = await workbench.can_start_task(uid, stages=("fetching", "asr"))
 ```
 
 `BiliWorkbench` combines write commands with read-side observability snapshots:
@@ -99,20 +98,20 @@ async with bili_unit.workbench_session() as workbench:
 - `inspect_uid()`
 - `run_summary()`
 - `can_start_task()`
-- `sync()` / `fetch()` / `parse()` / `asr()` / `delete_uid()`
+- `fetch()` / `asr()` / `delete_uid()`
 
 The first TUI surface is pinned by `bili_unit.tui_spec`: UID list, status, run
 summary, attention events, recent events, adding a new uid, and actions for
-sync/fetch/parse/asr plus delete.
+fetch / asr plus delete.
 
 The intended full-screen layout is:
 
 ```text
 ┌ UID sidebar ┐ ┌ selected uid detail tabs ┐
-│ known uids  │ │ Summary | Fetch | Parse  │
-│ active mark │ │ ASR | Events             │
+│ known uids  │ │ Summary | Fetch | ASR    │
+│ active mark │ │ Events                   │
 └─────────────┘ └──────────────────────────┘
-┌ action bar: Add UID Sync Fetch Parse ASR Delete ┐
+┌ action bar: Add UID Fetch ASR Delete ┐
 └ status bar: refresh/errors/task feedback ┘
 ```
 
@@ -121,9 +120,8 @@ Keyboard contract:
 - `r` refreshes the dashboard snapshot.
 - `j/down` and `k/up` move between uids.
 - `tab` and `shift+tab` move between detail tabs.
-- `n` prompts for a new uid and starts incremental sync after `can_start_task`.
-- `s` / `f` / `p` / `a` start sync/fetch/parse/asr after `can_start_task`
-  preflight.
+- `n` prompts for a new uid and starts incremental fetch after `can_start_task`.
+- `f` / `a` start fetch / asr after `can_start_task` preflight.
 - `d` requires explicit confirmation before deleting a uid.
 - `q` exits.
 
@@ -147,16 +145,18 @@ The current-state control tables remain:
 - `audio_transcription`
 
 `RunSummary` and dashboard snapshots derive display state from these SQLite
-facts. They are the preferred inputs for CLI summaries and future TUI panels.
+facts. They are the preferred inputs for CLI summaries and TUI panels.
 
 ## Boundaries
 
 Keep these constraints intact:
 
 - Do not add a Python query facade; consumers read SQL.
-- Do not make consumers read raw DB for normal use.
-- Do not let command code write DB files directly; writes go through stores.
-- Do not let stage stores call each other directly; commands inject shared
+- Do not reintroduce a typed-object materialisation layer between fetching
+  and asr. If a consumer wants column-shaped reads, build them as views or
+  materialised tables in the consumer's own schema, not here.
+- Do not let command code write the DB file directly; writes go through stores.
+- Do not let stage stores call each other directly; commands inject a shared
   `UidContext`.
 - Do not use `service`, `facade`, or `api` as project boundary language.
   Prefer `command`, `workbench`, `read model`, and `snapshot`.

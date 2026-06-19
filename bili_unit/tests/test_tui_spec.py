@@ -25,9 +25,7 @@ def test_tui_mvp_panels_are_ordered_for_first_screen() -> None:
 def test_tui_mvp_actions_map_to_workbench_methods() -> None:
     assert [action.id for action in TUI_MVP_ACTIONS] == [
         "add_uid",
-        "sync",
         "fetch",
-        "parse",
         "asr",
         "delete_uid",
     ]
@@ -38,28 +36,14 @@ def test_tui_mvp_actions_map_to_workbench_methods() -> None:
 def test_tui_mvp_actions_pin_preflight_stages_and_defaults() -> None:
     actions = {action.id: action for action in TUI_MVP_ACTIONS}
 
-    assert actions["add_uid"].stages == ("fetching", "parsing")
-    assert actions["add_uid"].default_args == {
-        "fetch_mode": "incremental",
-        "parse_mode": "incremental",
-    }
+    assert actions["add_uid"].stages == ("fetching",)
+    assert actions["add_uid"].default_args == {"mode": "incremental"}
     assert actions["add_uid"].key == "n"
     assert actions["add_uid"].safety == "prompt_preflight"
-    assert actions["sync"].stages == ("fetching", "parsing")
-    assert actions["sync"].default_args == {
-        "fetch_mode": "incremental",
-        "parse_mode": "incremental",
-    }
-    assert actions["sync"].key == "s"
-    assert actions["sync"].safety == "preflight"
     assert actions["fetch"].stages == ("fetching",)
     assert actions["fetch"].default_args == {"mode": "incremental"}
     assert actions["fetch"].key == "f"
     assert actions["fetch"].safety == "preflight"
-    assert actions["parse"].stages == ("parsing",)
-    assert actions["parse"].default_args == {"mode": "incremental"}
-    assert actions["parse"].key == "p"
-    assert actions["parse"].safety == "preflight"
     assert actions["asr"].stages == ("asr",)
     assert actions["asr"].default_args == {"mode": "incremental"}
     assert actions["asr"].key == "a"
@@ -85,7 +69,6 @@ def test_tui_detail_tabs_are_stable() -> None:
     assert [tab.id for tab in TUI_DETAIL_TABS] == [
         "summary",
         "fetch",
-        "parse",
         "asr",
         "events",
     ]
@@ -104,9 +87,7 @@ def test_tui_keybindings_cover_navigation_and_actions() -> None:
         "next_detail_tab",
         "previous_detail_tab",
         "add_uid",
-        "sync",
         "fetch",
-        "parse",
         "asr",
         "delete_uid",
     ]:

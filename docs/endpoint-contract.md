@@ -1,7 +1,7 @@
 # fetching 数据契约
 
 > 本文描述 fetching 层抓取到的数据及其存储结构。
-> parsing 通过 raw DB 物化 main DB；asr 只读 main DB。外部 consumer 默认只读 main DB。
+> 所有 endpoint 原始响应都落到 `{uid}.raw.db` 的 `raw_payload` 表；asr 直接从这里抽 bvid 与分页元信息。外部 consumer 也用同一个文件。
 
 ## 目录
 
@@ -13,13 +13,13 @@
 6. [已知数据特征](#6-已知数据特征)
 7. [未文档化端点](#7-未文档化端点)
 
-> **覆盖范围**：本文已为 29 / 63 个注册端点写下了 raw_payload schema。已文档化的端点是 parsing 层目前消费的全部端点，加上一批历史已实测的 T1/T2 扩展端点。剩余 34 个端点有代码注册但尚未在本文录入 schema，参见 §7。
+> **覆盖范围**：本文已为 29 / 63 个注册端点写下了 raw_payload schema。已文档化的端点是之前 parsing 层消费的那些，加上一批历史已实测的 T1/T2 扩展端点。剩余 34 个端点有代码注册但尚未在本文录入 schema，参见 §7。
 
 ---
 
 ### 1. 存储信封
 
-每条抓取结果存储在 `{uid}.raw.db` 的 `raw_payload` 表中。主库 `{uid}.db` 只保存 task / endpoint 状态与错误；raw DB 保存 endpoint 原始响应。
+每条抓取结果存储在 `{uid}.raw.db` 的 `raw_payload` 表中。该 DB 同时保存 task / endpoint 状态与错误、以及 ASR 产出，是单元唯一的输出文件。
 
 **uid-level 端点**（`raw_payload.endpoint = <endpoint>`，`item_id = ''`）：
 

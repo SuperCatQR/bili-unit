@@ -1,13 +1,12 @@
-# bili_unit.processing._store -- SQLite-backed write store for the processing stage.
+# bili_unit.processing._store -- SQLite-backed write store for the processing (asr) stage.
 #
-# Replaces the file-directory ``ProcessingDataStore`` + ``ProcessingErrorStore``
-# pair (``bili_unit/processing/data.py`` + ``bili_unit/processing/error.py``).
-# Phase 3 will rewire ``ProcessingRunner`` / ``ProcessingCommand`` to call this
-# store; until then the two old stores stay in place.
-#
-# Storage layout (main DB only; processing does not touch the raw DB):
+# Storage layout (single raw DB, {uid}.raw.db):
 #
 #   * audio_transcription  -- per-bvid pipeline output (ASR / subtitle / official).
+#   * audio_transcription_page / audio_transcription_segment
+#       Derived per-page / per-segment rows materialised from
+#       ``audio_transcription.payload['result']['pages']`` on every successful
+#       upsert (and cleared on non-success writes).
 #   * stage_task[stage='asr']
 #       Top-level task envelope. ``payload`` JSON carries the pipeline rollup:
 #           {"pipelines": {"audio": {"status": "PENDING", "items": {...}}}}
@@ -15,13 +14,6 @@
 #       Per-item error sink (auto-increment id). Carries pipeline / item_type /
 #       item_id columns; consumers who only care about audio can filter on
 #       ``pipeline='audio'``.
-#
-# FK constraint:
-#   ``audio_transcription.bvid`` references ``video.bvid`` ON DELETE CASCADE.
-#   In the live pipeline this is fine -- processing runs after parsing has
-#   inserted the matching ``video`` row. Tests that exercise this store must
-#   first insert a placeholder video row (or bypass FKs explicitly) before
-#   calling :meth:`save_audio_transcription`.
 #
 # Concurrency:
 #   Single-statement writes serialise through the ``Connection``'s asyncio.Lock.
@@ -247,7 +239,7 @@ class ProcessingStore:
                             ),
                         ),
                     )
-        await self._ctx.main.run_transaction(statements)
+        await self._ctx.conn.run_transaction(statements)
 
     # ------------------------------------------------------------------
     # audio transcription reads
@@ -255,7 +247,7 @@ class ProcessingStore:
 
     async def get_audio_status(self, bvid: str) -> str | None:
         """Return the stored status for ``bvid`` or ``None`` if no row exists."""
-        row = await self._ctx.main.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT status FROM audio_transcription WHERE bvid = ?",
             (bvid,),
         )
@@ -265,7 +257,7 @@ class ProcessingStore:
 
     async def get_audio_payload(self, bvid: str) -> dict | None:
         """Return the stored payload dict for ``bvid`` or ``None`` if no row exists."""
-        row = await self._ctx.main.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT payload FROM audio_transcription WHERE bvid = ?",
             (bvid,),
         )
@@ -278,11 +270,11 @@ class ProcessingStore:
     ) -> list[str]:
         """Return all bvids in ``audio_transcription``, optionally filtered by status."""
         if status is None:
-            rows = await self._ctx.main.fetch_all(
+            rows = await self._ctx.conn.fetch_all(
                 "SELECT bvid FROM audio_transcription ORDER BY bvid",
             )
         else:
-            rows = await self._ctx.main.fetch_all(
+            rows = await self._ctx.conn.fetch_all(
                 "SELECT bvid FROM audio_transcription WHERE status = ? ORDER BY bvid",
                 (status,),
             )
@@ -294,7 +286,7 @@ class ProcessingStore:
 
     async def list_audio_statuses(self) -> dict[str, str]:
         """Return current audio transcription status keyed by bvid."""
-        rows = await self._ctx.main.fetch_all(
+        rows = await self._ctx.conn.fetch_all(
             "SELECT bvid, status FROM audio_transcription ORDER BY bvid",
         )
         return {str(r["bvid"]): str(r["status"]) for r in rows}
@@ -313,7 +305,7 @@ class ProcessingStore:
         """
         now = _now_ms()
         async with self._task_lock:
-            row = await self._ctx.main.fetch_one(
+            row = await self._ctx.conn.fetch_one(
                 "SELECT payload FROM stage_task WHERE stage = ?",
                 (_PROCESSING_STAGE,),
             )
@@ -323,7 +315,7 @@ class ProcessingStore:
                         p: {"status": "PENDING", "items": {}} for p in pipelines
                     },
                 }
-                await self._ctx.main.execute(
+                await self._ctx.conn.execute(
                     "INSERT INTO stage_task("
                     "    stage, status, payload, created_at_ms, updated_at_ms"
                     ") VALUES (?, ?, ?, ?, ?)",
@@ -346,7 +338,7 @@ class ProcessingStore:
                     mutated = True
             if not mutated:
                 return  # nothing new to write
-            await self._ctx.main.execute(
+            await self._ctx.conn.execute(
                 "UPDATE stage_task SET payload = ?, updated_at_ms = ? "
                 "WHERE stage = ?",
                 (
@@ -373,7 +365,7 @@ class ProcessingStore:
         clear it.
         """
         async with self._task_lock:
-            row = await self._ctx.main.fetch_one(
+            row = await self._ctx.conn.fetch_one(
                 "SELECT payload FROM stage_task WHERE stage = ?",
                 (_PROCESSING_STAGE,),
             )
@@ -390,7 +382,7 @@ class ProcessingStore:
                 entry["items"] = items
             if coverage is not None:
                 entry["coverage"] = coverage
-            await self._ctx.main.execute(
+            await self._ctx.conn.execute(
                 "UPDATE stage_task SET payload = ?, updated_at_ms = ? "
                 "WHERE stage = ?",
                 (
@@ -417,7 +409,7 @@ class ProcessingStore:
                     ("last_processed_at_ms", str(now)),
                 ),
             )
-        await self._ctx.main.run_transaction(statements)
+        await self._ctx.conn.run_transaction(statements)
 
     async def get_task(self) -> dict | None:
         """Return ``{status, payload, created_at_ms, updated_at_ms}`` or ``None``.
@@ -425,7 +417,7 @@ class ProcessingStore:
         ``payload`` is decoded back to a dict; an empty / missing payload yields
         an empty dict in the returned mapping.
         """
-        row = await self._ctx.main.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "SELECT status, payload, created_at_ms, updated_at_ms "
             "FROM stage_task WHERE stage = ?",
             (_PROCESSING_STAGE,),
@@ -461,7 +453,7 @@ class ProcessingStore:
         stored as 1 / 0 / NULL respectively.
         """
         ts = _now_ms() if occurred_at_ms is None else occurred_at_ms
-        row = await self._ctx.main.fetch_one(
+        row = await self._ctx.conn.fetch_one(
             "INSERT INTO stage_error("
             "    stage, endpoint, pipeline, item_type, item_id, "
             "    error_type, message, retryable, detail, occurred_at_ms"
@@ -512,7 +504,7 @@ class ProcessingStore:
             "FROM stage_error WHERE " + " AND ".join(where) + " "
             "ORDER BY id DESC"
         )
-        rows = await self._ctx.main.fetch_all(sql, tuple(params))
+        rows = await self._ctx.conn.fetch_all(sql, tuple(params))
         out: list[dict] = []
         for row in rows:
             out.append({

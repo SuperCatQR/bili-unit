@@ -9,13 +9,9 @@ from bili_unit import __main__ as cli
 from bili_unit.fetching import CommandResult, TaskStatus
 from bili_unit.observability.summary import (
     AsrSummary,
-    FetchEndpointSummary,
     FetchSummary,
-    ParseModelSummary,
-    ParseSummary,
     RunSummary,
 )
-from bili_unit.parsing import ParsingCommandResult, ParsingTaskStatus
 from bili_unit.processing import ProcessingCommandResult, ProcessingTaskStatus
 
 
@@ -33,48 +29,6 @@ class _FakeSession:
 class _FakeCommand:
     async def fetch(self, uid: int, *, endpoints=None, mode="incremental"):
         return CommandResult(uid=uid, status=TaskStatus.SUCCESS, run_id="fetch-run-1")
-
-    async def parse(
-        self,
-        uid: int,
-        *,
-        mode="full",
-        models=None,
-        download_images=False,
-    ):
-        return ParsingCommandResult(
-            uid=uid,
-            status=ParsingTaskStatus.SUCCESS,
-            run_id="parse-run-1",
-        )
-
-    async def sync(
-        self,
-        uid: int,
-        *,
-        endpoints=None,
-        fetch_mode="incremental",
-        parse_mode="incremental",
-        parse_models=None,
-        download_images=False,
-    ):
-        from bili_unit.command import SyncCommandResult
-
-        return SyncCommandResult(
-            uid=uid,
-            status="PARTIAL",
-            fetch=CommandResult(
-                uid=uid,
-                status=TaskStatus.PARTIAL,
-                run_id="fetch-run-1",
-            ),
-            parse=ParsingCommandResult(
-                uid=uid,
-                status=ParsingTaskStatus.SUCCESS,
-                run_id="parse-run-1",
-            ),
-            run_id="parse-run-1",
-        )
 
     async def asr(self, uid: int, **_kwargs):
         return ProcessingCommandResult(
@@ -170,133 +124,6 @@ async def test_asr_handler_prefers_run_summary(
     assert calls == [(123, "asr-run-1")]
 
 
-async def test_parse_handler_passes_run_id(
-    monkeypatch,
-    capsys,
-) -> None:
-    calls = []
-    monkeypatch.setattr(
-        bili_unit,
-        "session",
-        lambda **_kwargs: _FakeSession(_FakeCommand()),
-    )
-
-    async def fake_summary(uid: int, *, run_id: str | None = None):
-        calls.append((uid, run_id))
-        return RunSummary(
-            uid=uid,
-            run=None,
-            stage_tasks={},
-            fetch=FetchSummary(),
-            parse=ParseSummary(
-                status="SUCCESS",
-                models=[
-                    ParseModelSummary(
-                        model="video_work",
-                        status="SUCCESS",
-                        count=1,
-                    ),
-                ],
-            ),
-            asr=AsrSummary(),
-            recent_events=[],
-            recent_attention_events=[],
-        )
-
-    monkeypatch.setattr(cli, "_load_cli_summary", fake_summary)
-
-    args = argparse.Namespace(
-        uid=123,
-        mode="full",
-        models=None,
-        exclude_models=None,
-        download_images=False,
-    )
-
-    await cli._handle_parse(args)
-
-    assert capsys.readouterr().out.splitlines() == [
-        "uid=123  status=SUCCESS",
-        "  models: SUCCESS=1",
-    ]
-    assert calls == [(123, "parse-run-1")]
-
-
-async def test_sync_handler_passes_run_id_and_keeps_workflow_status(
-    monkeypatch,
-    capsys,
-) -> None:
-    calls = []
-    monkeypatch.setattr(
-        bili_unit,
-        "session",
-        lambda **_kwargs: _FakeSession(_FakeCommand()),
-    )
-
-    async def fake_summary(
-        uid: int,
-        *,
-        run_id: str | None = None,
-        filter_events_to_run: bool = True,
-    ):
-        calls.append((uid, run_id, filter_events_to_run))
-        return RunSummary(
-            uid=uid,
-            run=None,
-            stage_tasks={},
-            fetch=FetchSummary(
-                status="PARTIAL",
-                endpoints=[
-                    FetchEndpointSummary(
-                        endpoint="videos",
-                        status="PARTIAL",
-                        retry_count=0,
-                        last_error_id=None,
-                        item_progress=None,
-                        progress=None,
-                        updated_at_ms=1,
-                    ),
-                ],
-            ),
-            parse=ParseSummary(
-                status="SUCCESS",
-                models=[
-                    ParseModelSummary(
-                        model="video_work",
-                        status="SUCCESS",
-                        count=1,
-                    ),
-                ],
-            ),
-            asr=AsrSummary(),
-            recent_events=[],
-            recent_attention_events=[],
-        )
-
-    monkeypatch.setattr(cli, "_load_cli_summary", fake_summary)
-
-    args = argparse.Namespace(
-        uid=123,
-        fetch_mode="incremental",
-        parse_mode="incremental",
-        models=None,
-        exclude_models=None,
-        endpoints=None,
-        exclude_endpoints=None,
-        profile="all",
-        download_images=False,
-    )
-
-    await cli._handle_sync(args)
-
-    assert capsys.readouterr().out.splitlines() == [
-        "uid=123  status=PARTIAL  fetch=PARTIAL  parse=SUCCESS",
-        "  endpoints: PARTIAL=1",
-        "  models: SUCCESS=1",
-    ]
-    assert calls == [(123, "parse-run-1", False)]
-
-
 async def test_delete_uid_handler_deletes_orphan_workdir(
     monkeypatch,
     tmp_path: Path,
@@ -307,10 +134,9 @@ async def test_delete_uid_handler_deletes_orphan_workdir(
     workdir.mkdir()
     (workdir / "cover.jpg").write_bytes(b"x")
 
-    monkeypatch.setattr(bili_unit, "db_path", lambda _uid: tmp_path / f"{uid}.db")
     monkeypatch.setattr(
         bili_unit,
-        "raw_db_path",
+        "db_path",
         lambda _uid: tmp_path / f"{uid}.raw.db",
     )
 
@@ -321,7 +147,7 @@ async def test_delete_uid_handler_deletes_orphan_workdir(
             if path.is_file():
                 path.unlink()
         workdir.rmdir()
-        return {"main_db": 0, "raw_db": 0, "workdir_files": 1}
+        return {"raw_db": 0, "workdir_files": 1}
 
     command = _FakeCommand()
     command.delete_uid = fake_delete_uid
@@ -335,7 +161,7 @@ async def test_delete_uid_handler_deletes_orphan_workdir(
 
     assert not workdir.exists()
     assert capsys.readouterr().out.splitlines() == [
-        "  main_db=0, raw_db=0, workdir_files=1",
+        "  raw_db=0, workdir_files=1",
     ]
 
 
@@ -376,17 +202,12 @@ async def test_load_cli_summary_logs_fallback_reason(monkeypatch, caplog) -> Non
     assert "summary boom" in caplog.text
 
 
-async def _summary_none(uid: int, *, run_id: str | None = None):
-    return None
-
-
 async def _summary_with_asr_gap(uid: int, *, run_id: str | None = None) -> RunSummary:
     return RunSummary(
         uid=uid,
         run=None,
         stage_tasks={},
         fetch=FetchSummary(),
-        parse=ParseSummary(),
         asr=AsrSummary(
             status="PARTIAL",
             candidate_count=2,

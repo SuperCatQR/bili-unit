@@ -3,10 +3,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
-import sqlite3
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,6 +16,7 @@ from .. import (
     ProcessingPipelineStatus,
 )
 from .._estimate import estimate_audio_work, estimate_exceeds_budget
+from .._work_items import list_audio_work_items
 from ._audio_work import (
     audio_convert_page,
     audio_download_page,
@@ -34,7 +33,6 @@ from ._pipeline_executor import (
 
 if TYPE_CHECKING:
     from ..._env import BiliSettings
-    from ...parsing._store import ParsingStore
     from .._store import ProcessingStore
     from ..audio._asr_backend import ASRBackend
     from ..audio._asr_cache import ASRCacheStore
@@ -54,15 +52,13 @@ _AUDIO = "audio"
 class _AudioMixin:
     """Mixin providing audio pipeline methods for :class:`ProcessingRunner`.
 
-    Accesses runner state (``self._store``, ``self._parse_store``,
-    ``self._settings``, ``self._temp_dir``,
-    ``self._asr_backend``, ``self._credential_provider``) and helpers
-    (``_get_asr_cache``, ``_derive_pipeline_status``, ``_is_retryable``)
-    via the combined MRO at runtime.
+    Accesses runner state (``self._store``, ``self._settings``,
+    ``self._temp_dir``, ``self._asr_backend``, ``self._credential_provider``)
+    and helpers (``_get_asr_cache``, ``_derive_pipeline_status``,
+    ``_is_retryable``) via the combined MRO at runtime.
     """
 
     _store: ProcessingStore | None
-    _parse_store: ParsingStore | None
     _settings: BiliSettings
     _temp_dir: Path
     _asr_backend: ASRBackend | None
@@ -109,7 +105,7 @@ class _AudioMixin:
 
         # 1. discover audio work items (one per bvid)
         try:
-            audio_items, skipped, subtitle_done = await self._discover_audio_items(
+            audio_items, skipped = await self._discover_audio_items(
                 uid, mode,
                 only_bvids=only_bvids,
                 exclude_bvids=exclude_bvids,
@@ -130,7 +126,7 @@ class _AudioMixin:
                     pipeline=_AUDIO,
                     data={"error_type": type(exc).__name__, "error": str(exc)},
                 )
-            audio_items, skipped, subtitle_done = [], 0, 0
+            audio_items, skipped = [], 0
             await store.record_error(
                 pipeline=_AUDIO,
                 item_type="discovery",
@@ -168,8 +164,8 @@ class _AudioMixin:
 
         rollup: dict[str, dict[str, int]] = {
             "transcription": {
-                "total": len(audio_items) + skipped + subtitle_done,
-                "completed": subtitle_done,
+                "total": len(audio_items) + skipped,
+                "completed": 0,
                 "failed": 0,
                 "skipped": skipped,
             },
@@ -186,7 +182,6 @@ class _AudioMixin:
                 data={
                     "candidate_count": len(candidates),
                     "skipped": skipped,
-                    "subtitle_done": subtitle_done,
                     "estimate": estimate.to_dict(),
                 },
             )
@@ -214,7 +209,7 @@ class _AudioMixin:
                     },
                 )
             rollup["transcription"]["skipped"] += len(audio_items)
-            rollup["transcription"]["total"] = subtitle_done + skipped + len(audio_items)
+            rollup["transcription"]["total"] = skipped + len(audio_items)
             final_status = ProcessingPipelineStatus.PARTIAL
             await store.update_task_pipeline(
                 _AUDIO, status=final_status.value, items=rollup,
@@ -279,7 +274,7 @@ class _AudioMixin:
         exclude_bvids: list[str] | None = None,
         retry_failed_only: bool = False,
     ) -> tuple[list[str], dict]:
-        audio_items, skipped, subtitle_done = await self._discover_audio_items(
+        audio_items, skipped = await self._discover_audio_items(
             uid,
             mode,
             only_bvids=only_bvids,
@@ -299,7 +294,6 @@ class _AudioMixin:
                 "uid": uid,
                 "candidates": candidates,
                 "skipped": skipped,
-                "subtitle_done": subtitle_done,
             },
         )
         return candidates, estimate
@@ -314,28 +308,24 @@ class _AudioMixin:
         retry_failed_only: bool = False,
         limit: int | None = None,
         dry_run: bool = False,
-    ) -> tuple[list[WorkItem], int, int]:
-        """Discover audio work items from parsed main-DB video rows.
+    ) -> tuple[list[WorkItem], int]:
+        """Discover audio work items from raw ``video_detail`` payloads.
 
-        Reads ``video`` + ``video_page`` through the parsing store. Each bvid
+        Reads ``raw_payload(endpoint='video_detail')`` directly. Each bvid
         produces one :class:`WorkItem` carrying its page list.
 
         Filter ordering (each step narrows the previous one's output):
             1. ``only_bvids``      — restrict to a caller-supplied bvid set.
             2. ``_filter_audio_ready`` (incremental skip /
                ``retry_failed_only`` selection).
-            3. subtitle short-circuit — bvids whose ``video_subtitle`` parsing
-               object exists and is complete have their result written
-               directly with ``transcription_source: "subtitle"`` and are
-               removed from the worker queue.
-            4. ``limit``            — cap to first N after the steps above.
+            3. ``limit``            — cap to first N after the steps above.
 
-        Returns ``(ready_items, skipped_count, subtitle_done_count)``.
+        Returns ``(ready_items, skipped_count)``.
         """
-        parse_store = self._parse_store
-        payloads = await parse_store.list_video_page_work_items()
+        _ = dry_run  # subtitle short-circuit is gone; ASR runs every video.
+        payloads = await list_audio_work_items(self._store.ctx.conn)
         if not payloads:
-            return [], 0, 0
+            return [], 0
 
         only_set: set[str] | None = (
             set(only_bvids) if only_bvids is not None else None
@@ -363,245 +353,9 @@ class _AudioMixin:
             uid, items, mode, retry_failed_only=retry_failed_only,
         )
 
-        ready, subtitle_done = await self._apply_subtitle_shortcuts(
-            uid, ready, dry_run=dry_run,
-        )
-
         if limit is not None and limit >= 0:
             ready = ready[:limit]
-        return ready, skipped, subtitle_done
-
-    async def _apply_subtitle_shortcuts(
-        self: Any,
-        uid: int,
-        items: list[WorkItem],
-        *,
-        dry_run: bool,
-    ) -> tuple[list[WorkItem], int]:
-        """Remove bvids that have complete subtitles and persist their results.
-
-        For each item whose parsed ``video_subtitle`` exists and is complete
-        (every page has a selected language), build an audio-pipeline result
-        dict from the subtitle segments and write a SUCCESS row to the
-        processing store.  Those items are removed from the returned list so
-        workers do not re-process them.
-
-        ``dry_run`` skips both the read and the persistence: short-circuit
-        candidates would still flow through the worker pool on a real run,
-        and we don't want dry-run to mutate processing storage.
-        """
-        if dry_run or self._parse_store is None or not items:
-            return items, 0
-
-        store = self._store
-        parse_store = self._parse_store
-
-        remaining: list[WorkItem] = []
-        done_count = 0
-        for item in items:
-            bvid = item.item_id
-            try:
-                subtitle = await parse_store.get_video_subtitle_payload(bvid)
-            except (sqlite3.OperationalError, sqlite3.DatabaseError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-                logger.warning("subtitle short-circuit failed bvid=%s: %s: %s", bvid, type(exc).__name__, exc)
-                remaining.append(item)
-                continue
-
-            result = self._build_subtitle_result(item, subtitle)
-            if result is None:
-                remaining.append(item)
-                continue
-
-            now = int(time.time() * 1000)
-            payload = {
-                "uid": uid,
-                "pipeline": "audio",
-                "item_type": "transcription",
-                "item_id": bvid,
-                "status": ProcessingItemStatus.SUCCESS.value,
-                "result": result,
-                "source_endpoints": ["video_subtitle"],
-                "processed_at": now,
-            }
-            transcript = " ".join(
-                p.get("text", "") for p in result["pages"] if isinstance(p, dict)
-            )
-            await store.save_audio_transcription(
-                bvid,
-                status="success",
-                transcription_source=result.get("transcription_source"),
-                transcript=transcript or None,
-                audio_tokens=0,
-                seconds=0,
-                cache_hits=0,
-                payload=payload,
-                processed_at_ms=now,
-            )
-            done_count += 1
-            logger.info(
-                "audio_subtitle_shortcut",
-                extra={"uid": uid, "bvid": bvid, "pages": len(result["pages"])},
-            )
-        return remaining, done_count
-
-    @staticmethod
-    def _build_subtitle_result(
-        item: WorkItem,
-        subtitle: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        """Return an audio-result dict synthesised from a subtitle dict.
-
-        Returns None when ``subtitle`` is missing or not complete (any page
-        without a resolved language).  The caller falls back to the ASR
-        pipeline in that case.
-        """
-        if not isinstance(subtitle, dict):
-            return None
-        pages = subtitle.get("bilibili_subtitle_pages", subtitle.get("pages"))
-        if not isinstance(pages, list) or not pages:
-            return None
-        expected_page_indexes = {
-            int(p["page_index"])
-            for p in item.item_data.get("pages", [])
-            if isinstance(p, dict) and "page_index" in p
-        }
-        subtitle_page_indexes: set[int] = set()
-
-        for p in pages:
-            if not isinstance(p, dict):
-                return None
-            page_index = int(
-                p.get(
-                    "bilibili_video_page_index",
-                    p.get("bilibili_page_index", p.get("page_index", 0)),
-                ) or 0
-            )
-            subtitle_page_indexes.add(page_index)
-            lan = str(
-                p.get("selected_bilibili_subtitle_language_code", p.get("lan", ""))
-                or ""
-            )
-            if not lan:
-                return None
-            # Bilibili AI subtitles are useful reference material, but not
-            # reliable enough to replace this project's own ASR pass.
-            if (
-                bool(
-                    p.get(
-                        "is_selected_bilibili_subtitle_platform_ai_generated",
-                        p.get("is_bilibili_platform_ai_subtitle", p.get("is_ai")),
-                    )
-                )
-                or lan.startswith("ai-")
-            ):
-                return None
-        if expected_page_indexes and subtitle_page_indexes != expected_page_indexes:
-            return None
-
-        bvid_pages = {
-            p["page_index"]: p for p in item.item_data.get("pages", [])
-            if isinstance(p, dict) and "page_index" in p
-        }
-
-        out_pages: list[dict[str, Any]] = []
-        total_duration = 0.0
-        total_chars = 0
-        for sp in pages:
-            page_index = int(
-                sp.get(
-                    "bilibili_video_page_index",
-                    sp.get("bilibili_page_index", sp.get("page_index", 0)),
-                ) or 0
-            )
-            cid = int(
-                sp.get(
-                    "bilibili_video_page_cid",
-                    sp.get("bilibili_cid", sp.get("cid", 0)),
-                ) or 0
-            )
-            lan = str(
-                sp.get("selected_bilibili_subtitle_language_code", sp.get("lan", ""))
-                or ""
-            )
-            seg_dicts = (
-                sp.get("selected_bilibili_subtitle_segments", sp.get("segments", []))
-                or []
-            )
-            segments_out: list[dict[str, Any]] = []
-            text_parts: list[str] = []
-            for seg in seg_dicts:
-                if not isinstance(seg, dict):
-                    continue
-                start = float(
-                    seg.get(
-                        "bilibili_subtitle_segment_start_seconds",
-                        seg.get("bilibili_subtitle_start_s", seg.get("start", 0.0)),
-                    )
-                    or 0.0
-                )
-                end = float(
-                    seg.get(
-                        "bilibili_subtitle_segment_end_seconds",
-                        seg.get("bilibili_subtitle_end_s", seg.get("end", 0.0)),
-                    )
-                    or 0.0
-                )
-                content = str(
-                    seg.get(
-                        "bilibili_subtitle_segment_text",
-                        seg.get("bilibili_subtitle_text", seg.get("content", "")),
-                    )
-                    or ""
-                )
-                segments_out.append({
-                    "start_s": start,
-                    "end_s": end,
-                    "text": content,
-                    "duration": max(0.0, end - start),
-                    "model": "subtitle",
-                })
-                text_parts.append(content)
-            text = " ".join(part for part in text_parts if part.strip())
-            if not text.strip():
-                return None
-
-            duration_meta = bvid_pages.get(page_index, {}).get("duration")
-            try:
-                duration = (
-                    float(duration_meta) if duration_meta is not None else None
-                )
-            except (TypeError, ValueError):
-                duration = None
-            if duration is None and segments_out:
-                duration = segments_out[-1]["end_s"]
-
-            out_pages.append({
-                "page_index": page_index,
-                "cid": cid,
-                "duration": duration,
-                "text": text,
-                "language": lan,
-                "asr_model": "subtitle",
-                "segments": segments_out,
-            })
-            if duration is not None:
-                total_duration += float(duration)
-            total_chars += len(text)
-
-        return {
-            "bvid": item.item_id,
-            "pages": out_pages,
-            "total_duration": total_duration,
-            "total_chars": total_chars,
-            "transcription_source": "subtitle",
-            "cost": {
-                "audio_tokens": 0,
-                "seconds": 0,
-                "model": "subtitle",
-                "cache_hits": 0,
-                "fresh_segments": 0,
-            },
-        }
+        return ready, skipped
 
     async def _filter_audio_ready(
         self: Any,

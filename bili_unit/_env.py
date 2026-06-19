@@ -1,14 +1,12 @@
 # _env — single source of truth for bili_unit configuration.
 #
-# 三个 stage 各自的 env 模块（fetching/env、parsing/env、processing/env）
-# 是 thin re-export 到此处。新代码请直接 import bili_unit._env，stage 级
-# env 模块仅保留做向后兼容。
+# Two stage env modules (fetching/env, processing/env) are thin re-exports to
+# this file. New code should import bili_unit._env directly.
 #
 # 字段按 stage 前缀分组：
 #   bili_*                 —— 凭据（跨 stage 用）
 #   bili_fetching_*        —— fetching stage
-#   bili_parsing_*         —— parsing stage
-#   bili_processing_*      —— processing stage
+#   bili_processing_*      —— processing (asr) stage
 
 from __future__ import annotations
 
@@ -35,11 +33,10 @@ class BiliSettings(BaseSettings):
     bili_ac_time_value: str = ""
 
     # === storage root (SQLite layout) ===
-    # One uid maps to three locations under this root:
-    #   {bili_db_dir}/{uid}.db        ← consumer contract  (parsing + processing tables, task state, errors)
-    #   {bili_db_dir}/{uid}.raw.db    ← producer-private   (raw fetching payloads + cursor)
-    #   {bili_db_dir}/{uid}/          ← workdir            (audio caches / temp files)
-    # See docs/schema.md for the current on-disk contract.
+    # One uid maps to two locations under this root:
+    #   {bili_db_dir}/{uid}.raw.db    ← the unit's only DB file
+    #   {bili_db_dir}/{uid}/          ← workdir (audio caches / temp files)
+    # See docs/schema.md for the on-disk contract.
     bili_db_dir: str = "output/bili"
 
     # === fetching stage ===
@@ -57,12 +54,7 @@ class BiliSettings(BaseSettings):
     bili_fetching_refresh_after_days: float = 7.0  # refresh mode: re-fetch items older than N days
     bili_fetching_stale_running_threshold_seconds: int = 900  # issue #3: RUNNING task with updated_at older than this is treated as PARTIAL (process killed/timeout)
 
-    # === parsing stage ===
-    # Image downloading
-    bili_parsing_image_concurrency: int = 8
-    bili_parsing_image_timeout: float = 30.0
-
-    # === processing stage ===
+    # === processing (asr) stage ===
     # Storage path for ASR audio cache and ffmpeg temp dirs (these are large
     # binary blobs that don't belong in the SQLite databases).
     bili_processing_temp_dir: str = "output/bili/asr/temp"

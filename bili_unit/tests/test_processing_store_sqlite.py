@@ -37,17 +37,11 @@ async def store(tmp_path: Path):
 
 
 async def _seed_video(store: ProcessingStore, bvid: str) -> None:
-    """Insert minimal video/page rows so audio FK constraints hold."""
-    await store.ctx.main.execute(
-        "INSERT OR IGNORE INTO video(bvid, title, payload, parsed_at_ms) "
-        "VALUES (?, ?, ?, ?)",
-        (bvid, f"title-{bvid}", "{}", 1),
-    )
-    await store.ctx.main.execute(
-        "INSERT OR IGNORE INTO video_page(bvid, page_no, cid, part, duration_s) "
-        "VALUES (?, 1, 0, '', 0)",
-        (bvid,),
-    )
+    """Backwards-compat shim. The new schema has no `video` / `video_page`
+    tables and `audio_transcription` no longer FKs to them, so seeding is a
+    no-op. Kept so existing tests can call it without churning each call site.
+    """
+    _ = store, bvid
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +105,7 @@ async def test_save_audio_transcription_success_columns_and_payload(
         processed_at_ms=10_000,
     )
 
-    row = await store.ctx.main.fetch_one(
+    row = await store.ctx.conn.fetch_one(
         "SELECT bvid, status, transcription_source, transcript, "
         "       audio_tokens, seconds, cache_hits, payload, processed_at_ms "
         "FROM audio_transcription WHERE bvid = ?",
@@ -127,7 +121,7 @@ async def test_save_audio_transcription_success_columns_and_payload(
     assert row["cache_hits"] == 2
     assert json.loads(row["payload"]) == payload
     assert row["processed_at_ms"] == 10_000
-    page = await store.ctx.main.fetch_one(
+    page = await store.ctx.conn.fetch_one(
         "SELECT page_no, page_index, cid, duration_s, language, asr_model, "
         "       transcript_text, transcript_char_count, segment_count "
         "FROM audio_transcription_page WHERE bvid = ?",
@@ -145,7 +139,7 @@ async def test_save_audio_transcription_success_columns_and_payload(
         "transcript_char_count": len("hello world"),
         "segment_count": 2,
     }
-    segments = await store.ctx.main.fetch_all(
+    segments = await store.ctx.conn.fetch_all(
         "SELECT page_no, segment_no, start_seconds, end_seconds, duration_s, "
         "       transcript_text, language, asr_model, "
         "       is_empty_transcript_skip, is_high_risk_audio_skip, error_message "
@@ -199,7 +193,7 @@ async def test_save_audio_transcription_failed_no_transcript(
         payload=payload,
     )
 
-    row = await store.ctx.main.fetch_one(
+    row = await store.ctx.conn.fetch_one(
         "SELECT status, transcription_source, transcript, audio_tokens, "
         "       seconds, cache_hits, processed_at_ms "
         "FROM audio_transcription WHERE bvid = ?",
@@ -262,7 +256,7 @@ async def test_save_audio_transcription_replaces_existing_row(
         processed_at_ms=200,
     )
 
-    rows = await store.ctx.main.fetch_all(
+    rows = await store.ctx.conn.fetch_all(
         "SELECT status, transcript, payload, processed_at_ms "
         "FROM audio_transcription WHERE bvid = ?",
         (bvid,),
@@ -299,7 +293,7 @@ async def test_save_audio_transcription_failed_clears_materialized_rows(
             },
         },
     )
-    assert await store.ctx.main.fetch_value(
+    assert await store.ctx.conn.fetch_value(
         "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
         (bvid,),
     ) == 1
@@ -315,11 +309,11 @@ async def test_save_audio_transcription_failed_clears_materialized_rows(
         payload={"result": None},
     )
 
-    assert await store.ctx.main.fetch_value(
+    assert await store.ctx.conn.fetch_value(
         "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
         (bvid,),
     ) == 0
-    assert await store.ctx.main.fetch_value(
+    assert await store.ctx.conn.fetch_value(
         "SELECT COUNT(*) FROM audio_transcription_segment WHERE bvid = ?",
         (bvid,),
     ) == 0
@@ -360,11 +354,11 @@ async def test_save_audio_transcription_non_success_statuses_clear_materialized_
             payload={"status": status.upper()},
         )
 
-        assert await store.ctx.main.fetch_value(
+        assert await store.ctx.conn.fetch_value(
             "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
             (bvid,),
         ) == 0
-        assert await store.ctx.main.fetch_value(
+        assert await store.ctx.conn.fetch_value(
             "SELECT COUNT(*) FROM audio_transcription_segment WHERE bvid = ?",
             (bvid,),
         ) == 0
@@ -415,7 +409,7 @@ async def test_save_audio_transcription_success_resave_rebuilds_materialized_row
         },
     )
 
-    rows = await store.ctx.main.fetch_all(
+    rows = await store.ctx.conn.fetch_all(
         "SELECT segment_no, transcript_text "
         "FROM audio_transcription_segment WHERE bvid = ? ORDER BY segment_no",
         (bvid,),
@@ -670,7 +664,7 @@ async def test_record_error_persists_columns(store: ProcessingStore) -> None:
         error_type="DownloadError", message="boom",
         retryable=True, detail={"k": "v"}, occurred_at_ms=99,
     )
-    row = await store.ctx.main.fetch_one(
+    row = await store.ctx.conn.fetch_one(
         "SELECT stage, pipeline, item_type, item_id, error_type, message, "
         "       retryable, detail, occurred_at_ms "
         "FROM stage_error WHERE id = ?",
@@ -702,7 +696,7 @@ async def test_record_error_retryable_tristate(store: ProcessingStore) -> None:
         error_type="X", message="y", retryable=None,
     )
     rows = {
-        r["id"]: r for r in await store.ctx.main.fetch_all(
+        r["id"]: r for r in await store.ctx.conn.fetch_all(
             "SELECT id, retryable FROM stage_error",
         )
     }
@@ -793,7 +787,7 @@ async def test_list_errors_does_not_leak_other_stage_rows(
     store: ProcessingStore,
 ) -> None:
     # Drop a fetching-stage row directly; it must not surface from list_errors.
-    await store.ctx.main.execute(
+    await store.ctx.conn.execute(
         "INSERT INTO stage_error("
         "    stage, endpoint, error_type, message, retryable, occurred_at_ms"
         ") VALUES ('fetching', 'user_info', 'NetError', 'boom', 1, 1)",

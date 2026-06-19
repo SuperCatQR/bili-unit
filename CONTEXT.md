@@ -1,50 +1,48 @@
 # bili_unit
 
-Bilibili 数据持久化单元。给定目标用户 uid，把 B 站读取端点的原始响应落到本地、对象化为 typed object、再对视频音频做 ASR 转录。本项目独立可用、独立发版；跨源归一化、清洗、检索不在仓库范围内。
+Bilibili 数据持久化单元。给定目标用户 uid，把 B 站读取端点的原始响应落到本地 SQLite，再对视频音频做 ASR 转录、把转写结果写进同一个文件。本项目独立可用、独立发版；跨源归一化、字段提升、检索不在仓库范围内。
 
 ## Language
 
 ### 项目定位
 
 **unit**:
-一个可独立运行的数据持久化单元；本仓库 = Bilibili 用户数据 unit。一个 unit 围绕一个外部源（B 站）组织抓取、解析、处理与落盘。
+一个可独立运行的数据持久化单元；本仓库 = Bilibili 用户数据 unit。一个 unit 围绕一个外部源（B 站）组织抓取、ASR 与落盘。
 _Avoid_: source, connector, integration。
 
 **consumer**:
-通过 SQLite 读取本项目产物的任意调用方或宿主应用。consumer 直接 `sqlite3.connect` 查询主库；本项目不提供 Python query facade。
+通过 SQLite 读取本项目产物的任意调用方或宿主应用。consumer 直接 `sqlite3.connect` 查询 raw DB；本项目不提供 Python query facade。
 _Avoid_: downstream。
 
-### 三 stage
+### 两 stage
 
 **fetching**:
-第一 stage。异步抓取 63 个 B 站读取端点的原始响应，双层限流（global + endpoint QPS）+ 412 自适应降速，所有请求结果原样落盘到 fetching store。不做字段筛选。
+第一 stage。异步抓取 63 个 B 站读取端点的原始响应，双层限流（global + endpoint QPS）+ 412 自适应降速，所有请求结果原样落盘到 `raw_payload` 表。不做字段筛选、不做对象化。
 _Avoid_: crawler, scraper, collector。
 
-**parsing**:
-第二 stage。读 fetching 的 raw_payload，筛选 / 归并 / 对象化为 typed object，可选下载图片到本地。落盘到 parsing store。
-_Avoid_: parser, transform, mapper。
-
 **asr**:
-第三 stage。对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。当前仅 audio pipeline。落盘到 processing store。
+第二 stage。对视频音频做 ASR 转录（VAD 切分 + 段级断点续传 + 段间文本去重拼接）。bvid 与分页元信息直接从 `raw_payload(endpoint='video_detail')` 抽，不依赖中间层。当前仅 audio pipeline。落盘到 `audio_transcription` 系列表。
 External command naming and the DB stage key are `asr`
 (`stage_task.stage`, `stage_error.stage`, and related payloads). `process`
 remains only a Python/internal backward-compatible alias; the CLI does not
 expose it.
 _Avoid_: handler, worker, transformer。
 
+> 历史：早先存在过一个 `parsing` 阶段，把 raw payload 物化为 typed dataclass + image_asset。该阶段在 schema_v3 中整体删除，原因是它在「被动持久化」定位下属于多余的半归一化层；典型字段提升、视图、跨表 join 都改由 consumer 在自己的查询层做。
+
 ### 数据形态
 
 **uid**:
-目标用户。B 站用户 ID（整数）。unit 的工作单位——所有抓取 / 解析 / 处理按 uid 隔离。
+目标用户。B 站用户 ID（整数）。unit 的工作单位——所有抓取 / ASR 按 uid 隔离。
 _Avoid_: user_id, account, mid（mid 是 B 站 API 内部字段名，本仓库对外用 uid）。
 
 **raw_payload**:
-fetching 信封内的未加工字段。非分页端点 = B 站 API 原始响应 dict；分页端点 = `{"pages": [page1, ...]}`，每页是一次 API 响应的原始 dict。fetching 不做字段筛选。
+fetching 信封内的未加工字段。非分页端点 = B 站 API 原始响应 dict；分页端点 = `{"pages": [page1, ...]}`，每页是一次 API 响应的原始 dict。fetching 不做字段筛选；consumer 用 `json_extract` 自取。
 _Avoid_: response, data, result。
 
-**typed object / parsed object**:
-parsing 产物的统称。落盘为主 SQLite DB 中的内容表行；`payload` 列保留完整 JSON dict。当前 6 个 model：`UpProfile` / `VideoDetail` / `VideoSubtitle` / `Article` / `OpusPost` / `DynamicPost`。
-_Avoid_: entity, record, document。
+**audio_transcription**:
+asr 产物。每个 bvid 一行，列含 `status` / `transcript` / `seconds` / `audio_tokens` / `cache_hits` 与完整 ProcessingItem dict 的 `payload`；派生表 `audio_transcription_page` / `audio_transcription_segment` 提供查询友好的 page / segment 视角。
+_Avoid_: transcript_record, asr_result, transcription。
 
 ### 端点与抓取
 
@@ -61,7 +59,7 @@ _Avoid_: user endpoint, top-level endpoint。
 _Avoid_: detail endpoint, sub-endpoint, child endpoint。
 
 **profile**:
-CLI `--profile {all,parsing,minimal}` 选端点子集。`all`=63、`parsing`=13（parsing 实际消费的）、`minimal`=5（smoke / CI）。
+CLI `--profile {all,minimal}` 选端点子集。`all`=63、`minimal`=5（smoke / CI）。早先存在过的 `parsing` profile 已随 parsing 阶段一并删除；想精挑端点用 `--include` / `--exclude`。
 _Avoid_: preset, mode（mode 指抓取模式，不同概念）。
 
 **fetch run scope**:
@@ -96,13 +94,13 @@ _Avoid_: list_id。
 ### 状态机
 
 **mode（incremental / refresh / full）**:
-fetching 与 asr 共享部分执行语义。`incremental` 跳过已成功、重试失败；`refresh` 介于两者间（fetching 的 item-level 检查 7 天 freshness window；asr 不支持 refresh）；`full` 忽略已有数据全量重跑。parsing 只支持 `full` / `incremental` 两档，其中 `incremental` 只跳过 `parsed_at_ms >= raw_payload.fetched_at_ms` 的项目。
+fetching 与 asr 共享部分执行语义。`incremental` 跳过已成功、重试失败；`refresh` 介于两者间（fetching 的 item-level 检查 7 天 freshness window；asr 不支持 refresh）；`full` 忽略已有数据全量重跑。
 _Avoid_: strategy, run type。
 
 ### 出口面
 
 **command / SQL read side**:
-bili unit 以命令行和内部写侧 command 组织流程；`command`（`BiliCommand`）驱动 sync / asr（`process` 仅 Python/internal 兼容 alias）。读侧由调用方直接 SQL 查询。stage 子模块（client / runner / materializer / audio）不对外，藏在 command 后。
+bili unit 以命令行和内部写侧 command 组织流程；`command`（`BiliCommand`）驱动 fetch / asr / delete。stage 子模块（fetching client / runner / audio worker）不对外，藏在 command 后。
 _Avoid_: service, facade, api。
 
 ## Notes

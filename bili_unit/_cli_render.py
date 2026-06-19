@@ -43,69 +43,6 @@ class CliRenderer:
                 self.line(f"  failed endpoints: {', '.join(failed)}")
         self.attention_events(summary)
 
-    def parse_result(self, *, uid: int, status: Any) -> None:
-        self.line(f"uid={uid}  status={_status_value(status)}")
-
-    def parse_summary(self, summary: RunSummary, *, fallback_status: Any = None) -> None:
-        status = summary.parse.status
-        if status is None and summary.run is not None:
-            status = summary.run.status
-        if status is None:
-            status = fallback_status
-        self.line(f"uid={summary.uid}  status={_status_value(status)}")
-        if summary.parse.models:
-            counts = _format_counts(summary.parse.status_counts)
-            if counts:
-                self.line(f"  models: {counts}")
-            failed = [
-                model.model for model in summary.parse.models
-                if _is_failure_status(model.status)
-            ]
-            if failed:
-                self.line(f"  failed models: {', '.join(failed)}")
-        if summary.parse.images:
-            images = summary.parse.images
-            self.line(
-                "  images: "
-                f"total={images.get('total', 0)} "
-                f"ok={images.get('ok', 0)} "
-                f"failed={images.get('failed', 0)}",
-            )
-        self.attention_events(summary)
-
-    def sync_result(self, *, uid: int, status: Any, fetch_status: Any, parse_status: Any) -> None:
-        self.line(
-            f"uid={uid}  status={_status_value(status)}  "
-            f"fetch={_status_value(fetch_status)}  parse={_status_value(parse_status)}",
-        )
-
-    def sync_summary(
-        self,
-        summary: RunSummary,
-        *,
-        fallback_status: Any = None,
-        fallback_fetch_status: Any = None,
-        fallback_parse_status: Any = None,
-    ) -> None:
-        status = fallback_status
-        if status is None and summary.run is not None:
-            status = summary.run.status
-        fetch_status = summary.fetch.status or fallback_fetch_status
-        parse_status = summary.parse.status or fallback_parse_status
-        self.line(
-            f"uid={summary.uid}  status={_status_value(status)}  "
-            f"fetch={_status_value(fetch_status)}  parse={_status_value(parse_status)}",
-        )
-        if summary.fetch.endpoints:
-            counts = _format_counts(summary.fetch.status_counts)
-            if counts:
-                self.line(f"  endpoints: {counts}")
-        if summary.parse.models:
-            counts = _format_counts(summary.parse.status_counts)
-            if counts:
-                self.line(f"  models: {counts}")
-        self.attention_events(summary)
-
     def asr_result(
         self,
         *,
@@ -210,12 +147,11 @@ class CliRenderer:
     def delete_missing(self, *, uid: int) -> None:
         self.line(f"uid={uid}: no data found")
 
-    def delete_plan(self, *, uid: int, main: Any, raw: Any, workdir: Any) -> None:
+    def delete_plan(self, *, uid: int, raw: Any, workdir: Any) -> None:
         self.line(
             f"About to delete all data for uid={uid}:"
-            f"\n  {main}"
             f"\n  {raw}"
-            f"\n  {workdir}/  (images / audio caches)",
+            f"\n  {workdir}/  (audio caches)",
         )
 
     def delete_cancelled(self) -> None:

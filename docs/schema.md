@@ -1,201 +1,114 @@
 # schema —— bili_unit SQLite 数据契约
 
-## payload JSON ↔ 列名对齐
+> 真相源：[raw_v3.sql](../bili_unit/_db/ddl/raw_v3.sql)
+> 适用版本：DB `schema_version = 3`
 
-自 Phase 4 起，typed payload JSON 里的 key 与 DDL 列名严格一致。具体：
-
-- `user_profile.face_url` ← `UpProfile.face_url`（payload key 同名；上游 raw 字段是 `face`）
-- `video.description` / `cover_url` / `duration_s` / `pubdate_ms` ← `VideoDetail` 同名字段
-- 单位约定：`duration_s` 是秒，`pubdate_ms` 是毫秒-epoch（`VideoDetail.pubdate_ms` 字段自身就是毫秒，`from_raw` 在读取上游秒值时当场 ×1000）
-
----
-
-> 真相源：[main_v4.sql](../bili_unit/_db/ddl/main_v4.sql)、[raw_v2.sql](../bili_unit/_db/ddl/raw_v2.sql)
-> 适用版本：main DB `schema_version = 4`；raw DB `schema_version = 2`（各自独立编号）
-
-bili_unit 自 Phase 3 起将自己重新定位为「被动持久化数据存储」：写侧通过 `BiliCommand` 编排三 stage，读侧 **直接 SQL 查询**——不再有 Python query facade。本文件描述消费方需要的 SQL 表面。
+bili_unit 自 schema v3 起把整个产物收敛到单 SQLite 文件：写侧通过 `BiliCommand` 编排两 stage（fetching → asr），读侧 **直接 SQL 查询**——不再有 Python query facade，也不再有 typed-object 物化层。本文件描述消费方需要的 SQL 表面。
 
 ## 1. 概念
 
-每个 uid 落盘三个工件：
+每个 uid 落盘一个文件 + 一个工作目录：
 
 | 路径 | 用途 | 稳定性 |
 |------|------|----------------|
-| `{db_dir}/{uid}.db` | 主 DB（消费方读取面） | 见 §3 / §5 |
-| `{db_dir}/{uid}.raw.db` | 原始端点响应（producer-private） | ✗ 内部 |
-| `{db_dir}/{uid}/` | 工作目录（audio 缓存 / 临时文件；图片内容默认在主 DB） | 部分 |
+| `{db_dir}/{uid}.raw.db` | 唯一 DB（消费方读取面） | 见 §3 |
+| `{db_dir}/{uid}/` | 工作目录（audio 缓存 / 临时文件） | 部分 |
 
 `{db_dir}` 默认 `output/bili`，由 `BILI_DB_DIR` 覆盖。
+
+> 历史遗留：早先版本会同时写一个 `{uid}.db`（typed-object 主 DB）。该文件现已废弃，新版本不再读写；目录里如果还有可手动删除。
 
 ### 连接示例
 
 ```python
-import sqlite3, bili_unit
+import json, sqlite3, bili_unit
 conn = sqlite3.connect(bili_unit.db_path(123456))
 conn.row_factory = sqlite3.Row
-for row in conn.execute("SELECT bvid, title FROM video ORDER BY pubdate_ms DESC LIMIT 5"):
-    print(row["bvid"], row["title"])
+for row in conn.execute(
+    "SELECT item_id, payload FROM raw_payload "
+    "WHERE endpoint = 'video_detail' LIMIT 5"
+):
+    payload = json.loads(row["payload"])
+    print(row["item_id"], payload["info"]["title"])
 ```
 
 ```bash
-sqlite3 output/bili/123456.db "SELECT * FROM manifest_summary;"
+sqlite3 output/bili/123456.raw.db "SELECT * FROM manifest_summary;"
 ```
 
 只读用 stdlib `sqlite3` 即可，无需安装 `aiosqlite` / ORM。建议 `conn.row_factory = sqlite3.Row`，访问列名更稳。
 
 ### Schema versioning
 
-main DB `meta.schema_version` 当前为 `'4'`；raw DB `meta.schema_version` 当前为 `'2'`。迁移策略：DDL 不兼容修改时 bump major，并附带 `tools/migrate_*` 脚本；新增列、新增 view、新增 index 不算不兼容。运行时连接器检测到 `schema_version` 高于自己支持的最大版本会抛 `SchemaMismatchError`。
+`meta.schema_version` 当前为 `'3'`。迁移策略：DDL 不兼容修改时 bump major；新增列、新增 view、新增 index 不算不兼容。运行时连接器检测到 `schema_version` 不等于自己支持的版本时会抛 `SchemaMismatchError`。
 
 ## 2. Path helpers
 
-`bili_unit.__init__` 公开 4 个 helper：
+`bili_unit.__init__` 公开 3 个 helper：
 
 | 名字 | 签名 | 说明 |
 |------|------|------|
-| `db_path` | `(uid: int, settings=None) -> Path` | 主 DB 路径，文件可能尚未存在 |
-| `raw_db_path` | `(uid: int, settings=None) -> Path` | 原始 DB 路径（仅 re-parse 场景用） |
+| `db_path` | `(uid: int, settings=None) -> Path` | 唯一 DB 路径，文件可能尚未存在 |
 | `list_uids` | `(root: str \| Path) -> list[int]` | 扫描目录列出所有已落盘 uid，按升序返回 |
-| `UidContext` | class | 低阶：成对开关 (main, raw) Connection，给测试 / 迁移工具使用 |
+| `UidContext` | class | 低阶：开关单 Connection，给测试 / 迁移工具使用 |
 
 `UidContext` 是内部连接 helper；常规消费方用 stdlib `sqlite3.connect(path)` 就够。
 
-## 3. 主 DB 表（消费方契约）
+## 3. 表（消费方契约）
 
-所有时间字段命名以 `_ms` 结尾，存 INTEGER ms-epoch；`payload TEXT NOT NULL` 持有该行对应 dataclass 的完整 `to_dict()` JSON，是字段未提升为类型化列时的 escape hatch。
+所有时间字段命名以 `_ms` 结尾，存 INTEGER ms-epoch；`payload TEXT NOT NULL` 持有原始 JSON。
 
 ### 3.1 `meta` —— KV 元信息
 
 | 列 | 类型 | 说明 |
 |----|------|------|
 | `key` | TEXT PK | 见下方约定 |
-| `value` | TEXT NOT NULL | 字符串化的值（main DB `schema_version='4'`、raw DB `schema_version='2'`、`uid='123456'`、ms-epoch 的 `'1718000000000'` 等） |
+| `value` | TEXT NOT NULL | 字符串化的值（`schema_version='3'`、`uid='123456'`、ms-epoch 的 `'1718000000000'` 等） |
 
-约定 keys：`schema_version`、`uid`、`created_at_ms`、`last_fetched_at_ms`、`last_parsed_at_ms`、`last_processed_at_ms`。后三个是 stage 入口在写入收尾时刷新的「最近一次成功跑完时间」。
+约定 keys：`schema_version`、`uid`、`created_at_ms`、`last_fetched_at_ms`、`last_processed_at_ms`。后两个是 stage 入口在写入收尾时刷新的「最近一次成功跑完时间」。
 
-### 3.2 `user_profile` —— UP 主资料
+### 3.2 `raw_payload` —— 原始端点响应（核心数据）
 
-PK：`uid`。典型列：`name` / `sign` / `face_url` / `level` / `follower` / `following`，加 `payload` 与 `parsed_at_ms`。
+复合 PK `(endpoint, item_id)`：
 
-### 3.3 `video` + `video_page` —— 视频与分 P
-
-`video` PK：`bvid`。
-
-| 列 | 类型 | 说明 |
-|----|------|------|
-| `bvid` | TEXT PK | B 站 bvid |
-| `aid` | INTEGER | 旧 av 号 |
-| `title` / `description` / `cover_url` | TEXT | |
-| `duration_s` | INTEGER | 秒 |
-| `pubdate_ms` | INTEGER | 发布时间 |
-| `view_count` / `danmaku` / `reply` / `favorite` / `coin` / `share` / `like_count` | INTEGER | 统计快照 |
-| `payload` | TEXT NOT NULL | 完整 dict |
-
-索引 `idx_video_pubdate` 在 `pubdate_ms DESC` 上，按时间排序无需 sort。
-
-`video_page` 用复合 PK `(bvid, page_no)`，FK `bvid → video(bvid) ON DELETE CASCADE`。列：`cid`、`part`、`duration_s`。
-重新解析同一个视频时，稳定存在的 `video_page` 行会原地 upsert；只有最新解析中
-消失的 page_no 会删除。这避免字幕页 / ASR 页这些依赖 `(bvid, page_no)` 的
-派生结果在普通重解析时被级联清空。
-
-### 3.4 `video_subtitle` —— 字幕
-
-PK：`bvid`，FK CASCADE 到 `video`。
+- `item_id = ''` —— endpoint 级响应（uid-level 端点），分页端点把合并后的 `{pages: [...]}` dict 整体存为单行
+- `item_id = bvid / cvid / opus_id / dynamic_id / rlid / ...` —— item-level 端点的 fan-out 子项
 
 | 列 | 类型 | 说明 |
 |----|------|------|
-| `has_bilibili_human_uploaded_or_official_subtitle` | INTEGER NOT NULL CHECK IN (0,1) | 是否有 B 站 UP 主人工上传/官方字幕 |
-| `has_bilibili_platform_ai_generated_subtitle` | INTEGER NOT NULL CHECK IN (0,1) | 是否有 B 站平台自动生成的 AI 字幕 |
-| `payload` | TEXT NOT NULL | 字幕全文 + B 站语言列表；JSON key 使用 `bilibili_*` / `selected_bilibili_subtitle_*` 前缀标明来源与含义 |
+| `endpoint` | TEXT NOT NULL | 端点名，见 docs/endpoint-contract.md |
+| `item_id` | TEXT NOT NULL DEFAULT `''` | fan-out 项 ID 或空串 |
+| `payload` | TEXT NOT NULL | 原始 API 响应 JSON dict |
+| `fetched_at_ms` | INTEGER NOT NULL | 抓取时间 |
 
-B 站字幕文本与本项目自己的 ASR 文本独立存储：`video_subtitle` 保存
-B 站抓取/解析到的字幕事实（含 AI 标记），`audio_transcription` 保存 MiMo
-等 ASR 后端生成的转写结果。
+索引 `idx_raw_endpoint(endpoint, fetched_at_ms)` 加速按端点 / 时间过滤。
 
-`video_subtitle.payload` 是字幕解析结果的 canonical JSON。下面两张表只是
-为了让直接 SQL 消费者不必解析 JSON：
+### 3.3 `fetch_progress` —— 分页游标 / 进度
 
-- `video_subtitle_page`：每个已选中字幕语言的 page 一行，PK `(bvid, page_no)`。
-  `page_no` 是 SQL 侧 1-based 页号；`bilibili_video_page_index` 是 B 站 /
-  payload 里的 0-based page index。`is_selected_bilibili_subtitle_platform_ai_generated`
-  表示“当前选中的 B 站字幕是否为平台 AI 生成”，不是本项目 ASR。
-- `video_subtitle_segment`：每个 B 站字幕片段一行，PK
-  `(bvid, page_no, segment_no)`。列包含
-  `bilibili_subtitle_start_seconds` / `bilibili_subtitle_end_seconds` /
-  `bilibili_subtitle_duration_seconds` / `bilibili_subtitle_segment_text`。
+PK `endpoint`；`runner` 在写完 `raw_payload` 后把游标推进这里，崩溃落在中间时游标是旧值，下次 resume 从旧游标重抓（payload 幂等覆盖）。列：`cursor` / `total` / `fetched` / `updated_at_ms`。
 
-这两张派生表随 `video_subtitle.payload` 重建；派生页同时外键到
-`video_subtitle` 与当前 `video_page(bvid, page_no)`，避免 SQL 查询表出现
-孤儿 page 或 page_no 漂移。没有可用字幕时仍保留 `video_subtitle` 主表行，
-但不产生 page/segment 派生行；ASR 不会因此短路。
+### 3.4 `audio_transcription` —— ASR 转写
 
-### 3.5 `article` —— 专栏
-
-PK：`cvid`。列：`title` / `summary` / `pubdate_ms` / `view_count` / `like_count` / `reply` / `payload`。索引 `idx_article_pubdate ON article(pubdate_ms DESC)`。
-
-### 3.6 `opus_post` —— Opus 长图文动态
-
-PK：`opus_id`。仅 `pubdate_ms` 提为类型化列，正文 / 图片 URL 列表都在 `payload` 内。索引 `idx_opus_pubdate`。
-
-### 3.7 `dynamic_event` —— 动态事件
-
-PK：`dynamic_id`。`type` 列保存动态类型（如 `DYNAMIC_TYPE_AV` / `DYNAMIC_TYPE_DRAW`），便于按类型过滤。索引 `idx_dynamic_pubdate`。
-
-### 3.8 `audio_transcription` —— ASR 转写
-
-PK：`bvid`，FK CASCADE 到 `video`。
+PK：`bvid`。（注意：不再 FK 到任何 video 表——bvid 来源自 `raw_payload(endpoint='video_detail')`。）
 
 | 列 | 类型 | 说明 |
 |----|------|------|
 | `bvid` | TEXT PK | |
 | `status` | TEXT NOT NULL CHECK IN (`'pending'`,`'running'`,`'success'`,`'failed'`,`'skipped'`) | 状态机 |
-| `transcription_source` | TEXT | 文本来源（`MIMO-ASR` / `mock` / `subtitle` 等） |
-| `transcript` | TEXT | 转写全文（`success` / `skipped` 时非空） |
+| `transcription_source` | TEXT | 文本来源（`MIMO-ASR` / `mock` 等） |
+| `transcript` | TEXT | 转写全文（`success` 时非空） |
 | `audio_tokens` | INTEGER | LLM tokens 累计（计费用） |
 | `seconds` | REAL | 实际处理音频秒数 |
 | `cache_hits` | INTEGER | 复用缓存命中数 |
 | `payload` | TEXT NOT NULL | 完整 ProcessingItem dict |
 | `processed_at_ms` | INTEGER NOT NULL | 处理完成时间 |
 
-`status='skipped'` 表示该视频走字幕直出而非真 ASR；`'failed'` 时 `transcript` 通常为 NULL，原因看 `stage_error`。
+`audio_transcription.payload` 是 ASR 处理结果的 canonical JSON。下面两张表是从 `payload.result.pages` 物化出来的查询表：
 
-`audio_transcription.payload` 是 ASR 处理结果的 canonical JSON。下面两张表是
-从 `payload.result.pages` 物化出来的查询表：
+- `audio_transcription_page`：每个 ASR page 一行，PK `(bvid, page_no)`。`page_no` 是 SQL 侧 1-based 页号；`page_index` 是 payload 里的 0-based index。常用列包括 `language` / `asr_model` / `transcript_text` / `transcript_char_count` / `segment_count`。
+- `audio_transcription_segment`：每个 ASR segment 一行，PK `(bvid, page_no, segment_no)`。除 `start_seconds` / `end_seconds` / `duration_s` / `transcript_text` 外，还保留 `is_empty_transcript_skip` / `is_high_risk_audio_skip` / `error_message`，用来区分「本段本来无文本」「高风险跳过」和普通识别文本。
 
-- `audio_transcription_page`：每个 ASR page 一行，PK `(bvid, page_no)`。
-  `page_no` 是 SQL 侧 1-based 页号；`page_index` 是 payload 里的 0-based index。
-  常用列包括 `language` / `asr_model` / `transcript_text` /
-  `transcript_char_count` / `segment_count`。
-- `audio_transcription_segment`：每个 ASR segment 一行，PK
-  `(bvid, page_no, segment_no)`。除 `start_seconds` / `end_seconds` /
-  `duration_s` / `transcript_text` 外，还保留
-  `is_empty_transcript_skip` / `is_high_risk_audio_skip` / `error_message`，
-  用来区分“本段本来无文本”“高风险跳过”和普通识别文本。
-
-`failed` / `skipped` / `pending` / `running` 写入会清空旧的 ASR page/segment
-派生行，避免状态回退后还残留旧 transcript。
-
-### 3.9 `image_asset` —— 图片缓存索引
-
-PK：`url_hash`（即 url 的 md5，便于按 url 唯一去重）。
-
-| 列 | 类型 | 说明 |
-|----|------|------|
-| `url_hash` | TEXT PK | md5(url) |
-| `source_kind` | TEXT NOT NULL | `'profile.face'` / `'video.cover'` / `'article.image'` / `'opus.image'` / `'dynamic.image'` 等 |
-| `source_id` | TEXT NOT NULL | 来源行的 PK（bvid / opus_id / cvid…） |
-| `url` | TEXT NOT NULL | 原 URL |
-| `file_path` | TEXT | 逻辑相对路径（如 `video/<bvid>_cover.jpg`），下载失败时可能为 NULL |
-| `bytes` | INTEGER | 图片字节数 |
-| `data` | BLOB | 图片二进制内容；`-i/--download-images` 成功后默认写入 |
-| `status` | TEXT NOT NULL | 下载状态 |
-| `downloaded_at_ms` | INTEGER NOT NULL | |
-
-复合索引 `idx_image_source ON image_asset(source_kind, source_id)`：按来源反查图片资产。
-
-图片下载会把图片 BLOB 写入 `image_asset.data`，并把 `*_local` 等逻辑路径写回对应
-内容行的 `payload`。这一步不会刷新内容行的 `parsed_at_ms`，因此 incremental
-parsing 仍只依据 raw payload 新鲜度判断是否需要重解析。
+`failed` / `skipped` / `pending` / `running` 写入会清空旧的 ASR page/segment 派生行，避免状态回退后还残留旧 transcript。
 
 ## 4. Producer state 表（仅 debug 用）
 
@@ -205,7 +118,7 @@ parsing 仍只依据 raw payload 新鲜度判断是否需要重解析。
 
 ### 4.1 `stage_task`
 
-PK：`stage`，CHECK IN (`'fetching'`,`'parsing'`,`'asr'`)。一个 stage 一行，覆盖式写入。`payload` JSON 内含 `endpoints` / `models` / `pipelines` 子状态、`failed_item_ids`、`item_progress` 等运行时细节，结构与旧版 task.json 同源。
+PK：`stage`，CHECK IN (`'fetching'`,`'asr'`)。一个 stage 一行，覆盖式写入。`payload` JSON 内含 `endpoints` / `pipelines` 子状态、`failed_item_ids`、`item_progress` 等运行时细节。
 
 ### 4.2 `fetch_endpoint_state`
 
@@ -215,10 +128,6 @@ PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error
 
 `id INTEGER PK AUTOINCREMENT`，CHECK `stage IN ('fetching','asr')`。列：`endpoint` / `pipeline` / `item_type` / `item_id` / `error_type` / `message` / `retryable` / `detail` / `occurred_at_ms`。索引 `idx_stage_error_stage(stage, occurred_at_ms)`。
 
-`parsing` 阶段不写错误行——parsing 失败粒度到 model，记录在
-`stage_task.payload.models[*].status` 与 `stage_event` 的 `parse.model.failed`
-/ `parse.run.failed` 中。
-
 ### 4.4 `stage_run`
 
 内部 run-history 表，供 observability 层使用。一行代表一次写侧命令运行。
@@ -227,8 +136,7 @@ PK：`endpoint`。每端点一行，列：`status` / `retry_count` / `last_error
 `started_at_ms` / `ended_at_ms` / `args_json` / `summary_json`。
 
 `status` CHECK 包含 `PENDING` / `RUNNING` / `SUCCESS` / `PARTIAL` / `FAILED`
-/ `CANCELLED` / `DRY_RUN`。`DRY_RUN` 表示命令完成了候选发现和估算，但没有更新
-stage task 或写入内容结果。
+/ `CANCELLED` / `DRY_RUN`。`DRY_RUN` 表示命令完成了候选发现和估算，但没有更新 stage task 或写入 ASR 结果。
 
 索引：`idx_stage_run_uid_started(uid, started_at_ms DESC, run_id DESC)`。
 
@@ -240,7 +148,7 @@ stage task 或写入内容结果。
 `endpoint` / `pipeline` / `item_type` / `item_id` / `message` /
 `data_json`。
 
-稳定事件前缀为 `fetch.*` / `parse.*` / `asr.*`。实现细节留在结构化字段中，例如
+稳定事件前缀为 `fetch.*` / `asr.*`。实现细节留在结构化字段中，例如
 `event='asr.item.failed'` 搭配 `pipeline='audio'`。
 
 索引：
@@ -252,23 +160,16 @@ Run Summary 和 CLI 使用方式见 [observability.md](observability.md)。
 
 ## 5. Views（manifest 替代品）
 
-### 5.1 `video_full`
+### 5.1 `manifest_summary`
 
-`video LEFT JOIN audio_transcription USING (bvid)`，列：
-
-- 来自 video：`bvid` / `aid` / `title` / `description` / `cover_url` / `duration_s` / `pubdate_ms` / `view_count` / `danmaku` / `reply` / `favorite` / `coin` / `share` / `like_count` / `video_payload`（即 video.payload，重命名避免与 transcription.payload 冲突）/ `parsed_at_ms`
-- 来自 audio_transcription：`transcription_status` / `transcription_source` / `transcript` / `audio_tokens` / `seconds` / `cache_hits` / `processed_at_ms`
-
-LEFT JOIN：尚未处理的视频也会出现，转写列均 NULL。
-
-### 5.2 `manifest_summary`
-
-单行聚合视图，**取代旧的 `output/bili/manifest/{uid}.json` 文件**。列：
+单行聚合视图。列：
 
 | 列 | 来源 |
 |----|------|
-| `uid` / `schema_version` / `last_fetched_at_ms` / `last_parsed_at_ms` / `last_processed_at_ms` | meta 表对应 key |
-| `video_count` / `article_count` / `opus_count` / `dynamic_count` | 各内容表 `COUNT(*)` |
+| `uid` / `schema_version` / `last_fetched_at_ms` / `last_processed_at_ms` | meta 表对应 key |
+| `endpoint_count` | `COUNT(DISTINCT endpoint) FROM raw_payload` |
+| `raw_payload_count` | `COUNT(*) FROM raw_payload` |
+| `video_count` | `COUNT(*) FROM raw_payload WHERE endpoint = 'video_detail'` |
 | `transcribed_count` | `audio_transcription WHERE status='success'` |
 | `transcription_failed_count` | `audio_transcription WHERE status='failed'` |
 | `total_audio_tokens` / `total_audio_seconds` / `total_cache_hits` | `COALESCE(SUM(...), 0)` over audio_transcription |
@@ -276,71 +177,58 @@ LEFT JOIN：尚未处理的视频也会出现，转写列均 NULL。
 
 注意 meta 来源列保持 TEXT（因 `meta.value` 是 TEXT），数值列做 SUM/COUNT 后是 INTEGER/REAL；消费方拿到 `last_*_at_ms` 时按需 `int(row["last_fetched_at_ms"])`。
 
-## 6. Raw DB（producer-private）
+按需的「typed view」（如以前的 `video_full`、按内容类型聚合的 view 等）请由消费方在自己的查询层用 `json_extract` 派生；本仓库不再提供。
 
-> 多数消费方 **不应** 打开此文件。仅在 re-parse 场景（不重新抓 B 站，只用本地缓存的 raw 响应重新跑 parsing）才需要它。
+## 6. SQL 食谱
 
-DDL：[raw_v2.sql](../bili_unit/_db/ddl/raw_v2.sql)。两张表：
-
-### 6.1 `raw_payload`
-
-复合 PK `(endpoint, item_id)`：
-
-- `item_id = ''` —— endpoint 级响应（uid-level 端点），分页端点把合并后的 `{pages: [...]}` dict 整体存为单行
-- `item_id = bvid / cvid / opus_id / dynamic_id / rlid / ...` —— item-level 端点的 fan-out 子项
-
-列：`payload TEXT NOT NULL`、`fetched_at_ms INTEGER NOT NULL`。索引 `idx_raw_endpoint(endpoint, fetched_at_ms)`。
-
-### 6.2 `fetch_progress`
-
-PK：`endpoint`。列：`cursor` / `total` / `fetched` / `updated_at_ms`。作为 commit marker：runner 先写 `raw_payload` 再写 `fetch_progress`，崩溃落在中间时 progress 是旧值，下次 resume 从旧游标重新拉（payload 幂等覆盖）。
-
-raw DB 的 `meta` 只放 `schema_version` 与 `uid`，没有最近时间戳——抓取时间戳跟在 `raw_payload.fetched_at_ms`。
-
-## 7. SQL 食谱
-
-### 7.1 列出某 uid 的视频，按发布时间倒序
+### 6.1 列出某 uid 的视频，按发布时间倒序
 
 ```sql
-SELECT bvid, title, view_count, duration_s, pubdate_ms
-FROM video
+SELECT item_id AS bvid,
+       json_extract(payload, '$.info.title')   AS title,
+       json_extract(payload, '$.info.duration') AS duration_s,
+       json_extract(payload, '$.info.pubdate') * 1000 AS pubdate_ms
+FROM raw_payload
+WHERE endpoint = 'video_detail'
 ORDER BY pubdate_ms DESC
 LIMIT 50;
 ```
 
-`idx_video_pubdate` 直接走索引，无 sort。
+> `pubdate` 在 B 站原始响应里是秒；用 `json_extract * 1000` 自取毫秒。
 
-### 7.2 取单个视频 + 完整 ASR 转写
+### 6.2 取单个视频 + 完整 ASR 转写
 
 ```sql
-SELECT bvid, title, transcription_status, transcription_source, transcript, seconds
-FROM video_full
-WHERE bvid = ?;
+SELECT r.item_id AS bvid,
+       json_extract(r.payload, '$.info.title') AS title,
+       t.status, t.transcription_source, t.transcript, t.seconds
+FROM raw_payload r
+LEFT JOIN audio_transcription t ON t.bvid = r.item_id
+WHERE r.endpoint = 'video_detail' AND r.item_id = ?;
 ```
 
-`transcription_status IS NULL` 表示 ASR 还没跑过这个视频。
-
-### 7.3 找出尚未转写的视频
+### 6.3 找出尚未转写的视频
 
 ```sql
-SELECT v.bvid, v.title
-FROM video v
-LEFT JOIN audio_transcription t USING (bvid)
-WHERE t.status IS NULL OR t.status = 'failed'
-ORDER BY v.pubdate_ms DESC;
+SELECT r.item_id AS bvid
+FROM raw_payload r
+LEFT JOIN audio_transcription t ON t.bvid = r.item_id
+WHERE r.endpoint = 'video_detail'
+  AND (t.status IS NULL OR t.status = 'failed')
+ORDER BY json_extract(r.payload, '$.info.pubdate') DESC;
 ```
 
 可以直接喂给下次 `asr` run 的 `--only-bvids`。
 
-### 7.4 一次拿到 manifest 摘要
+### 6.4 一次拿到 manifest 摘要
 
 ```sql
 SELECT * FROM manifest_summary;
 ```
 
-返回单行，对应旧 `manifest/{uid}.json` 内容。
+返回单行，类似旧 `manifest/{uid}.json` 内容。
 
-### 7.5 列出最近的 fetching 错误
+### 6.5 列出最近的 fetching 错误
 
 ```sql
 SELECT endpoint, error_type, message, occurred_at_ms
@@ -352,7 +240,7 @@ LIMIT 20;
 
 `idx_stage_error_stage(stage, occurred_at_ms)` 加速。`detail` 列存 JSON，需要更多上下文时再 SELECT 出来。
 
-## 8. JSON 列使用
+## 7. JSON 列使用
 
 所有 `payload` 列是 UTF-8 JSON，搭配 `sqlite3.Row` + `json.loads()` 即可：
 
@@ -360,26 +248,28 @@ LIMIT 20;
 import json, sqlite3, bili_unit
 conn = sqlite3.connect(bili_unit.db_path(uid))
 conn.row_factory = sqlite3.Row
-row = conn.execute("SELECT payload FROM video WHERE bvid = ?", (bvid,)).fetchone()
-data = json.loads(row["payload"])  # full VideoData.to_dict()
+row = conn.execute(
+    "SELECT payload FROM raw_payload "
+    "WHERE endpoint = 'video_detail' AND item_id = ?",
+    (bvid,),
+).fetchone()
+data = json.loads(row["payload"])  # 完整 video_detail 原始响应
 ```
 
 需要在 SQLite 侧做过滤 / 排序时用 JSON1（Python 自带 sqlite 默认编译开启）：
 
 ```sql
-SELECT bvid, json_extract(payload, '$.owner.name') AS up_name
-FROM video
+SELECT item_id, json_extract(payload, '$.info.owner.name') AS up_name
+FROM raw_payload
+WHERE endpoint = 'video_detail'
 LIMIT 5;
 ```
 
 `json_extract` 支持 dot path 与 `$[0]` 索引；返回值是 TEXT/INTEGER/REAL/NULL，可直接用作 WHERE 条件。
 
-## 9. WAL 文件
+## 8. WAL 文件
 
-main DB 与 raw DB 都开启 `PRAGMA journal_mode = WAL`，运行时会附带：
-
-- `{uid}.db-wal` / `{uid}.db-shm`
-- `{uid}.raw.db-wal` / `{uid}.raw.db-shm`
+DB 开启 `PRAGMA journal_mode = WAL`，运行时会附带 `{uid}.raw.db-wal` / `{uid}.raw.db-shm`。
 
 约定：
 
@@ -387,9 +277,9 @@ main DB 与 raw DB 都开启 `PRAGMA journal_mode = WAL`，运行时会附带：
 - 备份时可忽略（先 `wal_checkpoint`）或与主文件一并打包；二者一致即可。
 - `BiliCommand.delete_uid(uid)` 会同步删除 `-wal` / `-shm` 伴生文件，无需手动清理。
 
-## 10. 稳定性承诺
+## 9. 稳定性承诺
 
-- §3 内容表的列名 / 类型 / PK / FK / CHECK 约束，以及 §5 的 view 列，是主 DB 的稳定读取面；不兼容修改会 bump schema major。
+- §3.1（`meta`）、§3.2（`raw_payload`）、§3.4（`audio_transcription` 系列）的列名 / 类型 / PK / CHECK 约束，以及 §5 的 view 列，是稳定读取面；不兼容修改会 bump schema major。
 - 新增列、新增 view、新增 index 视为 minor 兼容变更，消费方应宽容（用列名而非列序读取）。
 - §4 的 `stage_task` / `fetch_endpoint_state` / `stage_error` 内部列可在 minor 版本演化；如需跨版本读取，看 `payload` JSON 的 schema 注释。
-- §6 的 raw DB 是内部布局，schema_version 独立，可随 minor bump 调整。
+- raw_payload 内部的 B 站响应 schema 由上游决定，本仓库不归一化；用 `docs/endpoint-contract.md` 当导航。

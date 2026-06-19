@@ -1,12 +1,10 @@
 # bili-unit - unified CLI for the bili unit.
 #
-# Phase 5 contract: read-side commands removed. Consumers query the SQLite
-# database file directly (see ``bili_unit.db_path``). The CLI keeps only
-# write-side actions plus auth helpers:
+# Read-side commands removed: consumers query the SQLite database file
+# directly (see ``bili_unit.db_path``). The CLI keeps only write-side
+# actions plus auth helpers:
 #
-#   bili-unit sync         <uid> [options]   run fetching + parsing
-#   bili-unit fetch        <uid> [options]   run fetching only
-#   bili-unit parse        <uid> [options]   run parsing only
+#   bili-unit fetch        <uid> [options]   run fetching
 #   bili-unit asr          <uid> [options]   run audio ASR
 #   bili-unit delete-uid   <uid> [-y]        delete all data for a uid
 #   bili-unit tui                            open local dashboard TUI
@@ -95,77 +93,6 @@ def _resolve_fetch_endpoints(args: argparse.Namespace) -> list[str] | None:
     return resolve_profile(args.profile)
 
 
-async def _handle_parse(args: argparse.Namespace) -> None:
-    """Run parsing via the unit-level BiliCommand."""
-    from bili_unit import session
-
-    models = _resolve_parse_models(args)
-
-    renderer = CliRenderer()
-    async with session() as cmd:
-        result = await cmd.parse(
-            args.uid,
-            mode=args.mode,
-            models=models,
-            download_images=args.download_images,
-        )
-    summary = await _load_cli_summary(args.uid, run_id=result.run_id)
-    if summary is None:
-        renderer.parse_result(uid=args.uid, status=result.status)
-    else:
-        renderer.parse_summary(summary, fallback_status=result.status)
-
-
-def _resolve_parse_models(args: argparse.Namespace) -> list[str] | None:
-    from bili_unit.parsing.specs import MODEL_ORDER
-
-    return _resolve_subset(
-        flag_label="model",
-        all_names=list(MODEL_ORDER),
-        include=args.models,
-        exclude=args.exclude_models,
-    )
-
-
-async def _handle_sync(args: argparse.Namespace) -> None:
-    """Run the common fetch + parse workflow."""
-    from bili_unit import session
-
-    endpoints = _resolve_fetch_endpoints(args)
-    parse_models = _resolve_parse_models(args)
-
-    renderer = CliRenderer()
-    async with session() as cmd:
-        result = await cmd.sync(
-            args.uid,
-            endpoints=endpoints,
-            fetch_mode=args.fetch_mode,
-            parse_mode=args.parse_mode,
-            parse_models=parse_models,
-            download_images=args.download_images,
-        )
-        parse_status = result.parse.status.value if result.parse else "SKIPPED"
-    summary = await _load_cli_summary(
-        args.uid,
-        run_id=result.run_id,
-        filter_events_to_run=False,
-    )
-    if summary is None:
-        renderer.sync_result(
-            uid=args.uid,
-            status=result.status,
-            fetch_status=result.fetch.status,
-            parse_status=parse_status,
-        )
-    else:
-        renderer.sync_summary(
-            summary,
-            fallback_status=result.status,
-            fallback_fetch_status=result.fetch.status,
-            fallback_parse_status=parse_status,
-        )
-
-
 async def _handle_asr(args: argparse.Namespace) -> None:
     """Run audio ASR via the unit-level BiliCommand."""
     from bili_unit import session
@@ -242,21 +169,19 @@ async def _load_cli_summary(
 
 
 async def _handle_delete_uid(args: argparse.Namespace) -> None:
-    """Delete all on-disk artefacts for a uid (main DB / raw DB / workdir)."""
-    from bili_unit import db_path, raw_db_path, session
+    """Delete all on-disk artefacts for a uid (raw DB / workdir)."""
+    from bili_unit import db_path, session
 
-    main = db_path(args.uid)
-    raw = raw_db_path(args.uid)
-    workdir = main.parent / str(args.uid)
+    raw = db_path(args.uid)
+    workdir = raw.parent / str(args.uid)
     renderer = CliRenderer()
-    if not main.exists() and not raw.exists() and not workdir.exists():
+    if not raw.exists() and not workdir.exists():
         renderer.delete_missing(uid=args.uid)
         return
 
     if not args.yes:
         renderer.delete_plan(
             uid=args.uid,
-            main=main,
             raw=raw,
             workdir=workdir,
         )
@@ -331,37 +256,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # --- sync ---
-    p_sync = sub.add_parser(
-        "sync",
-        help="Run fetching then parsing for a uid",
-    )
-    p_sync.add_argument("uid", type=int, help="Target Bilibili user uid")
-    _add_fetch_selection_args(p_sync)
-    p_sync.add_argument(
-        "--fetch-mode",
-        choices=["incremental", "refresh", "full"],
-        default="incremental",
-        help="Fetching mode used by sync (default: incremental)",
-    )
-    p_sync.add_argument(
-        "--parse-mode",
-        choices=["full", "incremental"],
-        default="incremental",
-        help="Parsing mode used by sync (default: incremental)",
-    )
-    _add_sync_parse_selection_args(p_sync)
-    p_sync.add_argument(
-        "--download-images", "-i",
-        action="store_true",
-        default=False,
-        help="Download images after parsing",
-    )
-
     # --- fetch ---
     p_fetch = sub.add_parser(
         "fetch",
-        help="Advanced: run fetching only for a uid",
+        help="Run fetching for a uid (writes raw_payload rows)",
     )
     p_fetch.add_argument("uid", type=int, help="Target Bilibili user uid")
     _add_fetch_selection_args(p_fetch)
@@ -370,26 +268,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["incremental", "refresh", "full"],
         default="incremental",
         help="Fetching mode (default: incremental)",
-    )
-
-    # --- parse ---
-    p_parse = sub.add_parser(
-        "parse",
-        help="Run parsing for a uid (converts raw payloads to typed objects)",
-    )
-    p_parse.add_argument("uid", type=int, help="Target Bilibili user uid")
-    _add_parse_selection_args(p_parse)
-    p_parse.add_argument(
-        "--mode", "-m",
-        choices=["full", "incremental"],
-        default="full",
-        help="Parsing mode (default: full)",
-    )
-    p_parse.add_argument(
-        "--download-images", "-i",
-        action="store_true",
-        default=False,
-        help="Download images (avatar, covers, dynamic pics) after parsing",
     )
 
     # --- asr ---
@@ -493,54 +371,13 @@ def _add_fetch_selection_args(parser: argparse.ArgumentParser) -> None:
     )
     fetch_group.add_argument(
         "--profile", "-p",
-        choices=["all", "parsing", "minimal"],
+        choices=["all", "minimal"],
         default="all",
         help=(
             "Endpoint set preset (mutually exclusive with -e/-x):\n"
             "  all      all registered endpoints\n"
-            "  parsing  endpoints consumed by parsing models\n"
             "  minimal  lightweight listing endpoints for smoke / CI"
         ),
-    )
-
-
-def _add_parse_selection_args(parser: argparse.ArgumentParser) -> None:
-    model_group = parser.add_mutually_exclusive_group()
-    model_group.add_argument(
-        "--include", "--models", "-e",
-        dest="models",
-        nargs="+",
-        default=None,
-        metavar="MODEL",
-        help="Parsing model names to run (e.g. -e video_work opus_post).",
-    )
-    model_group.add_argument(
-        "--exclude", "--exclude-models", "-x",
-        dest="exclude_models",
-        nargs="+",
-        default=None,
-        metavar="MODEL",
-        help="Parsing model names to skip; everything else is parsed.",
-    )
-
-
-def _add_sync_parse_selection_args(parser: argparse.ArgumentParser) -> None:
-    model_group = parser.add_mutually_exclusive_group()
-    model_group.add_argument(
-        "--models",
-        dest="models",
-        nargs="+",
-        default=None,
-        metavar="MODEL",
-        help="Parsing model names to run after fetch.",
-    )
-    model_group.add_argument(
-        "--exclude-models",
-        dest="exclude_models",
-        nargs="+",
-        default=None,
-        metavar="MODEL",
-        help="Parsing model names to skip after fetch.",
     )
 
 
@@ -589,9 +426,7 @@ def main() -> None:
     )
 
     handlers = {
-        "sync": _handle_sync,
         "fetch": _handle_fetch,
-        "parse": _handle_parse,
         "asr": _handle_asr,
         "delete-uid": _handle_delete_uid,
         "tui": _handle_tui,

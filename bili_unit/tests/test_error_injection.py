@@ -230,7 +230,7 @@ async def test_sqlite_operational_error_propagates_and_rolls_back(tmp_path: Path
     from bili_unit._db.connection import Connection
 
     db_path = tmp_path / "test_rollback.db"
-    conn = Connection(db_path, kind="main", uid=12345)
+    conn = Connection(db_path, uid=12345)
     await conn.open()
 
     # Create a scratch table independent of the DDL schema so we can insert

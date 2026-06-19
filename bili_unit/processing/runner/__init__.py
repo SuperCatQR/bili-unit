@@ -45,7 +45,6 @@ DownloaderFactory = Callable[..., Any]  # AudioDownloader constructor, compatibl
 if TYPE_CHECKING:
     from ..._env import BiliSettings
     from ...observability import RunReporter
-    from ...parsing._store import ParsingStore
     from .._store import ProcessingStore
     from ..audio._asr_backend import ASRBackend
 
@@ -88,7 +87,6 @@ class ProcessingRunner(_AudioMixin):
         self._asr_cache: ASRCacheStore | None = None
         # Per-uid stores assigned for the duration of ``run``.
         self._store: ProcessingStore | None = None
-        self._parse_store: ParsingStore | None = None
         self._reporter: RunReporter | None = None
 
     # ``_temp_dir`` is derived from settings on demand (per-uid scoping is
@@ -119,7 +117,6 @@ class ProcessingRunner(_AudioMixin):
         uid: int,
         *,
         proc_store: ProcessingStore,
-        parse_store: ParsingStore,
         reporter: RunReporter | None = None,
         mode: str = "incremental",
         limit: int | None = None,
@@ -135,9 +132,9 @@ class ProcessingRunner(_AudioMixin):
         Args:
             uid: target user.
             proc_store: per-uid processing store (writes audio_transcription
-                + stage_task[stage='asr'] + stage_error rows).
-            parse_store: per-uid parsing store (read-only here — video pages
-                and subtitle payloads from main DB).
+                + stage_task[stage='asr'] + stage_error rows). Also exposes
+                the underlying connection so the runner can read raw
+                ``video_detail`` payloads to discover work items.
             mode: "incremental" (default) or "full".
             limit / only_bvids / exclude_bvids / retry_failed_only / dry_run: see
                 :meth:`ProcessingCommand.process_uid`.
@@ -165,9 +162,8 @@ class ProcessingRunner(_AudioMixin):
             },
         )
 
-        # Bind per-uid stores so the audio mixin can reach them through ``self``.
+        # Bind per-uid store so the audio mixin can reach it through ``self``.
         self._store = proc_store
-        self._parse_store = parse_store
         self._reporter = reporter
         try:
             if reporter is not None:
@@ -250,7 +246,7 @@ class ProcessingRunner(_AudioMixin):
                     budget_exceeded=budget_exceeded,
                 )
             ):
-                coverage = await self._audit_audio_coverage(proc_store, parse_store)
+                coverage = await self._audit_audio_coverage(proc_store)
 
             # Phase 2 — finalise: derive task status from current pipeline rollup.
             task = await proc_store.get_task() or {}
@@ -310,7 +306,6 @@ class ProcessingRunner(_AudioMixin):
             raise
         finally:
             self._store = None
-            self._parse_store = None
             self._reporter = None
 
     # -- helpers -----------------------------------------------------------
@@ -366,10 +361,11 @@ class ProcessingRunner(_AudioMixin):
     async def _audit_audio_coverage(
         self,
         proc_store: ProcessingStore,
-        parse_store: ParsingStore,
     ) -> dict[str, Any]:
-        """Compare parsed videos with current successful audio rows."""
-        page_items = await parse_store.list_video_page_work_items()
+        """Compare known videos with current successful audio rows."""
+        from .._work_items import list_audio_work_items
+
+        page_items = await list_audio_work_items(proc_store.ctx.conn)
         expected = sorted(page_items.keys())
         statuses = await proc_store.list_audio_statuses()
         missing = [bvid for bvid in expected if bvid not in statuses]

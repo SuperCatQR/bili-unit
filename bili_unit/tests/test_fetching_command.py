@@ -55,9 +55,9 @@ async def _read_task_status(tmp_path: Path, uid: int) -> str | None:
 
 async def _list_stage_runs(tmp_path: Path, uid: int) -> list[dict]:
     ctx = UidContext(uid=uid, root=tmp_path)
-    await ctx.open(raw=False)
+    await ctx.open()
     try:
-        rows = await ctx.main.fetch_all(
+        rows = await ctx.conn.fetch_all(
             "SELECT run_id, command, status, args_json "
             "FROM stage_run WHERE uid = ? ORDER BY started_at_ms",
             (uid,),
