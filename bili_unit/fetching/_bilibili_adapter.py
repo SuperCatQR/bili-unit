@@ -1,4 +1,4 @@
-﻿# _bilibili_adapter — bilibili-api-python calls for fetching.
+# _bilibili_adapter — bilibili-api-python calls for fetching.
 
 import asyncio
 import logging
@@ -56,7 +56,11 @@ _extract_bvids_from_videos = _video_adapter._extract_bvids_from_videos
 
 def _sync_video_adapter_patch_target() -> None:
     """Keep legacy ``_bilibili_adapter.Video`` patch target effective."""
-    _video_adapter.Video = Video
+    # Reassigning the module-level ``Video`` name keeps the legacy
+    # ``_bilibili_adapter.Video`` monkeypatch target in sync with the real
+    # class; mypy rejects assigning to a name it treats as a type, so this
+    # single rebind is ignored on purpose.
+    _video_adapter.Video = Video  # type: ignore[misc]
 
 
 async def _call_video_adapter(name: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -171,6 +175,7 @@ async def _wrap_scalar_result(coro: Awaitable, key: str = "value") -> dict:
 # Item-level fan-out helpers (cf. video_detail_design.md §9.3)
 # ---------------------------------------------------------------------------
 
+
 async def _wrap_list_result(coro: Awaitable) -> dict:
     """Wrap an API that returns a bare list into a dict ``{"list": [...]}``.
 
@@ -208,11 +213,13 @@ async def fetch_user_channels(
             ch_id = ch.get_id()
             async with _map_bilibili_errors(f"channels[{ch_id}]: get_meta"):
                 meta = await asyncio.wait_for(ch.get_meta(), timeout=timeout)
-            rows.append({
-                "id": ch_id,
-                "type": _json_safe(ch_type),
-                "meta": _json_safe(meta),
-            })
+            rows.append(
+                {
+                    "id": ch_id,
+                    "type": _json_safe(ch_type),
+                    "meta": _json_safe(meta),
+                }
+            )
         except Exception as exc:
             raise RequestError(f"channels: serialise failed: {exc}") from exc
     return {"channels": rows}
@@ -297,8 +304,6 @@ async def fetch_upower_qa_detail_item(
 # ---------------------------------------------------------------------------
 
 
-
-
 # ---------------------------------------------------------------------------
 # Item-level fan-out helpers — article_detail (per-cvid body)
 # ---------------------------------------------------------------------------
@@ -368,16 +373,14 @@ async def fetch_article_detail_item(
         ):
             await asyncio.wait_for(a.fetch_content(), timeout=timeout)
             markdown_text: str = a.markdown()
-            content_json: list[Any] = a.json()
+            content_json: dict[str, Any] = a.json()
     except InitialStateException as exc:
         raise ResourceUnavailableError(
-            f"article_detail[{cvid}]: fetch_content {exc} "
-            f"(article unavailable / page returns no initial state)",
+            f"article_detail[{cvid}]: fetch_content {exc} (article unavailable / page returns no initial state)",
         ) from exc
     except KeyError as exc:
         raise ResourceUnavailableError(
-            f"article_detail[{cvid}]: fetch_content missing key {exc} "
-            f"(article unavailable / page structure changed)",
+            f"article_detail[{cvid}]: fetch_content missing key {exc} (article unavailable / page structure changed)",
         ) from exc
 
     return {
@@ -468,12 +471,12 @@ async def fetch_opus_detail_item(
         ):
             markdown_text: str = await asyncio.wait_for(o.markdown(), timeout=timeout)
             images: list[dict[str, Any]] = await asyncio.wait_for(
-                o.get_images_raw_info(), timeout=timeout,
+                o.get_images_raw_info(),
+                timeout=timeout,
             )
     except KeyError as exc:
         raise ResourceUnavailableError(
-            f"opus_detail[{opus_id}]: markdown missing key {exc} "
-            f"(opus unavailable / shape changed)",
+            f"opus_detail[{opus_id}]: markdown missing key {exc} (opus unavailable / shape changed)",
         ) from exc
 
     return {
@@ -544,6 +547,7 @@ async def fetch_article_list_detail_item(
 # Item-level fan-out helpers — channel_videos_season / channel_videos_series
 # ---------------------------------------------------------------------------
 
+
 def _extract_season_ids(raw_payload: dict) -> list[str]:
     """Extract season IDs from channel_list endpoint raw_payload."""
     ids: list[str] = []
@@ -592,14 +596,20 @@ async def _paginate_channel_videos(
             if kind == "season":
                 data = await asyncio.wait_for(
                     u.get_channel_videos_season(
-                        sid=sid, sort=ChannelOrder.DEFAULT, pn=pn, ps=ps,
+                        sid=sid,
+                        sort=ChannelOrder.DEFAULT,
+                        pn=pn,
+                        ps=ps,
                     ),
                     timeout=timeout,
                 )
             else:
                 data = await asyncio.wait_for(
                     u.get_channel_videos_series(
-                        sid=sid, sort=ChannelOrder.DEFAULT, pn=pn, ps=ps,
+                        sid=sid,
+                        sort=ChannelOrder.DEFAULT,
+                        pn=pn,
+                        ps=ps,
                     ),
                     timeout=timeout,
                 )
@@ -623,15 +633,18 @@ def _user_method(name: str, **defaults: Any):
     ``user.User(uid, credential=cred).{method}(**kw_merged_with_defaults)``.
     This helper removes ~3 lines of boilerplate per endpoint.
     """
+
     def _fn(uid, cred=None, **kw):
         merged = {**defaults, **kw}
         return getattr(user.User(uid, credential=cred), name)(**merged)
+
     return _fn
 
 
 # ---------------------------------------------------------------------------
 # HTTP backend bootstrap
 # ---------------------------------------------------------------------------
+
 
 def init_http_backend(backend: str = "aiohttp", impersonate: str = "chrome131") -> None:
     """Called once at startup to configure bilibili-api-python's HTTP backend."""
@@ -645,9 +658,7 @@ def init_http_backend(backend: str = "aiohttp", impersonate: str = "chrome131") 
             return
     except ImportError:
         if backend == "curl_cffi":
-            logger.warning(
-                "curl_cffi not installed; falling back to aiohttp"
-            )
+            logger.warning("curl_cffi not installed; falling back to aiohttp")
 
     # default / fallback
     select_client("aiohttp")
@@ -657,6 +668,7 @@ def init_http_backend(backend: str = "aiohttp", impersonate: str = "chrome131") 
 # ---------------------------------------------------------------------------
 # Fetch a single page
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class FetchPageResult:

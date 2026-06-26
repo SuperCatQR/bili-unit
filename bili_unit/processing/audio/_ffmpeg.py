@@ -28,7 +28,7 @@ def _try_system() -> str | None:
 
 def _try_imageio() -> str | None:
     try:
-        import imageio_ffmpeg as iio  # type: ignore[import-not-found]
+        import imageio_ffmpeg as iio
     except ImportError:
         return None
     try:

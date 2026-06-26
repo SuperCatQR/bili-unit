@@ -93,9 +93,19 @@ output/bili/{uid}/          # workdir（音频缓存、临时文件等）
 ## 开发
 
 ```bash
-uv run pytest -v                                   # 全量测试（~10 秒，无网络）
 uv run ruff check                                  # lint
+uv run ruff format --check                         # 格式检查（CI 用，本地可去掉 --check 直接格式化）
+uv run mypy bili_unit                              # 静态类型检查（bili_unit/ 源码须零 error）
+uv run pytest -v                                   # 全量测试（~10 秒，无网络）
 ```
+
+提交前请确保以上四条全部通过——它们与 CI 的门禁完全一致（见
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）：`ruff check` → `ruff format --check`
+→ `mypy` → `pytest` 顺序执行，任一失败则 CI 红、PR 不可合。
+
+类型检查为首次接入，采用分级严格度：第三方依赖（无 stub 的 `bilibili-api` 等）的导入按
+`ignore_missing_imports` 放行，但本仓库 `bili_unit/` 源码必须零 error；测试目录暂不纳入门禁
+（mock 较多，留作后续收敛）。需要逐行忽略时用 `# type: ignore[code]` 并写明理由。
 
 测试覆盖抓取 runner、限流、端点 schema 适配、ASR pipeline、SQLite store、observability、TUI 读模型。所有外部 API 都被 mock。
 
