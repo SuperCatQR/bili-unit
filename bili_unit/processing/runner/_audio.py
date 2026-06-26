@@ -61,22 +61,27 @@ class _AudioMixin:
 
     _store: ProcessingStore | None
     _settings: BiliSettings
-    _temp_dir: Path
     _asr_backend: ASRBackend | None
     _credential_provider: CredentialProvider | None
     _downloader_factory: Any
     _convert_fn: Any
     _progress_factory: Any
 
+    @property
+    def _temp_dir(self) -> Path:  # pragma: no cover
+        raise NotImplementedError
+
     def _get_asr_cache(self) -> ASRCacheStore | None: ...  # pragma: no cover
 
     @staticmethod
     def _derive_pipeline_status(
         rollup: dict[str, dict[str, int]],
-    ) -> ProcessingPipelineStatus: ...  # pragma: no cover
+    ) -> ProcessingPipelineStatus:  # pragma: no cover
+        raise NotImplementedError
 
     @staticmethod
-    def _is_retryable(exc: Exception) -> bool: ...  # pragma: no cover
+    def _is_retryable(exc: Exception) -> bool:  # pragma: no cover
+        raise NotImplementedError
 
     # -- audio pipeline ----------------------------------------------------
 
@@ -101,7 +106,8 @@ class _AudioMixin:
         """
         store = self._store
         await store.update_task_pipeline(
-            _AUDIO, status=ProcessingPipelineStatus.RUNNING.value,
+            _AUDIO,
+            status=ProcessingPipelineStatus.RUNNING.value,
         )
 
         # A1: scrub orphan ffmpeg temp files from a previously killed process.
@@ -116,7 +122,8 @@ class _AudioMixin:
         # 1. discover audio work items (one per bvid)
         try:
             audio_items, skipped = await self._discover_audio_items(
-                uid, mode,
+                uid,
+                mode,
                 only_bvids=only_bvids,
                 exclude_bvids=exclude_bvids,
                 retry_failed_only=retry_failed_only,
@@ -172,7 +179,7 @@ class _AudioMixin:
             max_audio_tokens=max_audio_tokens,
         )
 
-        rollup: dict[str, dict[str, int]] = {
+        rollup = {
             "transcription": {
                 "total": len(audio_items) + skipped,
                 "completed": 0,
@@ -181,7 +188,8 @@ class _AudioMixin:
             },
         }
         await store.update_task_pipeline(
-            _AUDIO, status=ProcessingPipelineStatus.RUNNING.value,
+            _AUDIO,
+            status=ProcessingPipelineStatus.RUNNING.value,
             items=rollup,
         )
         if self._reporter is not None:
@@ -222,7 +230,9 @@ class _AudioMixin:
             rollup["transcription"]["total"] = skipped + len(audio_items)
             final_status = ProcessingPipelineStatus.PARTIAL
             await store.update_task_pipeline(
-                _AUDIO, status=final_status.value, items=rollup,
+                _AUDIO,
+                status=final_status.value,
+                items=rollup,
             )
             return candidates, estimate.to_dict(), budget_exceeded
 
@@ -244,11 +254,16 @@ class _AudioMixin:
                     data={"candidates": candidates, "skipped": skipped},
                 )
             rollup["transcription"] = {
-                "total": 0, "completed": 0, "failed": 0, "skipped": 0,
+                "total": 0,
+                "completed": 0,
+                "failed": 0,
+                "skipped": 0,
             }
             final_status = self._derive_pipeline_status(rollup)
             await store.update_task_pipeline(
-                _AUDIO, status=final_status.value, items=rollup,
+                _AUDIO,
+                status=final_status.value,
+                items=rollup,
             )
             return candidates, estimate.to_dict(), []
 
@@ -270,7 +285,9 @@ class _AudioMixin:
         # 5. final pipeline status
         final_status = self._derive_pipeline_status(rollup)
         await store.update_task_pipeline(
-            _AUDIO, status=final_status.value, items=rollup,
+            _AUDIO,
+            status=final_status.value,
+            items=rollup,
         )
         return candidates, estimate.to_dict(), []
 
@@ -337,9 +354,7 @@ class _AudioMixin:
         if not payloads:
             return [], 0
 
-        only_set: set[str] | None = (
-            set(only_bvids) if only_bvids is not None else None
-        )
+        only_set: set[str] | None = set(only_bvids) if only_bvids is not None else None
         exclude_set: set[str] = set(exclude_bvids or [])
 
         items: list[WorkItem] = []
@@ -353,14 +368,19 @@ class _AudioMixin:
             if not isinstance(payload, list) or not payload:
                 continue
 
-            items.append(WorkItem(
-                item_type="audio",
-                item_id=bvid,
-                item_data={"bvid": bvid, "pages": payload},
-            ))
+            items.append(
+                WorkItem(
+                    item_type="audio",
+                    item_id=bvid,
+                    item_data={"bvid": bvid, "pages": payload},
+                )
+            )
 
         ready, skipped = await self._filter_audio_ready(
-            uid, items, mode, retry_failed_only=retry_failed_only,
+            uid,
+            items,
+            mode,
+            retry_failed_only=retry_failed_only,
         )
 
         if limit is not None and limit >= 0:
@@ -423,8 +443,7 @@ class _AudioMixin:
             except Exception as exc:  # noqa: BLE001 — safety net
                 logger.error(
                     "audio_worker_unexpected_error",
-                    extra={"uid": uid, "bvid": item.item_id,
-                           "error": str(exc)},
+                    extra={"uid": uid, "bvid": item.item_id, "error": str(exc)},
                 )
                 now = int(time.time() * 1000)
                 await self._store.record_error(
@@ -579,7 +598,9 @@ class _AudioMixin:
 
                 # 1. CDN download
                 audio_info = await audio_download_page(
-                    downloader, bvid, page_index,
+                    downloader,
+                    bvid,
+                    page_index,
                     quality=self._settings.bili_processing_audio_quality,
                     m4s_path=m4s_path,
                 )
@@ -588,16 +609,14 @@ class _AudioMixin:
                 page_duration_raw = page.get("duration")
                 page_duration_for_split: float | None
                 try:
-                    page_duration_for_split = (
-                        float(page_duration_raw)
-                        if page_duration_raw is not None
-                        else None
-                    )
+                    page_duration_for_split = float(page_duration_raw) if page_duration_raw is not None else None
                 except (TypeError, ValueError):
                     page_duration_for_split = None
                 mp3_files = await audio_convert_page(
-                    m4s_path, temp_base / f"mp3_{page_index}",
-                    page_duration_for_split, self._settings,
+                    m4s_path,
+                    temp_base / f"mp3_{page_index}",
+                    page_duration_for_split,
+                    self._settings,
                     convert_fn=self._convert_fn,
                 )
 
@@ -605,37 +624,23 @@ class _AudioMixin:
                 asr_cache = self._get_asr_cache()
                 cdn_duration = audio_info.get("duration")
                 trans = await audio_transcribe_page(
-                    self._asr_backend, asr_cache,
-                    uid, bvid, page_index, mp3_files, asr_language,
-                    high_risk_split_enabled=(
-                        self._settings
-                        .bili_processing_asr_high_risk_split_enabled
-                    ),
-                    high_risk_split_seconds=(
-                        self._settings.bili_processing_asr_high_risk_split_seconds
-                    ),
-                    high_risk_min_segment_seconds=(
-                        self._settings
-                        .bili_processing_asr_high_risk_min_segment_seconds
-                    ),
-                    empty_segment_skip_seconds=(
-                        self._settings.bili_processing_asr_empty_segment_skip_seconds
-                    ),
-                    rate_limit_max_attempts=(
-                        self._settings
-                        .bili_processing_asr_rate_limit_max_attempts
-                    ),
-                    rate_limit_retry_delays=tuple(
-                        self._settings.get_asr_rate_limit_retry_delays()
-                    ),
+                    self._asr_backend,
+                    asr_cache,
+                    uid,
+                    bvid,
+                    page_index,
+                    mp3_files,
+                    asr_language,
+                    high_risk_split_enabled=(self._settings.bili_processing_asr_high_risk_split_enabled),
+                    high_risk_split_seconds=(self._settings.bili_processing_asr_high_risk_split_seconds),
+                    high_risk_min_segment_seconds=(self._settings.bili_processing_asr_high_risk_min_segment_seconds),
+                    empty_segment_skip_seconds=(self._settings.bili_processing_asr_empty_segment_skip_seconds),
+                    rate_limit_max_attempts=(self._settings.bili_processing_asr_rate_limit_max_attempts),
+                    rate_limit_retry_delays=tuple(self._settings.get_asr_rate_limit_retry_delays()),
                     ffmpeg_setting=self._settings.bili_processing_ffmpeg_path,
                     reporter=self._reporter,
-                    initial_max_tokens=int(
-                        self._settings.bili_processing_asr_max_completion_tokens
-                    ),
-                    max_tokens_cap=int(
-                        self._settings.bili_processing_asr_max_completion_tokens
-                    ),
+                    initial_max_tokens=int(self._settings.bili_processing_asr_max_completion_tokens),
+                    max_tokens_cap=int(self._settings.bili_processing_asr_max_completion_tokens),
                 )
 
                 segment_duration_sum = trans["segment_duration_sum"]
@@ -650,19 +655,19 @@ class _AudioMixin:
                 elif got_any_segment_duration:
                     page_duration = segment_duration_sum
                 else:
-                    page_duration = (
-                        float(cdn_duration) if cdn_duration is not None else None
-                    )
+                    page_duration = float(cdn_duration) if cdn_duration is not None else None
 
-                page_results.append({
-                    "page_index": page_index,
-                    "cid": page.get("cid", 0),
-                    "duration": page_duration,
-                    "text": full_text,
-                    "language": asr_language,
-                    "asr_model": getattr(self._asr_backend, "model", ""),
-                    "segments": trans["segments"],
-                })
+                page_results.append(
+                    {
+                        "page_index": page_index,
+                        "cid": page.get("cid", 0),
+                        "duration": page_duration,
+                        "text": full_text,
+                        "language": asr_language,
+                        "asr_model": getattr(self._asr_backend, "model", ""),
+                        "segments": trans["segments"],
+                    }
+                )
                 if page_duration is not None:
                     total_duration += float(page_duration)
                 total_chars += len(full_text)
@@ -670,12 +675,8 @@ class _AudioMixin:
                 total_asr_seconds += float(trans.get("asr_seconds_total", 0.0))
                 total_cache_hits += int(trans.get("cache_hits", 0))
                 total_fresh_segments += int(trans.get("fresh_segment_count", 0))
-                total_high_risk_segment_skips += int(
-                    trans.get("high_risk_segment_skips", 0)
-                )
-                total_length_truncated_segment_skips += int(
-                    trans.get("length_truncated_segment_skips", 0)
-                )
+                total_high_risk_segment_skips += int(trans.get("high_risk_segment_skips", 0))
+                total_length_truncated_segment_skips += int(trans.get("length_truncated_segment_skips", 0))
                 if self._reporter is not None:
                     await self._reporter.emit(
                         "asr.item.progress",
@@ -684,7 +685,8 @@ class _AudioMixin:
                         item_type="transcription",
                         item_id=bvid,
                         data={
-                            "uid": uid, "bvid": bvid,
+                            "uid": uid,
+                            "bvid": bvid,
                             "pages_done": page_idx + 1,
                             "pages_total": len(pages),
                         },
@@ -703,22 +705,15 @@ class _AudioMixin:
                     "cache_hits": int(total_cache_hits),
                     "fresh_segments": int(total_fresh_segments),
                     "high_risk_segment_skips": int(total_high_risk_segment_skips),
-                    "length_truncated_segment_skips": int(
-                        total_length_truncated_segment_skips
-                    ),
+                    "length_truncated_segment_skips": int(total_length_truncated_segment_skips),
                 },
             }
             # Bvid completed successfully — drop its resume cache.  We only
             # clear on the success path; partial-failure cache survives so
             # the next retry can resume cheaply.
-            non_empty_pages = [
-                p for p in page_results
-                if isinstance(p, dict) and str(p.get("text") or "").strip()
-            ]
+            non_empty_pages = [p for p in page_results if isinstance(p, dict) and str(p.get("text") or "").strip()]
             if not non_empty_pages:
-                raise EmptyTranscriptError(
-                    f"ASR produced no non-empty transcript text for bvid {bvid}"
-                )
+                raise EmptyTranscriptError(f"ASR produced no non-empty transcript text for bvid {bvid}")
             asr_cache_for_clear = self._get_asr_cache()
             if asr_cache_for_clear is not None:
                 asr_cache_for_clear.clear_bvid(uid, bvid)

@@ -77,12 +77,12 @@ _ASR_TABLES = (
     "audio_transcription_segment",
 )
 _STAGE_TABLES_FILTER_PARSING = (
-    "stage_task",   # CHECK on stage now excludes 'parsing'
+    "stage_task",  # CHECK on stage now excludes 'parsing'
     "stage_event",  # carries stage column, may include parsing rows
 )
 _STAGE_TABLES_PLAIN = (
-    "stage_run",            # no stage CHECK; copy verbatim
-    "stage_error",          # CHECK is fetching/asr; v4 had no parsing rows in fixture
+    "stage_run",  # no stage CHECK; copy verbatim
+    "stage_error",  # CHECK is fetching/asr; v4 had no parsing rows in fixture
     "fetch_endpoint_state",
 )
 _META_KEYS_TO_CARRY = ("last_fetched_at_ms", "last_processed_at_ms")
@@ -110,16 +110,14 @@ class UidPlan:
 
     @property
     def is_noop(self) -> bool:
-        return (
-            not self.needs_raw_upgrade
-            and self.legacy_main_db is None
-        )
+        return not self.needs_raw_upgrade and self.legacy_main_db is None
 
 
 def _read_meta_int(conn: sqlite3.Connection, key: str) -> int | None:
     """Return meta[key] as int, or None if absent / not numeric."""
     row = conn.execute(
-        "SELECT value FROM meta WHERE key = ?", (key,),
+        "SELECT value FROM meta WHERE key = ?",
+        (key,),
     ).fetchone()
     if row is None:
         return None
@@ -174,8 +172,7 @@ def plan_uid(uid: int, root: Path) -> UidPlan:
             plan.needs_raw_upgrade = True
         else:
             plan.blockers.append(
-                f"raw.db schema_version={raw_v} (expected "
-                f"{LEGACY_RAW_SCHEMA_VERSION} or {SUPPORTED_SCHEMA_VERSION})",
+                f"raw.db schema_version={raw_v} (expected {LEGACY_RAW_SCHEMA_VERSION} or {SUPPORTED_SCHEMA_VERSION})",
             )
     finally:
         raw_conn.close()
@@ -224,11 +221,7 @@ def collect_plans(root: Path) -> list[UidPlan]:
         # Match {uid}.raw.db and legacy {uid}.db (but not asr/, etc.).
         if p.suffix != ".db":
             continue
-        stem = (
-            p.name[: -len(".raw.db")]
-            if p.name.endswith(".raw.db")
-            else p.name[: -len(".db")]
-        )
+        stem = p.name[: -len(".raw.db")] if p.name.endswith(".raw.db") else p.name[: -len(".db")]
         try:
             uids.add(int(stem))
         except ValueError:
@@ -261,8 +254,7 @@ def _apply_v3_ddl(conn: sqlite3.Connection) -> None:
 
 def _bump_schema_version(conn: sqlite3.Connection) -> None:
     conn.execute(
-        "INSERT INTO meta(key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         ("schema_version", str(SUPPORTED_SCHEMA_VERSION)),
     )
 
@@ -300,8 +292,7 @@ def _carry_meta(conn: sqlite3.Connection, src_db: str) -> list[str]:
         if row is None:
             continue
         conn.execute(
-            "INSERT INTO main.meta(key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            "INSERT INTO main.meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, row[0]),
         )
         carried.append(key)
@@ -312,8 +303,7 @@ def apply_plan(plan: UidPlan, *, force: bool, keep_legacy: bool) -> dict[str, ob
     """Run the migration for one uid. Returns a small report dict."""
     if plan.blockers:
         raise RuntimeError(
-            f"uid={plan.uid}: refusing to apply due to blockers: "
-            + "; ".join(plan.blockers),
+            f"uid={plan.uid}: refusing to apply due to blockers: " + "; ".join(plan.blockers),
         )
 
     report: dict[str, object] = {

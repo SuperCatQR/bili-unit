@@ -8,12 +8,15 @@ ALL = ["a", "b", "c", "d"]
 
 
 def test_resolve_subset_no_flags_means_all() -> None:
-    assert resolve_subset(
-        flag_label="endpoint",
-        all_names=ALL,
-        include=None,
-        exclude=None,
-    ) is None
+    assert (
+        resolve_subset(
+            flag_label="endpoint",
+            all_names=ALL,
+            include=None,
+            exclude=None,
+        )
+        is None
+    )
 
 
 def test_resolve_subset_include_preserves_order() -> None:

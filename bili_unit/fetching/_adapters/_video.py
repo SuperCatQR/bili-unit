@@ -73,6 +73,7 @@ def _video_item_method(
     default_kwargs: dict[str, Any] | None = None,
 ):
     """Build a per-bvid fan-out callable for Video read methods."""
+
     async def _fn(
         bvid: str,
         credential: Credential | None,
@@ -108,12 +109,14 @@ def _video_item_method(
                     getattr(v, method_name)(**call_kwargs),
                     timeout=timeout,
                 )
-            rows.append({
-                "page_index": idx,
-                "cid": cid,
-                "part": page.get("part", "") if isinstance(page, dict) else "",
-                "result": _json_safe(result),
-            })
+            rows.append(
+                {
+                    "page_index": idx,
+                    "cid": cid,
+                    "part": page.get("part", "") if isinstance(page, dict) else "",
+                    "result": _json_safe(result),
+                }
+            )
         return {"pages": pages, key: rows}
 
     return _fn
@@ -122,37 +125,63 @@ def _video_item_method(
 fetch_video_pages_item = _video_item_method("get_pages", result_key="pages")
 fetch_video_detail_full_item = _video_item_method("get_detail", result_key="detail")
 fetch_video_ai_conclusion_item = _video_item_method(
-    "get_ai_conclusion", per_page=True, page_arg="both", result_key="ai_conclusion",
+    "get_ai_conclusion",
+    per_page=True,
+    page_arg="both",
+    result_key="ai_conclusion",
 )
 fetch_video_danmaku_snapshot_item = _video_item_method(
-    "get_danmaku_snapshot", result_key="danmaku_snapshot",
+    "get_danmaku_snapshot",
+    result_key="danmaku_snapshot",
 )
 fetch_video_danmaku_view_item = _video_item_method(
-    "get_danmaku_view", per_page=True, page_arg="both", result_key="danmaku_view",
+    "get_danmaku_view",
+    per_page=True,
+    page_arg="both",
+    result_key="danmaku_view",
 )
 fetch_video_danmaku_xml_item = _video_item_method(
-    "get_danmaku_xml", per_page=True, page_arg="both", result_key="danmaku_xml",
+    "get_danmaku_xml",
+    per_page=True,
+    page_arg="both",
+    result_key="danmaku_xml",
 )
 fetch_video_danmakus_item = _video_item_method(
-    "get_danmakus", per_page=True, page_arg="both", result_key="danmakus",
+    "get_danmakus",
+    per_page=True,
+    page_arg="both",
+    result_key="danmakus",
 )
 fetch_video_online_item = _video_item_method(
-    "get_online", per_page=True, page_arg="both", result_key="online",
+    "get_online",
+    per_page=True,
+    page_arg="both",
+    result_key="online",
 )
 fetch_video_pay_coins_item = _video_item_method("get_pay_coins", result_key="pay_coins")
 fetch_video_pbp_item = _video_item_method(
-    "get_pbp", per_page=True, page_arg="both", result_key="pbp",
+    "get_pbp",
+    per_page=True,
+    page_arg="both",
+    result_key="pbp",
 )
 fetch_video_player_info_item = _video_item_method(
-    "get_player_info", per_page=True, page_arg="cid", result_key="player_info",
+    "get_player_info",
+    per_page=True,
+    page_arg="cid",
+    result_key="player_info",
 )
 fetch_video_private_notes_item = _video_item_method(
-    "get_private_notes_list", result_key="private_notes",
+    "get_private_notes_list",
+    result_key="private_notes",
 )
 fetch_video_related_item = _video_item_method("get_related", result_key="related")
 fetch_video_relation_item = _video_item_method("get_relation", result_key="relation")
 fetch_video_special_dms_item = _video_item_method(
-    "get_special_dms", per_page=True, page_arg="both", result_key="special_dms",
+    "get_special_dms",
+    per_page=True,
+    page_arg="both",
+    result_key="special_dms",
 )
 fetch_video_up_mid_item = _video_item_method("get_up_mid", result_key="up_mid")
 fetch_video_snapshot_item = _video_item_method(
@@ -163,11 +192,15 @@ fetch_video_snapshot_item = _video_item_method(
     default_kwargs={"json_index": True, "pvideo": False},
 )
 fetch_video_download_url_item = _video_item_method(
-    "get_download_url", per_page=True, page_arg="both", result_key="download_url",
+    "get_download_url",
+    per_page=True,
+    page_arg="both",
+    result_key="download_url",
 )
 fetch_video_is_episode_item = _video_item_method("is_episode", result_key="is_episode")
 fetch_video_is_forbid_note_item = _video_item_method(
-    "is_forbid_note", result_key="is_forbid_note",
+    "is_forbid_note",
+    result_key="is_forbid_note",
 )
 fetch_video_chargers_item = _video_item_method("get_chargers", result_key="chargers")
 

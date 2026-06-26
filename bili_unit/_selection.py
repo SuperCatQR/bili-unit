@@ -26,8 +26,7 @@ def resolve_subset(
         unknown = [name for name in include if name not in known]
         if unknown:
             raise SelectionError(
-                f"unknown {flag_label}(s): {', '.join(unknown)}. "
-                f"Known: {', '.join(all_names)}",
+                f"unknown {flag_label}(s): {', '.join(unknown)}. Known: {', '.join(all_names)}",
             )
         return list(include)
 
@@ -35,8 +34,7 @@ def resolve_subset(
         unknown = [name for name in exclude if name not in known]
         if unknown:
             raise SelectionError(
-                f"unknown {flag_label}(s) in --exclude: {', '.join(unknown)}. "
-                f"Known: {', '.join(all_names)}",
+                f"unknown {flag_label}(s) in --exclude: {', '.join(unknown)}. Known: {', '.join(all_names)}",
             )
         excluded = set(exclude)
         kept = [name for name in all_names if name not in excluded]

@@ -138,8 +138,10 @@ async def build_run_summary(
     run = await _load_run(conn, uid=uid, run_id=run_id)
     selected_run_id = run.run_id if run is not None else None
     event_run_id = (
-        selected_run_id if filter_events_to_run and selected_run_id is not None
-        else run_id if filter_events_to_run
+        selected_run_id
+        if filter_events_to_run and selected_run_id is not None
+        else run_id
+        if filter_events_to_run
         else None
     )
     stage_tasks = await _load_stage_tasks(conn)
@@ -209,8 +211,7 @@ async def _load_run(
 
 async def _load_stage_tasks(conn: Connection) -> dict[str, StageTaskSummary]:
     rows = await conn.fetch_all(
-        "SELECT stage, status, payload, created_at_ms, updated_at_ms "
-        "FROM stage_task ORDER BY stage",
+        "SELECT stage, status, payload, created_at_ms, updated_at_ms FROM stage_task ORDER BY stage",
     )
     return {
         str(row["stage"]): StageTaskSummary(
@@ -271,9 +272,7 @@ async def _load_asr_summary(
 
     # Expected video universe = the bvids we have raw video_detail rows for.
     video_rows = await conn.fetch_all(
-        "SELECT item_id FROM raw_payload "
-        "WHERE endpoint = 'video_detail' AND item_id <> '' "
-        "ORDER BY item_id",
+        "SELECT item_id FROM raw_payload WHERE endpoint = 'video_detail' AND item_id <> '' ORDER BY item_id",
     )
     expected_bvids = [str(row["item_id"]) for row in video_rows]
     rows = await conn.fetch_all(
@@ -285,9 +284,7 @@ async def _load_asr_summary(
         status_counts[status] = status_counts.get(status, 0) + 1
 
     missing_bvids = [bvid for bvid in expected_bvids if bvid not in statuses]
-    failed_bvids = [
-        bvid for bvid in expected_bvids if statuses.get(bvid) == "failed"
-    ]
+    failed_bvids = [bvid for bvid in expected_bvids if statuses.get(bvid) == "failed"]
     candidate_count = await _load_asr_candidate_count(
         conn,
         uid=uid,

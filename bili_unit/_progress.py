@@ -8,7 +8,7 @@ different sink later.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
 
 from ._logging import Progress
@@ -32,7 +32,7 @@ def default_progress_factory(*, total: int, label: str, **kwargs: Any) -> Progre
 
 
 async def gather_with_progress(
-    coros: list[Awaitable[Any]],
+    coros: Sequence[Awaitable[Any]],
     *,
     total: int,
     label: str,

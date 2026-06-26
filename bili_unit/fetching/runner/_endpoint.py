@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -205,11 +206,7 @@ class _EndpointMixin:
         met, returns (None, 0, False, []).
         """
         id_paths = spec.item_id_paths or ([spec.item_id_path] if spec.item_id_path else None)
-        if (
-            progress_cursor
-            or mode not in ("incremental", "refresh")
-            or spec.pagination_strategy == "none"
-        ):
+        if progress_cursor or mode not in ("incremental", "refresh") or spec.pagination_strategy == "none":
             return None, 0, False, []
 
         existing = await self._store.get_raw_payload(ep_name)
@@ -225,7 +222,8 @@ class _EndpointMixin:
             stored_pages = []
         stored_total_count = _stored_total_count(stored_pages)
         stored_cursor_incomplete = _stored_cursor_incomplete(
-            stored_pages, spec.pagination_strategy,
+            stored_pages,
+            spec.pagination_strategy,
         )
         known_ids: set[str] = set()
         for stored_page in stored_pages:
@@ -301,14 +299,22 @@ class _EndpointMixin:
             stored_cursor_incomplete,
             stored_pages,
         ) = await self._build_known_ids_for_incremental(
-            uid, spec, ep_name, mode, progress_cursor,
+            uid,
+            spec,
+            ep_name,
+            mode,
+            progress_cursor,
         )
 
         initial_known_count = len(known_ids) if known_ids is not None else 0
 
         # -- prepare initial request params and stored pages base --
         request_params, stored_pages_base = await self._prepare_request_state(
-            spec, ep_name, mode, known_ids, progress,
+            spec,
+            ep_name,
+            mode,
+            known_ids,
+            progress,
         )
 
         settings = self._settings
@@ -353,15 +359,19 @@ class _EndpointMixin:
                 },
             )
 
-        async def _fetch_one_page(params: dict[str, Any]):
+        async def _fetch_one_page(params: dict[str, Any]) -> Any:
             await self._rl.acquire(spec.rate_limit_key)
             return await self._fetch_fn(
-                uid, spec, credential, params,
+                uid,
+                spec,
+                credential,
+                params,
                 timeout=settings.bili_fetching_request_timeout,
             )
 
         async def _on_attempt_failed(
-            exc: Exception, outcome: RetryOutcome,
+            exc: Exception,
+            outcome: RetryOutcome,
         ) -> int | None:
             reporter = getattr(self, "_reporter", None)
             if isinstance(exc, AuthError):
@@ -384,10 +394,10 @@ class _EndpointMixin:
                     exc=exc,
                     retryable=False,
                 )
-                _log_unavailable(logger, namespace="fetch.endpoint", uid=uid,
-                                 ep_name=ep_name, item_id=None, reason=str(exc))
-                await _emit_unavailable(reporter, namespace="fetch.endpoint",
-                                        ep_name=ep_name, item_id=None, exc=exc)
+                _log_unavailable(
+                    logger, namespace="fetch.endpoint", uid=uid, ep_name=ep_name, item_id=None, reason=str(exc)
+                )
+                await _emit_unavailable(reporter, namespace="fetch.endpoint", ep_name=ep_name, item_id=None, exc=exc)
                 return None
 
             if isinstance(exc, Http412Error):
@@ -414,12 +424,24 @@ class _EndpointMixin:
                     )
                     return None
                 wait = max(advice.get("wait_seconds", 0), outcome.delay_seconds)
-                _log_retry_scheduled(logger, namespace="fetch.endpoint", uid=uid,
-                                     ep_name=ep_name, item_id=None,
-                                     retry=retry_state.count, wait_s=wait)
-                await _emit_retry_scheduled(reporter, namespace="fetch.endpoint",
-                                            ep_name=ep_name, item_id=None, exc=exc,
-                                            retry=retry_state.count, delay_s=wait)
+                _log_retry_scheduled(
+                    logger,
+                    namespace="fetch.endpoint",
+                    uid=uid,
+                    ep_name=ep_name,
+                    item_id=None,
+                    retry=retry_state.count,
+                    wait_s=wait,
+                )
+                await _emit_retry_scheduled(
+                    reporter,
+                    namespace="fetch.endpoint",
+                    ep_name=ep_name,
+                    item_id=None,
+                    exc=exc,
+                    retry=retry_state.count,
+                    delay_s=wait,
+                )
                 return wait
 
             if isinstance(exc, FetchingError):
@@ -440,12 +462,24 @@ class _EndpointMixin:
                         last_error_id=retry_state.last_error_id,
                     )
                     return None
-                _log_retry_scheduled(logger, namespace="fetch.endpoint", uid=uid,
-                                     ep_name=ep_name, item_id=None,
-                                     retry=retry_count, wait_s=outcome.delay_seconds)
-                await _emit_retry_scheduled(reporter, namespace="fetch.endpoint",
-                                            ep_name=ep_name, item_id=None, exc=exc,
-                                            retry=retry_count, delay_s=outcome.delay_seconds)
+                _log_retry_scheduled(
+                    logger,
+                    namespace="fetch.endpoint",
+                    uid=uid,
+                    ep_name=ep_name,
+                    item_id=None,
+                    retry=retry_count,
+                    wait_s=outcome.delay_seconds,
+                )
+                await _emit_retry_scheduled(
+                    reporter,
+                    namespace="fetch.endpoint",
+                    ep_name=ep_name,
+                    item_id=None,
+                    exc=exc,
+                    retry=retry_count,
+                    delay_s=outcome.delay_seconds,
+                )
                 return None
 
             # Unexpected non-fetching error — wrap and treat as permanent.
@@ -456,6 +490,7 @@ class _EndpointMixin:
                 exc=exc,
             )
             return None
+
         policy = RetryPolicy(
             max_attempts=max_retries + 1,
             delays=retry_delays,
@@ -482,7 +517,7 @@ class _EndpointMixin:
 
             try:
                 page = await driver.run(
-                    lambda params=request_params: _fetch_one_page(params),
+                    functools.partial(_fetch_one_page, request_params),
                     on_attempt_failed=_on_attempt_failed,
                 )
             except Exception:
@@ -526,7 +561,8 @@ class _EndpointMixin:
                 logger.info(
                     "incremental_page_checked",
                     extra={
-                        "uid": uid, "endpoint": ep_name,
+                        "uid": uid,
+                        "endpoint": ep_name,
                         "new_count": len(new_ids),
                         "known_count": len(page_ids) - len(new_ids),
                         "total_page_ids": len(page_ids),
@@ -535,9 +571,7 @@ class _EndpointMixin:
                 if page_ids and not new_ids:
                     page_total_count = extract_total_count(page.raw_payload)
                     total_count = page_total_count or stored_total_count
-                    incomplete_listing = (
-                        total_count > 0 and len(known_ids) < total_count
-                    ) or stored_cursor_incomplete
+                    incomplete_listing = (total_count > 0 and len(known_ids) < total_count) or stored_cursor_incomplete
                     if incomplete_listing and not page.is_last_page:
                         logger.info(
                             "incremental_backfill_incomplete",
@@ -568,7 +602,8 @@ class _EndpointMixin:
                                 logger.warning(
                                     "incremental_safety_page_failed",
                                     extra={
-                                        "uid": uid, "endpoint": ep_name,
+                                        "uid": uid,
+                                        "endpoint": ep_name,
                                         "error": str(exc),
                                     },
                                 )
@@ -640,18 +675,26 @@ class _EndpointMixin:
         # transactional write: payload + progress in one transaction when both
         if next_progress is not None:
             await self._store.save_raw_page_and_progress(
-                ep_name, "", raw_payload, next_progress, fetched_at_ms=now_ms,
+                ep_name,
+                "",
+                raw_payload,
+                next_progress,
+                fetched_at_ms=now_ms,
             )
         else:
             await self._store.save_raw_payload(
-                ep_name, "", raw_payload, fetched_at_ms=now_ms,
+                ep_name,
+                "",
+                raw_payload,
+                fetched_at_ms=now_ms,
             )
 
         if known_ids is not None:
             logger.info(
                 "incremental_completed",
                 extra={
-                    "uid": uid, "endpoint": ep_name,
+                    "uid": uid,
+                    "endpoint": ep_name,
                     "total_pages_fetched": len(pages_this_run),
                     "new_item_count": len(known_ids) - initial_known_count,
                     "mode": "incremental",

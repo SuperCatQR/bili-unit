@@ -23,6 +23,7 @@ from bili_unit.fetching._endpoint_catalog import get_endpoint
 # Client — _extract_cvids_from_articles
 # ======================================================================
 
+
 def test_extract_cvids_from_articles_basic():
     payload = {
         "pages": [
@@ -71,6 +72,7 @@ def test_extract_cvids_from_articles_tolerates_malformed_pages():
 # Client — article_detail endpoint registration
 # ======================================================================
 
+
 def test_article_detail_endpoint_registered():
     spec = get_endpoint("article_detail")
     assert spec is not None
@@ -88,13 +90,15 @@ def test_article_detail_skips_note_opus_style_items():
     assert spec is not None
     assert spec.skip_item is not None
 
-    reason = spec.skip_item({
-        "id": 50612667,
-        "template_id": 4,
-        "origin_template_id": 5,
-        "type": 2,
-        "category": {"id": 42, "name": "全部笔记"},
-    })
+    reason = spec.skip_item(
+        {
+            "id": 50612667,
+            "template_id": 4,
+            "origin_template_id": 5,
+            "type": 2,
+            "category": {"id": 42, "name": "全部笔记"},
+        }
+    )
 
     assert reason is not None
     assert "note/opus-style" in reason
@@ -105,13 +109,18 @@ def test_article_detail_keeps_legacy_article_items():
     assert spec is not None
     assert spec.skip_item is not None
 
-    assert spec.skip_item({
-        "id": 100,
-        "template_id": 1,
-        "origin_template_id": 1,
-        "type": 0,
-        "category": {"id": 1, "name": "旧专栏"},
-    }) is None
+    assert (
+        spec.skip_item(
+            {
+                "id": 100,
+                "template_id": 1,
+                "origin_template_id": 1,
+                "type": 0,
+                "category": {"id": 1, "name": "旧专栏"},
+            }
+        )
+        is None
+    )
 
 
 # ======================================================================

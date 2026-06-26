@@ -47,8 +47,10 @@ def _subprocess_kwargs() -> dict:
     the awaiting task while the subprocess is still alive — handled below.
     """
     import sys
+
     if sys.platform == "win32":
         import subprocess
+
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     return {}
 
@@ -124,12 +126,17 @@ async def convert_m4s_to_mp3(
     cmd = [
         ffmpeg,
         "-y",
-        "-i", str(inp),
+        "-i",
+        str(inp),
         "-vn",
-        "-acodec", "libmp3lame",
-        "-ar", "16000",
-        "-ac", "1",
-        "-q:a", "9",
+        "-acodec",
+        "libmp3lame",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-q:a",
+        "9",
         str(out),
     ]
     logger.debug("convert_m4s_to_mp3", extra={"cmd": " ".join(cmd)})
@@ -142,16 +149,15 @@ async def convert_m4s_to_mp3(
     )
     try:
         _, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=_FFMPEG_TIMEOUT,
+            proc.communicate(),
+            timeout=_FFMPEG_TIMEOUT,
         )
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         with contextlib.suppress(Exception):
             await proc.wait()
-        raise ConvertError(
-            f"ffmpeg conversion timed out after {_FFMPEG_TIMEOUT}s: {inp}"
-        ) from None
+        raise ConvertError(f"ffmpeg conversion timed out after {_FFMPEG_TIMEOUT}s: {inp}") from None
     except BaseException:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
@@ -160,10 +166,7 @@ async def convert_m4s_to_mp3(
         raise
 
     if proc.returncode != 0:
-        raise ConvertError(
-            f"ffmpeg failed (rc={proc.returncode}) for {inp}: "
-            f"{stderr.decode(errors='replace')[-500:]}"
-        )
+        raise ConvertError(f"ffmpeg failed (rc={proc.returncode}) for {inp}: {stderr.decode(errors='replace')[-500:]}")
 
     if not out.exists():
         raise ConvertError(f"ffmpeg produced no output for {inp}")
@@ -196,15 +199,23 @@ async def convert_and_segment(
     cmd = [
         ffmpeg,
         "-y",
-        "-i", str(inp),
+        "-i",
+        str(inp),
         "-vn",
-        "-acodec", "libmp3lame",
-        "-ar", "16000",
-        "-ac", "1",
-        "-q:a", "9",
-        "-f", "segment",
-        "-segment_time", str(segment_seconds),
-        "-reset_timestamps", "1",
+        "-acodec",
+        "libmp3lame",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-q:a",
+        "9",
+        "-f",
+        "segment",
+        "-segment_time",
+        str(segment_seconds),
+        "-reset_timestamps",
+        "1",
         pattern,
     ]
     logger.debug(
@@ -220,16 +231,15 @@ async def convert_and_segment(
     )
     try:
         _, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=_FFMPEG_TIMEOUT,
+            proc.communicate(),
+            timeout=_FFMPEG_TIMEOUT,
         )
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         with contextlib.suppress(Exception):
             await proc.wait()
-        raise ConvertError(
-            f"ffmpeg segmentation timed out after {_FFMPEG_TIMEOUT}s: {inp}"
-        ) from None
+        raise ConvertError(f"ffmpeg segmentation timed out after {_FFMPEG_TIMEOUT}s: {inp}") from None
     except BaseException:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
@@ -239,8 +249,7 @@ async def convert_and_segment(
 
     if proc.returncode != 0:
         raise ConvertError(
-            f"ffmpeg segmentation failed (rc={proc.returncode}) for {inp}: "
-            f"{stderr.decode(errors='replace')[-500:]}"
+            f"ffmpeg segmentation failed (rc={proc.returncode}) for {inp}: {stderr.decode(errors='replace')[-500:]}"
         )
 
     segments = sorted(out_dir.glob("seg_*.mp3"))
@@ -284,14 +293,21 @@ async def convert_at_points(
         cmd = [
             ffmpeg,
             "-y",
-            "-ss", f"{start_s:.3f}",
-            "-to", f"{end_s:.3f}",
-            "-i", str(inp),
+            "-ss",
+            f"{start_s:.3f}",
+            "-to",
+            f"{end_s:.3f}",
+            "-i",
+            str(inp),
             "-vn",
-            "-acodec", "libmp3lame",
-            "-ar", "16000",
-            "-ac", "1",
-            "-q:a", "9",
+            "-acodec",
+            "libmp3lame",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-q:a",
+            "9",
             str(out_path),
         ]
         proc = await asyncio.create_subprocess_exec(
@@ -302,7 +318,8 @@ async def convert_at_points(
         )
         try:
             _, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=_FFMPEG_TIMEOUT,
+                proc.communicate(),
+                timeout=_FFMPEG_TIMEOUT,
             )
         except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
@@ -310,8 +327,7 @@ async def convert_at_points(
             with contextlib.suppress(Exception):
                 await proc.wait()
             raise ConvertError(
-                f"ffmpeg trim timed out after {_FFMPEG_TIMEOUT}s "
-                f"({start_s:.1f}-{end_s:.1f}): {inp}"
+                f"ffmpeg trim timed out after {_FFMPEG_TIMEOUT}s ({start_s:.1f}-{end_s:.1f}): {inp}"
             ) from None
         except BaseException:
             with contextlib.suppress(ProcessLookupError):
@@ -391,28 +407,19 @@ async def convert_single(
     # cap. VAD still chooses the exact cut points; the computed value is only
     # the upper bound for each segment.
     if duration_seconds is not None and (
-        (
-            max_input_tokens is not None
-            and tokens_per_second is not None
-        )
-        or max_segment_seconds is not None
+        (max_input_tokens is not None and tokens_per_second is not None) or max_segment_seconds is not None
     ):
         token_seg_secs = (
             compute_segment_seconds(
-                duration_seconds, max_input_tokens, tokens_per_second,
+                duration_seconds,
+                max_input_tokens,
+                tokens_per_second,
             )
             if max_input_tokens is not None and tokens_per_second is not None
             else None
         )
-        cap_seg_secs = (
-            int(max_segment_seconds)
-            if max_segment_seconds is not None and max_segment_seconds > 0
-            else None
-        )
-        seg_candidates = [
-            s for s in (token_seg_secs, cap_seg_secs)
-            if s is not None and s > 0
-        ]
+        cap_seg_secs = int(max_segment_seconds) if max_segment_seconds is not None and max_segment_seconds > 0 else None
+        seg_candidates = [s for s in (token_seg_secs, cap_seg_secs) if s is not None and s > 0]
         seg_secs = min(seg_candidates) if seg_candidates else None
         if seg_secs is None:
             return [Mp3Segment(full_mp3, 0.0, float(duration_seconds))]
@@ -457,12 +464,12 @@ async def convert_single(
                 full_mp3.unlink(missing_ok=True)
                 seg_dir = out_dir / "segments"
                 paths = await convert_at_points(
-                    inp, seg_dir, points, ffmpeg_setting,
+                    inp,
+                    seg_dir,
+                    points,
+                    ffmpeg_setting,
                 )
-                return [
-                    Mp3Segment(p, s, e)
-                    for p, (s, e) in zip(paths, points, strict=True)
-                ]
+                return [Mp3Segment(p, s, e) for p, (s, e) in zip(paths, points, strict=True)]
 
         # VAD disabled or failed → fixed-period token-budget split.
         logger.info(
@@ -477,7 +484,10 @@ async def convert_single(
         full_mp3.unlink(missing_ok=True)
         seg_dir = out_dir / "segments"
         paths = await convert_and_segment(
-            inp, seg_dir, seg_secs, ffmpeg_setting,
+            inp,
+            seg_dir,
+            seg_secs,
+            ffmpeg_setting,
         )
         return _fixed_segment_ranges(paths, seg_secs, duration_seconds)
 
@@ -502,7 +512,10 @@ async def convert_single(
     seg_dir = out_dir / "segments"
     segment_seconds = segment_minutes * 60
     paths = await convert_and_segment(
-        inp, seg_dir, segment_seconds, ffmpeg_setting,
+        inp,
+        seg_dir,
+        segment_seconds,
+        ffmpeg_setting,
     )
     return _fixed_segment_ranges(paths, segment_seconds, duration_seconds)
 

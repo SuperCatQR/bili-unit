@@ -277,4 +277,5 @@ def video_endpoints() -> list[EndpointSpec]:
         ),
     ]
 
+
 __all__ = ["video_endpoints"]

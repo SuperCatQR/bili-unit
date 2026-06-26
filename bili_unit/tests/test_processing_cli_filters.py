@@ -79,8 +79,11 @@ async def _spy_process_audio_one(runner, uid, item, credential):
 # Seeding helpers
 # ---------------------------------------------------------------------------
 
+
 async def _seed_video_pages(
-    settings: BiliSettings, uid: int, bvids: list[str],
+    settings: BiliSettings,
+    uid: int,
+    bvids: list[str],
 ) -> None:
     """Write raw video_detail payloads so the runner can discover bvids."""
     import json as _json
@@ -89,22 +92,24 @@ async def _seed_video_pages(
     await ctx.open()
     try:
         for bvid in bvids:
-            payload = _json.dumps({
-                "info": {
-                    "bvid": bvid,
-                    "title": f"title-{bvid}",
-                    "duration": 60,
-                    "pages": [{
-                        "cid": 1,
-                        "part": "P1",
+            payload = _json.dumps(
+                {
+                    "info": {
+                        "bvid": bvid,
+                        "title": f"title-{bvid}",
                         "duration": 60,
-                    }],
-                },
-            })
+                        "pages": [
+                            {
+                                "cid": 1,
+                                "part": "P1",
+                                "duration": 60,
+                            }
+                        ],
+                    },
+                }
+            )
             await ctx.conn.execute(
-                "INSERT OR REPLACE INTO raw_payload"
-                "(endpoint, item_id, payload, fetched_at_ms) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) VALUES (?, ?, ?, ?)",
                 ("video_detail", bvid, payload, 1),
             )
     finally:
@@ -112,7 +117,10 @@ async def _seed_video_pages(
 
 
 async def _seed_audio_status(
-    settings: BiliSettings, uid: int, bvid: str, status: str,
+    settings: BiliSettings,
+    uid: int,
+    bvid: str,
+    status: str,
 ) -> None:
     """Plant an existing audio_transcription row (used for retry-failed-only).
 
@@ -148,7 +156,8 @@ async def _seed_audio_status(
 
 
 async def _read_processing_task(
-    settings: BiliSettings, uid: int,
+    settings: BiliSettings,
+    uid: int,
 ) -> dict | None:
     ctx = UidContext(uid, settings.bili_db_dir)
     await ctx.open()
@@ -162,6 +171,7 @@ async def _read_processing_task(
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest_asyncio.fixture
 async def settings(tmp_path: Path):
@@ -177,7 +187,9 @@ async def cmd(settings: BiliSettings):
     )
     _dispatched_bvids.clear()
     with patch.object(
-        ProcessingRunner, "_process_audio_one", new=_spy_process_audio_one,
+        ProcessingRunner,
+        "_process_audio_one",
+        new=_spy_process_audio_one,
     ):
         yield c
     await c.close()
@@ -186,6 +198,7 @@ async def cmd(settings: BiliSettings):
 # ---------------------------------------------------------------------------
 # Filter tests
 # ---------------------------------------------------------------------------
+
 
 async def test_only_bvids_filters_to_explicit_set(cmd, settings):
     """``--only-bvids BV1 BV2`` enters exactly that pair from a 5-item set."""
@@ -221,7 +234,9 @@ async def test_only_bvids_then_limit(cmd, settings):
     await _seed_video_pages(settings, uid, all_bvids)
 
     result = await cmd.process_uid(
-        uid, only_bvids=["BVb2", "BVd4", "BVe5"], limit=2,
+        uid,
+        only_bvids=["BVb2", "BVd4", "BVe5"],
+        limit=2,
     )
 
     assert result.status == ProcessingTaskStatus.SUCCESS
@@ -342,18 +357,27 @@ async def test_audio_budget_stops_before_dispatch(cmd, settings):
 # Argparse layer
 # ---------------------------------------------------------------------------
 
+
 def test_cli_argparse_accepts_asr_flags():
     from bili_unit.__main__ import _build_parser
 
     parser = _build_parser()
-    args = parser.parse_args([
-        "asr", "1234",
-        "--limit", "5",
-        "--include", "BV1", "BV2",
-        "--dry-run",
-        "--max-audio-seconds", "60",
-        "--max-audio-tokens", "500",
-    ])
+    args = parser.parse_args(
+        [
+            "asr",
+            "1234",
+            "--limit",
+            "5",
+            "--include",
+            "BV1",
+            "BV2",
+            "--dry-run",
+            "--max-audio-seconds",
+            "60",
+            "--max-audio-tokens",
+            "500",
+        ]
+    )
     assert args.command == "asr"
     assert args.limit == 5
     assert args.only_bvids == ["BV1", "BV2"]
@@ -419,8 +443,14 @@ def test_cli_argparse_retry_failed_only_conflicts_with_full():
     from bili_unit.__main__ import _build_parser, _handle_asr
 
     parser = _build_parser()
-    args = parser.parse_args([
-        "asr", "1234", "--retry-failed-only", "--mode", "full",
-    ])
+    args = parser.parse_args(
+        [
+            "asr",
+            "1234",
+            "--retry-failed-only",
+            "--mode",
+            "full",
+        ]
+    )
     with pytest.raises(SystemExit):
         asyncio.run(_handle_asr(args))

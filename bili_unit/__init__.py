@@ -46,6 +46,7 @@ __version__ = _pkg_version("bili-unit")
 # Path helpers — consumer-facing
 # ---------------------------------------------------------------------------
 
+
 def db_path(uid: int, settings: BiliSettings | None = None) -> Path:
     """Return the SQLite DB path for ``uid`` — the consumer contract.
 
@@ -68,6 +69,7 @@ def db_path(uid: int, settings: BiliSettings | None = None) -> Path:
 # ---------------------------------------------------------------------------
 # Assembly + session lifecycle
 # ---------------------------------------------------------------------------
+
 
 async def assemble(
     settings: BiliSettings | None = None,

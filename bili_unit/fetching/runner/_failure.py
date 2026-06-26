@@ -220,14 +220,18 @@ def _log_retry_scheduled(
 ) -> None:
     if namespace == "fetch.endpoint":
         extra: dict[str, Any] = {
-            "uid": uid, "endpoint": ep_name,
-            "wait_s": wait_s, "retry": retry,
+            "uid": uid,
+            "endpoint": ep_name,
+            "wait_s": wait_s,
+            "retry": retry,
         }
         logger.info("retry_scheduled", extra=extra)
     else:
         extra = {
-            "uid": uid, "endpoint": ep_name,
-            "item_id": item_id, "wait_s": wait_s,
+            "uid": uid,
+            "endpoint": ep_name,
+            "item_id": item_id,
+            "wait_s": wait_s,
             "retry": retry,
         }
         if reason is not None:
@@ -249,8 +253,10 @@ def _log_exhausted(
         # endpoint side does not log on exhaustion in this branch
         return
     extra: dict[str, Any] = {
-        "uid": uid, "endpoint": ep_name,
-        "item_id": item_id, "retry": retry,
+        "uid": uid,
+        "endpoint": ep_name,
+        "item_id": item_id,
+        "retry": retry,
     }
     if reason is not None:
         extra["reason"] = reason

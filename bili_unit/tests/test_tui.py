@@ -104,10 +104,7 @@ def test_render_screen_uses_sidebar_detail_action_and_status(tmp_path: Path) -> 
     assert "UIDs" in rendered
     assert "|" in rendered
     assert "Tabs: Summary | Fetch | [ASR] | Events" in rendered
-    assert (
-        "Actions: n=Add UID  f=Fetch  a=ASR  d=Delete UID"
-        in rendered
-    )
+    assert "Actions: n=Add UID  f=Fetch  a=ASR  d=Delete UID" in rendered
     assert "Status: uid=123 tab=asr" in rendered
 
 
@@ -386,10 +383,7 @@ async def test_dispatch_action_logs_exception(
     with caplog.at_level(logging.ERROR, logger="bili.tui"):
         await dispatch_action(workbench, state, "fetch")
 
-    assert any(
-        "failed" in r.message.lower() or "network timeout" in r.message
-        for r in caplog.records
-    )
+    assert any("failed" in r.message.lower() or "network timeout" in r.message for r in caplog.records)
 
 
 def test_print_screen_uses_terminal_size(tmp_path: Path) -> None:
@@ -417,9 +411,7 @@ def test_print_screen_uses_terminal_size(tmp_path: Path) -> None:
 
     content_lines = [ln for ln in collected if ln]
     assert content_lines, "expected some rendered output"
-    assert all(len(ln) <= 80 for ln in content_lines), (
-        f"line too wide: {max(content_lines, key=len)!r}"
-    )
+    assert all(len(ln) <= 80 for ln in content_lines), f"line too wide: {max(content_lines, key=len)!r}"
 
 
 async def test_dispatch_action_runs_asr(tmp_path: Path) -> None:

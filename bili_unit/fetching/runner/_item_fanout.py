@@ -38,6 +38,7 @@ logger = logging.getLogger("bili.fetching.runner")
 
 class _ItemFanoutResult(StrEnum):
     """Outcome of _process_single_item for a single item."""
+
     SUCCESS = "success"
     FAILED = "failed"
     UNAVAILABLE = "unavailable"
@@ -57,12 +58,7 @@ class _ItemFanoutPlan:
 
     @property
     def skipped(self) -> int:
-        return (
-            self.skipped_existing
-            + self.skipped_fresh
-            + self.skipped_unavailable
-            + self.skipped_filtered
-        )
+        return self.skipped_existing + self.skipped_fresh + self.skipped_unavailable + self.skipped_filtered
 
 
 class _ItemFanoutMixin:
@@ -110,11 +106,7 @@ class _ItemFanoutMixin:
         )
 
         # 1. Load source endpoint data
-        source_payload = (
-            await self._store.get_raw_payload(spec.source_endpoint)
-            if spec.source_endpoint
-            else None
-        )
+        source_payload = await self._store.get_raw_payload(spec.source_endpoint) if spec.source_endpoint else None
         if not source_payload:
             err_id = await self._store.record_error(
                 endpoint=ep_name,
@@ -142,6 +134,10 @@ class _ItemFanoutMixin:
             return
 
         # 2. Extract items
+        if spec.extract_items is None:
+            raise ValueError(
+                f"item endpoint {ep_name} has no extract_items configured",
+            )
         items = spec.extract_items(source_payload)
         if not items:
             logger.info(
@@ -187,7 +183,11 @@ class _ItemFanoutMixin:
             nonlocal completed_items, failed_items, unavailable_items
             async with semaphore:
                 result = await self._process_single_item(
-                    uid, spec, credential, item_id, mode,
+                    uid,
+                    spec,
+                    credential,
+                    item_id,
+                    mode,
                 )
             if result == _ItemFanoutResult.SUCCESS:
                 completed_items += 1
@@ -221,9 +221,7 @@ class _ItemFanoutMixin:
                     "skipped": plan.skipped + unavailable_items,
                     "skipped_existing": plan.skipped_existing,
                     "skipped_fresh": plan.skipped_fresh,
-                    "skipped_unavailable": (
-                        plan.skipped_unavailable + unavailable_items
-                    ),
+                    "skipped_unavailable": (plan.skipped_unavailable + unavailable_items),
                     "skipped_filtered": plan.skipped_filtered,
                 },
             )
@@ -293,7 +291,8 @@ class _ItemFanoutMixin:
         logger.info(
             "item_endpoint_completed",
             extra={
-                "uid": uid, "endpoint": ep_name,
+                "uid": uid,
+                "endpoint": ep_name,
                 "status": final_status.value,
                 "completed": completed_items,
                 "failed": failed_items,
@@ -314,11 +313,7 @@ class _ItemFanoutMixin:
             await reporter.emit(
                 event,
                 stage="fetching",
-                level=(
-                    "INFO"
-                    if final_status == EndpointStatus.SUCCESS
-                    else "WARNING"
-                ),
+                level=("INFO" if final_status == EndpointStatus.SUCCESS else "WARNING"),
                 endpoint=ep_name,
                 data={
                     "status": final_status.value,
@@ -373,15 +368,9 @@ class _ItemFanoutMixin:
 
         completed = set(await self._store.list_completed_items(ep_name))
         unavailable = set(await self._store.list_unavailable_items(ep_name))
-        item_ages = (
-            await self._store.list_item_ages_ms(ep_name)
-            if mode == "refresh"
-            else {}
-        )
+        item_ages = await self._store.list_item_ages_ms(ep_name) if mode == "refresh" else {}
         now_ms = int(time.time() * 1000)
-        threshold_ms = (
-            self._settings.bili_fetching_refresh_after_days * 86400 * 1000
-        )
+        threshold_ms = self._settings.bili_fetching_refresh_after_days * 86400 * 1000
 
         to_fetch: list[str] = []
         skipped_existing = 0
@@ -427,10 +416,7 @@ class _ItemFanoutMixin:
                 if not isinstance(articles, list):
                     continue
                 for article in articles:
-                    if (
-                        isinstance(article, dict)
-                        and str(article.get("id")) == item_id
-                    ):
+                    if isinstance(article, dict) and str(article.get("id")) == item_id:
                         return article
         if source_endpoint == "opus" and isinstance(pages, list):
             for page in pages:
@@ -440,10 +426,7 @@ class _ItemFanoutMixin:
                 if not isinstance(items, list):
                     continue
                 for opus_item in items:
-                    if (
-                        isinstance(opus_item, dict)
-                        and str(opus_item.get("opus_id")) == item_id
-                    ):
+                    if isinstance(opus_item, dict) and str(opus_item.get("opus_id")) == item_id:
                         return opus_item
         return None
 
@@ -471,7 +454,8 @@ class _ItemFanoutMixin:
             return await spec.callable(item_id, credential, **extra_kw)
 
         async def _on_attempt_failed(
-            exc: Exception, outcome: RetryOutcome,
+            exc: Exception,
+            outcome: RetryOutcome,
         ) -> int | None:
             reporter = getattr(self, "_reporter", None)
             if isinstance(exc, AuthError):
@@ -491,10 +475,10 @@ class _ItemFanoutMixin:
                     retryable=False,
                     detail={"item_id": item_id},
                 )
-                _log_unavailable(logger, namespace="fetch.item", uid=uid,
-                                 ep_name=ep_name, item_id=item_id, reason=str(exc))
-                await _emit_unavailable(reporter, namespace="fetch.item",
-                                        ep_name=ep_name, item_id=item_id, exc=exc)
+                _log_unavailable(
+                    logger, namespace="fetch.item", uid=uid, ep_name=ep_name, item_id=item_id, reason=str(exc)
+                )
+                await _emit_unavailable(reporter, namespace="fetch.item", ep_name=ep_name, item_id=item_id, exc=exc)
                 return None
 
             if isinstance(exc, Http412Error):
@@ -509,20 +493,42 @@ class _ItemFanoutMixin:
                     detail={"item_id": item_id, "retry_count": retry_state["count"]},
                 )
                 if not outcome.will_retry:
-                    _log_exhausted(logger, namespace="fetch.item", uid=uid,
-                                   ep_name=ep_name, item_id=item_id,
-                                   retry=retry_state["count"])
-                    await _emit_failed(reporter, namespace="fetch.item",
-                                       ep_name=ep_name, item_id=item_id, exc=exc,
-                                       retry=retry_state["count"])
+                    _log_exhausted(
+                        logger,
+                        namespace="fetch.item",
+                        uid=uid,
+                        ep_name=ep_name,
+                        item_id=item_id,
+                        retry=retry_state["count"],
+                    )
+                    await _emit_failed(
+                        reporter,
+                        namespace="fetch.item",
+                        ep_name=ep_name,
+                        item_id=item_id,
+                        exc=exc,
+                        retry=retry_state["count"],
+                    )
                     return None
                 wait = max(advice.get("wait_seconds", 0), outcome.delay_seconds)
-                _log_retry_scheduled(logger, namespace="fetch.item", uid=uid,
-                                     ep_name=ep_name, item_id=item_id,
-                                     retry=retry_state["count"], wait_s=wait)
-                await _emit_retry_scheduled(reporter, namespace="fetch.item",
-                                            ep_name=ep_name, item_id=item_id, exc=exc,
-                                            retry=retry_state["count"], delay_s=wait)
+                _log_retry_scheduled(
+                    logger,
+                    namespace="fetch.item",
+                    uid=uid,
+                    ep_name=ep_name,
+                    item_id=item_id,
+                    retry=retry_state["count"],
+                    wait_s=wait,
+                )
+                await _emit_retry_scheduled(
+                    reporter,
+                    namespace="fetch.item",
+                    ep_name=ep_name,
+                    item_id=item_id,
+                    exc=exc,
+                    retry=retry_state["count"],
+                    delay_s=wait,
+                )
                 return wait
 
             if isinstance(exc, FetchingError):
@@ -535,21 +541,43 @@ class _ItemFanoutMixin:
                     detail={"item_id": item_id},
                 )
                 if not outcome.will_retry:
-                    _log_exhausted(logger, namespace="fetch.item", uid=uid,
-                                   ep_name=ep_name, item_id=item_id,
-                                   retry=retry_state["count"], reason=str(exc))
-                    await _emit_failed(reporter, namespace="fetch.item",
-                                       ep_name=ep_name, item_id=item_id, exc=exc,
-                                       retry=retry_state["count"])
+                    _log_exhausted(
+                        logger,
+                        namespace="fetch.item",
+                        uid=uid,
+                        ep_name=ep_name,
+                        item_id=item_id,
+                        retry=retry_state["count"],
+                        reason=str(exc),
+                    )
+                    await _emit_failed(
+                        reporter,
+                        namespace="fetch.item",
+                        ep_name=ep_name,
+                        item_id=item_id,
+                        exc=exc,
+                        retry=retry_state["count"],
+                    )
                     return None
-                _log_retry_scheduled(logger, namespace="fetch.item", uid=uid,
-                                     ep_name=ep_name, item_id=item_id,
-                                     retry=retry_state["count"],
-                                     wait_s=outcome.delay_seconds, reason=str(exc))
-                await _emit_retry_scheduled(reporter, namespace="fetch.item",
-                                            ep_name=ep_name, item_id=item_id, exc=exc,
-                                            retry=retry_state["count"],
-                                            delay_s=outcome.delay_seconds)
+                _log_retry_scheduled(
+                    logger,
+                    namespace="fetch.item",
+                    uid=uid,
+                    ep_name=ep_name,
+                    item_id=item_id,
+                    retry=retry_state["count"],
+                    wait_s=outcome.delay_seconds,
+                    reason=str(exc),
+                )
+                await _emit_retry_scheduled(
+                    reporter,
+                    namespace="fetch.item",
+                    ep_name=ep_name,
+                    item_id=item_id,
+                    exc=exc,
+                    retry=retry_state["count"],
+                    delay_s=outcome.delay_seconds,
+                )
                 return None
 
             await self._store.record_error(
@@ -559,9 +587,9 @@ class _ItemFanoutMixin:
                 retryable=False,
                 detail={"item_id": item_id},
             )
-            await _emit_unexpected_failed(reporter, namespace="fetch.item",
-                                          ep_name=ep_name, item_id=item_id, exc=exc)
+            await _emit_unexpected_failed(reporter, namespace="fetch.item", ep_name=ep_name, item_id=item_id, exc=exc)
             return None
+
         policy = RetryPolicy(
             max_attempts=max_retries + 1,
             delays=retry_delays,
@@ -571,7 +599,8 @@ class _ItemFanoutMixin:
 
         try:
             result = await driver.run(
-                _do_fetch, on_attempt_failed=_on_attempt_failed,
+                _do_fetch,
+                on_attempt_failed=_on_attempt_failed,
             )
         except AuthError:
             return _ItemFanoutResult.PERMANENT

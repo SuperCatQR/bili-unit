@@ -23,12 +23,7 @@ def _skip_legacy_article_detail_item(item: dict) -> str | None:
     except AttributeError:
         return None
 
-    if (
-        template_id == 4
-        and origin_template_id == 5
-        and category_id in {41, 42}
-        and type_id in {2, 3, 4, 0}
-    ):
+    if template_id == 4 and origin_template_id == 5 and category_id in {41, 42} and type_id in {2, 3, 4, 0}:
         return "legacy article body endpoint skips note/opus-style content"
     return None
 
@@ -70,5 +65,6 @@ def content_endpoints() -> list[EndpointSpec]:
             extract_items=_extract_rlids_from_article_list,
         ),
     ]
+
 
 __all__ = ["content_endpoints"]

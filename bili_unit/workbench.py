@@ -106,11 +106,7 @@ class BiliWorkbench:
         snapshot = await self.inspect_uid(uid)
         requested = tuple(stages)
         active = snapshot.active_stages
-        blocking = (
-            tuple(stage for stage in active if stage in requested)
-            if requested
-            else active
-        )
+        blocking = tuple(stage for stage in active if stage in requested) if requested else active
         if blocking:
             return TaskStartCheck(
                 uid=uid,

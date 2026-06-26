@@ -49,6 +49,7 @@ class ProcessingPipelineStatus(StrEnum):
 # Exceptions
 # ---------------------------------------------------------------------------
 
+
 class ProcessingError(Exception):
     """Base for all processing-layer exceptions."""
 
@@ -101,6 +102,7 @@ class QueueError(ProcessingError):
 # Write-side result DTO (returned by ProcessingCommand.process_uid)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ProcessingCommandResult:
     uid: int
@@ -120,6 +122,7 @@ class ProcessingCommandResult:
 # ---------------------------------------------------------------------------
 # Assembly root — picks ASR backend, returns a single ProcessingCommand
 # ---------------------------------------------------------------------------
+
 
 async def assemble(
     settings,

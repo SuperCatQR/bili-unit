@@ -31,9 +31,15 @@ def get_endpoint(name: str) -> EndpointSpec | None:
 # Profiles — 用于 CLI --profile 选择端点子集。
 #   "all"      → None sentinel，所有已注册端点（默认）
 #   "minimal"  → 5 个 listing 端点，用于 smoke / CI
-MINIMAL_PROFILE: frozenset[str] = frozenset({
-    "user_info", "videos", "articles", "opus", "dynamics",
-})
+MINIMAL_PROFILE: frozenset[str] = frozenset(
+    {
+        "user_info",
+        "videos",
+        "articles",
+        "opus",
+        "dynamics",
+    }
+)
 PROFILES: dict[str, frozenset[str] | None] = {
     "all": None,
     "minimal": MINIMAL_PROFILE,

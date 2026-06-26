@@ -24,9 +24,16 @@ from . import (
     ResourceUnavailableError,
 )
 
-_PERMANENT_BUSINESS_CODES: frozenset[int] = frozenset({
-    -400, 22115, 22118, 53013, 53016, 88214,
-})
+_PERMANENT_BUSINESS_CODES: frozenset[int] = frozenset(
+    {
+        -400,
+        22115,
+        22118,
+        53013,
+        53016,
+        88214,
+    }
+)
 
 
 @contextlib.asynccontextmanager
@@ -93,11 +100,7 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, list | tuple | set):
         return [json_safe(v) for v in value]
     if hasattr(value, "__dict__"):
-        return {
-            str(k): json_safe(v)
-            for k, v in vars(value).items()
-            if not str(k).startswith("_")
-        }
+        return {str(k): json_safe(v) for k, v in vars(value).items() if not str(k).startswith("_")}
     return str(value)
 
 

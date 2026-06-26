@@ -28,6 +28,10 @@ bili-unit = "bili_unit.__main__:main"
 Homepage = "https://github.com/SuperCatQR/bili-unit"
 Repository = "https://github.com/SuperCatQR/bili-unit"
 
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -40,9 +44,19 @@ exclude = ["bili_unit/tests"]
 asyncio_mode = "auto"
 testpaths = ["bili_unit/tests"]
 
-[[tool.uv.index]]
-url = "https://mirrors.aliyun.com/pypi/simple/"
-default = true
+[tool.mypy]
+# First adoption of static type checking (CHO-29 / Stage 1 safety net).
+# Graded strictness on purpose: the bili_unit/ source must be error-free,
+# but we do not yet gate the mock-heavy test suite (tracked as a follow-up).
+python_version = "3.12"
+# bilibili-api-python ships no usable stubs; ignore third-party imports
+# without stubs rather than scattering per-line ignores across adapters.
+ignore_missing_imports = true
+# Flag stale ``# type: ignore`` so suppressions do not rot silently.
+warn_unused_ignores = true
+warn_redundant_casts = true
+# Tests are mock-heavy and not gated in this first pass; revisit later.
+exclude = ['^bili_unit/tests/']
 
 [dependency-groups]
 dev = [
@@ -52,6 +66,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.6.0",
     "ruff>=0.11.0",
+    "mypy>=2.1.0",
 ]
 
 [tool.ruff]

@@ -29,6 +29,7 @@ from bili_unit.processing.audio import AudioDownloader, MimoASRBackend
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_aiohttp_resp_mock(*, status: int, json_data: Any | None = None) -> MagicMock:
     """Build a MagicMock that behaves as an aiohttp response async context manager."""
     resp = MagicMock()
@@ -53,6 +54,7 @@ def _make_session_mock(resp: MagicMock) -> MagicMock:
 # 1. AudioDownloader — aiohttp.ClientError → DownloadError
 # ---------------------------------------------------------------------------
 
+
 async def test_audio_downloader_translates_aiohttp_client_error(tmp_path: Path) -> None:
     """ClientError from aiohttp.ClientSession.get must be wrapped in DownloadError."""
     downloader = AudioDownloader()
@@ -76,6 +78,7 @@ async def test_audio_downloader_translates_aiohttp_client_error(tmp_path: Path) 
 # ---------------------------------------------------------------------------
 # 2. AudioDownloader — asyncio.TimeoutError → DownloadError
 # ---------------------------------------------------------------------------
+
 
 async def test_audio_downloader_translates_timeout(tmp_path: Path) -> None:
     """TimeoutError (or ServerTimeoutError) from aiohttp.ClientSession.get → DownloadError.
@@ -103,6 +106,7 @@ async def test_audio_downloader_translates_timeout(tmp_path: Path) -> None:
 # 3. _fetch_subtitle_body — aiohttp.ClientError → {"_fetch_error": ...} sentinel
 # ---------------------------------------------------------------------------
 
+
 async def test_subtitle_fetch_returns_error_on_aiohttp_failure() -> None:
     """_fetch_subtitle_body must never raise; aiohttp.ClientError → sentinel dict."""
     from bili_unit.fetching._bilibili_adapter import _fetch_subtitle_body
@@ -121,6 +125,7 @@ async def test_subtitle_fetch_returns_error_on_aiohttp_failure() -> None:
 # ---------------------------------------------------------------------------
 # 4. MimoASRBackend — HTTP 401 → ASRAPIError
 # ---------------------------------------------------------------------------
+
 
 async def test_mimo_backend_http_401_raises_asr_api_error() -> None:
     """A 401 from MiMo endpoint must surface as ASRAPIError (not ASRConfigError)."""
@@ -147,6 +152,7 @@ async def test_mimo_backend_http_401_raises_asr_api_error() -> None:
 #    retryable; ASRAPIError is the correct class for rate-limiting responses.)
 # ---------------------------------------------------------------------------
 
+
 async def test_mimo_backend_http_429_raises_asr_api_error() -> None:
     """A 429 rate-limit response from MiMo must raise ASRAPIError."""
     backend = MimoASRBackend(api_key="tp-test-key")
@@ -166,6 +172,7 @@ async def test_mimo_backend_http_429_raises_asr_api_error() -> None:
     # ASRAPIError is a subclass of AudioError — the runner retries it.
     # ASRConfigError is the *non*-retryable carve-out; verify 429 is NOT that.
     from bili_unit.processing import ASRConfigError
+
     try:
         backend2 = MimoASRBackend(api_key="tp-test-key")
         resp2 = _make_aiohttp_resp_mock(status=429, json_data={"error": "rate limit"})
@@ -183,6 +190,7 @@ async def test_mimo_backend_http_429_raises_asr_api_error() -> None:
 # ---------------------------------------------------------------------------
 # 6. convert_m4s_to_mp3 — ffmpeg returncode=1 → ConvertError
 # ---------------------------------------------------------------------------
+
 
 async def test_ffmpeg_subprocess_nonzero_exit_raises_convert_error(tmp_path: Path) -> None:
     """A non-zero ffmpeg exit code must raise ConvertError with stderr content."""
@@ -216,6 +224,7 @@ async def test_ffmpeg_subprocess_nonzero_exit_raises_convert_error(tmp_path: Pat
 # 7. Connection.run_transaction — OperationalError propagates, first INSERT rolled back
 # ---------------------------------------------------------------------------
 
+
 async def test_sqlite_operational_error_propagates_and_rolls_back(tmp_path: Path) -> None:
     """run_transaction rolls back the whole tx when any statement fails.
 
@@ -235,9 +244,7 @@ async def test_sqlite_operational_error_propagates_and_rolls_back(tmp_path: Path
 
     # Create a scratch table independent of the DDL schema so we can insert
     # a sentinel row without touching the versioned tables.
-    await conn.execute(
-        "CREATE TABLE IF NOT EXISTS scratch (id INTEGER PRIMARY KEY, val TEXT)"
-    )
+    await conn.execute("CREATE TABLE IF NOT EXISTS scratch (id INTEGER PRIMARY KEY, val TEXT)")
 
     # Confirm the table starts empty.
     rows_before = await conn.fetch_all("SELECT * FROM scratch")
@@ -245,16 +252,17 @@ async def test_sqlite_operational_error_propagates_and_rolls_back(tmp_path: Path
 
     # Attempt a transaction where the first statement succeeds but the second fails.
     with pytest.raises(sqlite3.OperationalError):
-        await conn.run_transaction([
-            ("INSERT INTO scratch(id, val) VALUES (1, 'should-be-rolled-back')", ()),
-            ("INSERT INTO nonexistent_table(x) VALUES (1)", ()),  # will fail
-        ])
+        await conn.run_transaction(
+            [
+                ("INSERT INTO scratch(id, val) VALUES (1, 'should-be-rolled-back')", ()),
+                ("INSERT INTO nonexistent_table(x) VALUES (1)", ()),  # will fail
+            ]
+        )
 
     # The first INSERT must NOT be committed — rollback should have undone it.
     rows_after = await conn.fetch_all("SELECT * FROM scratch")
     assert rows_after == [], (
-        f"Expected empty table after rollback, but found {len(rows_after)} row(s): "
-        f"{[dict(r) for r in rows_after]}"
+        f"Expected empty table after rollback, but found {len(rows_after)} row(s): {[dict(r) for r in rows_after]}"
     )
 
     await conn.close()

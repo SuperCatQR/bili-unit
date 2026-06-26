@@ -116,8 +116,7 @@ class Connection:
         """Reject incompatible existing DBs before applying current DDL."""
         assert self._conn is not None
         meta = self._conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'meta'",
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
         ).fetchone()
         if meta is None:
             return
@@ -185,14 +184,18 @@ class Connection:
     # -- queries -----------------------------------------------------------
 
     async def execute(
-        self, sql: str, params: Sequence[Any] = (),
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
     ) -> None:
         """Run a single statement that returns no rows. Held under the lock."""
         async with self._lock:
             await asyncio.to_thread(self._exec_sync, sql, params)
 
     async def execute_many(
-        self, sql: str, seq_of_params: Iterable[Sequence[Any]],
+        self,
+        sql: str,
+        seq_of_params: Iterable[Sequence[Any]],
     ) -> None:
         params_list = list(seq_of_params)
         if not params_list:
@@ -201,19 +204,25 @@ class Connection:
             await asyncio.to_thread(self._exec_many_sync, sql, params_list)
 
     async def fetch_one(
-        self, sql: str, params: Sequence[Any] = (),
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
     ) -> sqlite3.Row | None:
         async with self._lock:
             return await asyncio.to_thread(self._fetch_one_sync, sql, params)
 
     async def fetch_all(
-        self, sql: str, params: Sequence[Any] = (),
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
     ) -> list[sqlite3.Row]:
         async with self._lock:
             return await asyncio.to_thread(self._fetch_all_sync, sql, params)
 
     async def fetch_value(
-        self, sql: str, params: Sequence[Any] = (),
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
     ) -> Any:
         """Return the first column of the first row, or None."""
         row = await self.fetch_one(sql, params)
@@ -222,8 +231,7 @@ class Connection:
     async def set_meta(self, key: str, value: str | int) -> None:
         """Upsert one meta key."""
         await self.execute(
-            "INSERT INTO meta(key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, str(value)),
         )
 
@@ -234,7 +242,9 @@ class Connection:
         self._conn.execute(sql, params)
 
     def _exec_many_sync(
-        self, sql: str, seq_of_params: list[Sequence[Any]],
+        self,
+        sql: str,
+        seq_of_params: list[Sequence[Any]],
     ) -> None:
         assert self._conn is not None
         # Wrap in an explicit transaction so the executemany is atomic.
@@ -247,13 +257,17 @@ class Connection:
             raise
 
     def _fetch_one_sync(
-        self, sql: str, params: Sequence[Any],
+        self,
+        sql: str,
+        params: Sequence[Any],
     ) -> sqlite3.Row | None:
         assert self._conn is not None
         return self._conn.execute(sql, params).fetchone()
 
     def _fetch_all_sync(
-        self, sql: str, params: Sequence[Any],
+        self,
+        sql: str,
+        params: Sequence[Any],
     ) -> list[sqlite3.Row]:
         assert self._conn is not None
         return self._conn.execute(sql, params).fetchall()
@@ -261,7 +275,8 @@ class Connection:
     # -- multi-statement transaction ---------------------------------------
 
     async def run_transaction(
-        self, statements: list[tuple[str, Sequence[Any]]],
+        self,
+        statements: Sequence[tuple[str, Sequence[Any]]],
     ) -> None:
         """Run several statements inside one BEGIN/COMMIT under the connection lock.
 
@@ -275,7 +290,8 @@ class Connection:
             await asyncio.to_thread(self._run_tx_sync, statements)
 
     def _run_tx_sync(
-        self, statements: list[tuple[str, Sequence[Any]]],
+        self,
+        statements: Sequence[tuple[str, Sequence[Any]]],
     ) -> None:
         assert self._conn is not None
         try:

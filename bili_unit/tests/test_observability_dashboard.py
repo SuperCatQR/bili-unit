@@ -14,8 +14,7 @@ async def _seed_dashboard_uid(root: Path, uid: int = 123) -> None:
     await ctx.open()
     try:
         await ctx.conn.execute(
-            "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) VALUES (?, ?, ?, ?)",
             ("video_detail", "BV1", json.dumps({"info": {"bvid": "BV1"}}), 1),
         )
         await ctx.conn.execute(
@@ -75,8 +74,7 @@ async def test_uid_dashboard_snapshot_recommends_asr_next_actions(tmp_path: Path
     try:
         for bvid, status in (("BVfailed", "failed"), ("BVmissing", None)):
             await ctx.conn.execute(
-                "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) VALUES (?, ?, ?, ?)",
                 ("video_detail", bvid, json.dumps({"info": {"bvid": bvid}}), 1),
             )
             if status is not None:
@@ -96,12 +94,8 @@ async def test_uid_dashboard_snapshot_recommends_asr_next_actions(tmp_path: Path
         ("asr_retry_failed", ("BVfailed",)),
         ("asr_run_missing", ("BVmissing",)),
     ]
-    assert snapshot.recommended_actions[0].command == (
-        "uv run bili-unit asr 123 --retry-failed-only"
-    )
-    assert snapshot.recommended_actions[1].command == (
-        "uv run bili-unit asr 123 --only-bvids BVmissing"
-    )
+    assert snapshot.recommended_actions[0].command == ("uv run bili-unit asr 123 --retry-failed-only")
+    assert snapshot.recommended_actions[1].command == ("uv run bili-unit asr 123 --only-bvids BVmissing")
 
 
 async def test_dashboard_snapshot_lists_uids(tmp_path: Path) -> None:
@@ -132,9 +126,7 @@ async def test_uid_dashboard_snapshot_exposes_active_stages(tmp_path: Path) -> N
     await ctx.open()
     try:
         await ctx.conn.execute(
-            "INSERT INTO stage_task("
-            "    stage, status, payload, created_at_ms, updated_at_ms"
-            ") VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO stage_task(    stage, status, payload, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
             ("fetching", "RUNNING", '{"endpoints":[]}', 1, 2),
         )
     finally:
@@ -152,6 +144,7 @@ async def test_dashboard_snapshot_can_read_while_writer_updates(tmp_path: Path) 
     ctx = UidContext(uid=uid, root=tmp_path)
     await ctx.open()
     try:
+
         async def writer() -> None:
             for idx in range(20):
                 await ctx.conn.execute(

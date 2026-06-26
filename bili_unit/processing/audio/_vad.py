@@ -155,13 +155,19 @@ async def _decode_to_pcm(input_path: Path, ffmpeg_setting: str) -> bytes:
     ffmpeg = resolve_ffmpeg(ffmpeg_setting)
     cmd = [
         ffmpeg,
-        "-v", "error",
-        "-i", str(input_path),
+        "-v",
+        "error",
+        "-i",
+        str(input_path),
         "-vn",
-        "-f", "s16le",
-        "-acodec", "pcm_s16le",
-        "-ar", str(_SAMPLE_RATE),
-        "-ac", "1",
+        "-f",
+        "s16le",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        str(_SAMPLE_RATE),
+        "-ac",
+        "1",
         "pipe:1",
     ]
     try:
@@ -171,12 +177,11 @@ async def _decode_to_pcm(input_path: Path, ffmpeg_setting: str) -> bytes:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=_FFMPEG_TIMEOUT,
+            proc.communicate(),
+            timeout=_FFMPEG_TIMEOUT,
         )
     except TimeoutError:
-        raise ConvertError(
-            f"ffmpeg PCM decode timed out after {_FFMPEG_TIMEOUT}s: {input_path}"
-        ) from None
+        raise ConvertError(f"ffmpeg PCM decode timed out after {_FFMPEG_TIMEOUT}s: {input_path}") from None
     if proc.returncode != 0:
         raise ConvertError(
             f"ffmpeg PCM decode failed (rc={proc.returncode}) for {input_path}: "

@@ -92,6 +92,7 @@ class DoctorReport:
 # orchestrator wraps every call and converts an exception into ERROR).
 # ---------------------------------------------------------------------------
 
+
 async def _check_credential(settings: BiliSettings) -> CheckResult:
     """Validate the stored credential with one read-only GET nav.
 
@@ -238,6 +239,7 @@ async def _check_task_lock(settings: BiliSettings, uid: int) -> CheckResult:
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
+
 
 async def _guard(name: str, call: Callable[[], Awaitable[CheckResult]]) -> CheckResult:
     """Run one check, converting any exception into an ERROR result.

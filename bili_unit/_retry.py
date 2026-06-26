@@ -89,9 +89,7 @@ class RetryDriver:
         self,
         op: Callable[[], Awaitable[T]],
         *,
-        on_attempt_failed: Callable[
-            [Exception, RetryOutcome], Awaitable[int | None]
-        ] | None = None,
+        on_attempt_failed: Callable[[Exception, RetryOutcome], Awaitable[int | None]] | None = None,
     ) -> T:
         # Note: catch ``Exception`` (not ``BaseException``) so KeyboardInterrupt
         # / SystemExit propagate without spuriously triggering the failure
@@ -117,11 +115,7 @@ class RetryDriver:
 
                 # RETRYABLE
                 will_retry = attempt < self._p.max_attempts
-                default_delay = (
-                    self._p.delays[min(attempt - 1, len(self._p.delays) - 1)]
-                    if self._p.delays
-                    else 0
-                )
+                default_delay = self._p.delays[min(attempt - 1, len(self._p.delays) - 1)] if self._p.delays else 0
                 outcome = RetryOutcome(
                     attempt=attempt,
                     will_retry=will_retry,

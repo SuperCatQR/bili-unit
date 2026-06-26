@@ -45,6 +45,7 @@ DownloaderFactory = Callable[..., Any]  # AudioDownloader constructor, compatibl
 if TYPE_CHECKING:
     from ..._env import BiliSettings
     from ...observability import RunReporter
+    from ...observability._events import RunStatus
     from .._store import ProcessingStore
     from ..audio._asr_backend import ASRBackend
 
@@ -80,9 +81,7 @@ class ProcessingRunner(_AudioMixin):
                 download_timeout_s=settings.bili_processing_asr_cdn_download_timeout_s,
                 max_size_bytes=settings.bili_processing_asr_cdn_max_size_mb * 1024 * 1024,
             )
-        self._convert_fn = (
-            convert_fn if convert_fn is not None else _real_convert_single
-        )
+        self._convert_fn = convert_fn if convert_fn is not None else _real_convert_single
         self._progress_factory = progress_factory or default_progress_factory
         self._asr_cache: ASRCacheStore | None = None
         # Per-uid stores assigned for the duration of ``run``.
@@ -153,10 +152,14 @@ class ProcessingRunner(_AudioMixin):
         logger.info(
             "processing_start",
             extra={
-                "uid": uid, "mode": mode, "pipelines": [_AUDIO],
-                "limit": limit, "only_bvids": only_bvids,
+                "uid": uid,
+                "mode": mode,
+                "pipelines": [_AUDIO],
+                "limit": limit,
+                "only_bvids": only_bvids,
                 "exclude_bvids": exclude_bvids,
-                "retry_failed_only": retry_failed_only, "dry_run": dry_run,
+                "retry_failed_only": retry_failed_only,
+                "dry_run": dry_run,
                 "max_audio_seconds": max_audio_seconds,
                 "max_audio_tokens": max_audio_tokens,
             },
@@ -165,6 +168,7 @@ class ProcessingRunner(_AudioMixin):
         # Bind per-uid store so the audio mixin can reach it through ``self``.
         self._store = proc_store
         self._reporter = reporter
+        estimate: dict | None
         try:
             if reporter is not None:
                 await reporter.start()
@@ -220,7 +224,8 @@ class ProcessingRunner(_AudioMixin):
 
             # Phase 1 — audio pipeline
             candidates, estimate, budget_exceeded = await self._run_audio(
-                uid, mode,
+                uid,
+                mode,
                 limit=limit,
                 only_bvids=only_bvids,
                 exclude_bvids=exclude_bvids,
@@ -350,13 +355,7 @@ class ProcessingRunner(_AudioMixin):
     ) -> bool:
         """Return True when the result should report uid-level ASR coverage."""
         _ = retry_failed_only
-        return (
-            limit is None
-            and only_bvids is None
-            and exclude_bvids is None
-            and not dry_run
-            and not budget_exceeded
-        )
+        return limit is None and only_bvids is None and exclude_bvids is None and not dry_run and not budget_exceeded
 
     async def _audit_audio_coverage(
         self,
@@ -370,25 +369,16 @@ class ProcessingRunner(_AudioMixin):
         statuses = await proc_store.list_audio_statuses()
         missing = [bvid for bvid in expected if bvid not in statuses]
         failed = [bvid for bvid in expected if statuses.get(bvid) == "failed"]
-        incomplete = [
-            bvid for bvid in expected
-            if statuses.get(bvid) not in (None, "success", "failed")
-        ]
+        incomplete = [bvid for bvid in expected if statuses.get(bvid) not in (None, "success", "failed")]
         success = sum(1 for bvid in expected if statuses.get(bvid) == "success")
         coverage = {
             "expected": len(expected),
             "success": success,
             "missing": len(missing),
             "failed": len(failed),
-            "pending": sum(
-                1 for bvid in expected if statuses.get(bvid) == "pending"
-            ),
-            "running": sum(
-                1 for bvid in expected if statuses.get(bvid) == "running"
-            ),
-            "skipped": sum(
-                1 for bvid in expected if statuses.get(bvid) == "skipped"
-            ),
+            "pending": sum(1 for bvid in expected if statuses.get(bvid) == "pending"),
+            "running": sum(1 for bvid in expected if statuses.get(bvid) == "running"),
+            "skipped": sum(1 for bvid in expected if statuses.get(bvid) == "skipped"),
             "complete": success == len(expected),
             "missing_bvids": missing,
             "failed_bvids": failed,
@@ -403,10 +393,7 @@ class ProcessingRunner(_AudioMixin):
         pipeline_status = ProcessingPipelineStatus.SUCCESS
         if current_status == ProcessingPipelineStatus.FAILED_PERMANENT.value:
             pipeline_status = ProcessingPipelineStatus.FAILED_PERMANENT
-        elif (
-            current_status == ProcessingPipelineStatus.PARTIAL.value
-            or not coverage["complete"]
-        ):
+        elif current_status == ProcessingPipelineStatus.PARTIAL.value or not coverage["complete"]:
             pipeline_status = ProcessingPipelineStatus.PARTIAL
         await proc_store.update_task_pipeline(
             _AUDIO,
@@ -483,12 +470,19 @@ class ProcessingRunner(_AudioMixin):
             return ProcessingTaskStatus.SUCCESS
         if any(s == ProcessingPipelineStatus.RUNNING for s in statuses):
             return ProcessingTaskStatus.RUNNING
-        if any(s == ProcessingPipelineStatus.FAILED_PERMANENT for s in statuses) and \
-           not any(s == ProcessingPipelineStatus.SUCCESS for s in statuses):
+        if any(s == ProcessingPipelineStatus.FAILED_PERMANENT for s in statuses) and not any(
+            s == ProcessingPipelineStatus.SUCCESS for s in statuses
+        ):
             return ProcessingTaskStatus.FAILED_PERMANENT
-        if any(s in (ProcessingPipelineStatus.PARTIAL,
-                     ProcessingPipelineStatus.FAILED_PERMANENT,
-                     ProcessingPipelineStatus.PENDING) for s in statuses):
+        if any(
+            s
+            in (
+                ProcessingPipelineStatus.PARTIAL,
+                ProcessingPipelineStatus.FAILED_PERMANENT,
+                ProcessingPipelineStatus.PENDING,
+            )
+            for s in statuses
+        ):
             return ProcessingTaskStatus.PARTIAL
         return ProcessingTaskStatus.SUCCESS
 
@@ -510,7 +504,7 @@ __all__ = [
 ]
 
 
-def _run_status_from_task_status(status: ProcessingTaskStatus) -> str:
+def _run_status_from_task_status(status: ProcessingTaskStatus) -> RunStatus:
     if status == ProcessingTaskStatus.SUCCESS:
         return "SUCCESS"
     if status == ProcessingTaskStatus.DRY_RUN:

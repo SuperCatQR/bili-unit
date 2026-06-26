@@ -35,18 +35,16 @@ logger = logging.getLogger("bili.processing.audio.mimo")
 # Profile → base URL mapping.  Single source of truth; users do not memorise
 # hosts — they pick a profile name from BILI_PROCESSING_ASR_PROFILE.
 PROFILE_BASE_URLS: dict[str, str] = {
-    "token_plan_cn":  "https://token-plan-cn.xiaomimimo.com/v1",
+    "token_plan_cn": "https://token-plan-cn.xiaomimimo.com/v1",
     "token_plan_sgp": "https://token-plan-sgp.xiaomimimo.com/v1",
     "token_plan_ams": "https://token-plan-ams.xiaomimimo.com/v1",
-    "pay_as_you_go":  "https://api.xiaomimimo.com/v1",
+    "pay_as_you_go": "https://api.xiaomimimo.com/v1",
 }
 
 # auth_style values accepted on the wire.
 _AUTH_STYLES = ("api_key", "bearer")
 
-_REFUSAL_MARKERS = (
-    "the request was rejected because it was considered high risk",
-)
+_REFUSAL_MARKERS = ("the request was rejected because it was considered high risk",)
 
 
 def resolve_base_url(profile: str, custom_base_url: str = "") -> str:
@@ -177,9 +175,7 @@ class MimoASRBackend:
         }
         # Per-call override takes precedence over instance default.
         effective_max_tokens = (
-            max_completion_tokens
-            if max_completion_tokens is not None
-            else self._max_completion_tokens
+            max_completion_tokens if max_completion_tokens is not None else self._max_completion_tokens
         )
         if effective_max_tokens is not None:
             payload["max_tokens"] = effective_max_tokens
@@ -190,14 +186,9 @@ class MimoASRBackend:
             async with session.post(url, json=payload, headers=headers) as resp:
                 body = await resp.json()
                 if resp.status != 200:
-                    raise ASRAPIError(
-                        f"MiMo ASR returned {resp.status}: "
-                        f"{body.get('error', body)}"
-                    )
+                    raise ASRAPIError(f"MiMo ASR returned {resp.status}: {body.get('error', body)}")
         except TimeoutError:
-            raise ASRConnectionError(
-                f"MiMo ASR request timed out after {self._timeout.total}s"
-            ) from None
+            raise ASRConnectionError(f"MiMo ASR request timed out after {self._timeout.total}s") from None
         except aiohttp.ClientError as exc:
             raise ASRConnectionError(
                 f"MiMo ASR connection error: {exc}",
@@ -218,9 +209,7 @@ class MimoASRBackend:
             choice = body["choices"][0]
             text = choice["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise ASRAPIError(
-                f"unexpected MiMo response shape: {exc}"
-            ) from exc
+            raise ASRAPIError(f"unexpected MiMo response shape: {exc}") from exc
         finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
         if finish_reason == "length":
             raise LengthTruncatedError(
@@ -242,18 +231,14 @@ class MimoASRBackend:
 
         usage = body.get("usage", {}) if isinstance(body.get("usage"), dict) else {}
         duration_raw = usage.get("seconds")
-        duration: float | None = (
-            float(duration_raw) if duration_raw is not None else None
-        )
+        duration: float | None = float(duration_raw) if duration_raw is not None else None
 
         prompt_details = usage.get("prompt_tokens_details", {})
         if not isinstance(prompt_details, dict):
             prompt_details = {}
         audio_tokens_raw = prompt_details.get("audio_tokens")
         try:
-            audio_tokens: int | None = (
-                int(audio_tokens_raw) if audio_tokens_raw is not None else None
-            )
+            audio_tokens: int | None = int(audio_tokens_raw) if audio_tokens_raw is not None else None
         except (TypeError, ValueError):
             audio_tokens = None
 

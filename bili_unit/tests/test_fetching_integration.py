@@ -33,8 +33,11 @@ def _rate_limit() -> RateLimitController:
 
 def _fake_page(uid: int, payload: dict, *, endpoint: str = "user_info") -> FetchPageResult:
     return FetchPageResult(
-        uid=uid, endpoint=endpoint, raw_payload=payload,
-        is_last_page=True, next_request=None,
+        uid=uid,
+        endpoint=endpoint,
+        raw_payload=payload,
+        is_last_page=True,
+        next_request=None,
     )
 
 
@@ -53,10 +56,7 @@ def _fake_videos_pages(uid: int, total_pages: int):
             endpoint="videos",
             raw_payload={
                 "list": {
-                    "vlist": [
-                        {"bvid": f"BV{pn:03d}{i:02d}"}
-                        for i in range(n_items)
-                    ],
+                    "vlist": [{"bvid": f"BV{pn:03d}{i:02d}"} for i in range(n_items)],
                 },
                 "page": {"count": total_items},
             },
@@ -68,6 +68,7 @@ def _fake_videos_pages(uid: int, total_pages: int):
 # ======================================================================
 # full loop — single endpoint
 # ======================================================================
+
 
 async def test_integration_single_endpoint_success(tmp_path: Path):
     user_info_data = {"code": 0, "data": {"mid": 123, "name": "test"}}
@@ -97,6 +98,7 @@ async def test_integration_single_endpoint_success(tmp_path: Path):
 # full loop — multi-endpoint, multi-page videos
 # ======================================================================
 
+
 async def test_integration_multi_endpoint(tmp_path: Path):
     """user_info succeeds; videos succeeds with 3 pages."""
     pages = list(_fake_videos_pages(999, total_pages=3))
@@ -109,14 +111,16 @@ async def test_integration_multi_endpoint(tmp_path: Path):
             if pn <= len(pages):
                 return pages[pn - 1]
             return FetchPageResult(
-                uid=uid, endpoint="videos",
+                uid=uid,
+                endpoint="videos",
                 raw_payload={"list": {"vlist": []}, "page": {"count": 0}},
                 is_last_page=True,
             )
         raise RuntimeError(f"unexpected {spec.name}")
 
     cmd = Command(
-        _settings(tmp_path), _rate_limit(),
+        _settings(tmp_path),
+        _rate_limit(),
         fetch_fn=AsyncMock(side_effect=fake_fetch),
     )
     result = await cmd.fetch_uid(999, endpoints=["user_info", "videos"])
@@ -145,6 +149,7 @@ async def test_integration_multi_endpoint(tmp_path: Path):
 # resume — a partially-failed task completes on a second call
 # ======================================================================
 
+
 async def test_integration_resume_after_partial(tmp_path: Path):
     """First run partially fails on videos; second run resumes it to SUCCESS."""
     settings = _settings(tmp_path)
@@ -154,10 +159,12 @@ async def test_integration_resume_after_partial(tmp_path: Path):
             return _fake_page(uid, {"name": "a"})
         # videos: simulate a permanent endpoint hiccup
         from bili_unit.fetching import Http412Error
+
         raise Http412Error("412")
 
     cmd1 = Command(
-        settings, _rate_limit(),
+        settings,
+        _rate_limit(),
         fetch_fn=AsyncMock(side_effect=fake_fetch_1),
     )
     r1 = await cmd1.fetch_uid(444, endpoints=["user_info", "videos"])
@@ -168,14 +175,16 @@ async def test_integration_resume_after_partial(tmp_path: Path):
             return _fake_page(uid, {"name": "a"})
         if spec.name == "videos":
             return FetchPageResult(
-                uid=uid, endpoint="videos",
+                uid=uid,
+                endpoint="videos",
                 raw_payload={"list": {"vlist": []}, "page": {"count": 0}},
                 is_last_page=True,
             )
         raise RuntimeError(spec.name)
 
     cmd2 = Command(
-        settings, _rate_limit(),
+        settings,
+        _rate_limit(),
         fetch_fn=AsyncMock(side_effect=fake_fetch_2),
     )
     r2 = await cmd2.fetch_uid(444, endpoints=["user_info", "videos"])

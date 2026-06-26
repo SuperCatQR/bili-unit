@@ -34,11 +34,7 @@ class CliRenderer:
             counts = _format_counts(summary.fetch.status_counts)
             if counts:
                 self.line(f"  endpoints: {counts}")
-            failed = [
-                endpoint.endpoint
-                for endpoint in summary.fetch.endpoints
-                if _is_failure_status(endpoint.status)
-            ]
+            failed = [endpoint.endpoint for endpoint in summary.fetch.endpoints if _is_failure_status(endpoint.status)]
             if failed:
                 self.line(f"  failed endpoints: {', '.join(failed)}")
         self.attention_events(summary)
@@ -56,8 +52,7 @@ class CliRenderer:
         if candidates is not None or budget_exceeded:
             candidate_list = candidates or []
             self.line(
-                f"uid={uid}  status={_status_value(status)}  "
-                f"({len(candidate_list)} candidates)",
+                f"uid={uid}  status={_status_value(status)}  ({len(candidate_list)} candidates)",
             )
             if estimate:
                 self.line(
@@ -90,11 +85,7 @@ class CliRenderer:
         if status is None:
             status = fallback_status
 
-        candidate_count = (
-            len(candidates)
-            if candidates is not None
-            else summary.asr.candidate_count
-        )
+        candidate_count = len(candidates) if candidates is not None else summary.asr.candidate_count
         suffix = f"  ({candidate_count} candidates)" if candidate_count is not None else ""
         self.line(f"uid={summary.uid}  status={_status_value(status)}{suffix}")
         if estimate:
@@ -149,9 +140,7 @@ class CliRenderer:
 
     def delete_plan(self, *, uid: int, raw: Any, workdir: Any) -> None:
         self.line(
-            f"About to delete all data for uid={uid}:"
-            f"\n  {raw}"
-            f"\n  {workdir}/  (audio caches)",
+            f"About to delete all data for uid={uid}:\n  {raw}\n  {workdir}/  (audio caches)",
         )
 
     def delete_cancelled(self) -> None:
@@ -187,10 +176,7 @@ def _status_value(status: Any) -> str:
 
 
 def _format_counts(counts: Mapping[str, int]) -> str:
-    return ", ".join(
-        f"{status}={count}" for status, count in sorted(counts.items())
-        if count
-    )
+    return ", ".join(f"{status}={count}" for status, count in sorted(counts.items()) if count)
 
 
 def _is_failure_status(status: Any) -> bool:

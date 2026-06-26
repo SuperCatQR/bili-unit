@@ -20,6 +20,7 @@ from bili_unit.fetching._endpoint_catalog import get_endpoint
 # Client — _extract_rlids_from_article_list
 # ======================================================================
 
+
 def test_extract_rlids_basic():
     payload = {
         "lists": [
@@ -68,6 +69,7 @@ def test_extract_rlids_stringifies_int_ids():
 # ======================================================================
 # Client — article_list_detail endpoint registration
 # ======================================================================
+
 
 def test_article_list_detail_endpoint_registered():
     spec = get_endpoint("article_list_detail")

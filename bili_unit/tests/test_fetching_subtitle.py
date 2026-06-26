@@ -67,6 +67,7 @@ def _patch_aiohttp_get(url_to_payload: dict[str, dict | Exception]):
 # 1. Happy path — single page, single lang, body fetched and merged.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_subtitle_fetch_single_lang_success():
     body = [
@@ -80,11 +81,13 @@ async def test_subtitle_fetch_single_lang_success():
     with patch("bili_unit.fetching._adapters._subtitle.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_pages = AsyncMock(return_value=[{"cid": 111, "part": "p1"}])
-        instance.get_subtitle = AsyncMock(return_value={
-            "subtitles": [
-                {"lan": "zh-CN", "lan_doc": "中文（中国）", "subtitle_url": url},
-            ],
-        })
+        instance.get_subtitle = AsyncMock(
+            return_value={
+                "subtitles": [
+                    {"lan": "zh-CN", "lan_doc": "中文（中国）", "subtitle_url": url},
+                ],
+            }
+        )
         with patcher:
             result = await fetch_video_subtitle_item("BV1", None)
 
@@ -108,26 +111,31 @@ async def test_subtitle_fetch_single_lang_success():
 # 2. One lang's URL fetch fails — other lang's body still arrives.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_subtitle_fetch_one_lang_failure_does_not_block_others():
     good_url = "https://i0.hdslb.com/bfs/subtitle/zh.json"
     bad_url = "https://i0.hdslb.com/bfs/subtitle/en.json"
     good_body = [{"from": 0.0, "to": 1.0, "content": "ok"}]
 
-    patcher, _urls = _patch_aiohttp_get({
-        good_url: {"body": good_body},
-        bad_url: aiohttp.ClientError("connection reset"),
-    })
+    patcher, _urls = _patch_aiohttp_get(
+        {
+            good_url: {"body": good_body},
+            bad_url: aiohttp.ClientError("connection reset"),
+        }
+    )
 
     with patch("bili_unit.fetching._adapters._subtitle.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_pages = AsyncMock(return_value=[{"cid": 111, "part": "p1"}])
-        instance.get_subtitle = AsyncMock(return_value={
-            "subtitles": [
-                {"lan": "zh-CN", "lan_doc": "中文", "subtitle_url": good_url},
-                {"lan": "en-US", "lan_doc": "English", "subtitle_url": bad_url},
-            ],
-        })
+        instance.get_subtitle = AsyncMock(
+            return_value={
+                "subtitles": [
+                    {"lan": "zh-CN", "lan_doc": "中文", "subtitle_url": good_url},
+                    {"lan": "en-US", "lan_doc": "English", "subtitle_url": bad_url},
+                ],
+            }
+        )
         with patcher:
             result = await fetch_video_subtitle_item("BV1", None)
 
@@ -147,6 +155,7 @@ async def test_subtitle_fetch_one_lang_failure_does_not_block_others():
 # ---------------------------------------------------------------------------
 # 3. Page has no subtitles → content is an empty list, no aiohttp activity.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_subtitle_fetch_empty_index_yields_empty_content():
@@ -169,6 +178,7 @@ async def test_subtitle_fetch_empty_index_yields_empty_content():
 # 4. URL missing scheme (B 站 returns //host/...) — "https:" prefix added.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_subtitle_fetch_normalises_scheme_relative_url():
     body = [{"from": 0.0, "to": 1.0, "content": "x"}]
@@ -179,12 +189,13 @@ async def test_subtitle_fetch_normalises_scheme_relative_url():
     with patch("bili_unit.fetching._adapters._subtitle.Video") as MockVideo:
         instance = MockVideo.return_value
         instance.get_pages = AsyncMock(return_value=[{"cid": 111, "part": "p1"}])
-        instance.get_subtitle = AsyncMock(return_value={
-            "subtitles": [
-                {"lan": "zh-CN", "lan_doc": "中文",
-                 "subtitle_url": "//i0.hdslb.com/x.json"},
-            ],
-        })
+        instance.get_subtitle = AsyncMock(
+            return_value={
+                "subtitles": [
+                    {"lan": "zh-CN", "lan_doc": "中文", "subtitle_url": "//i0.hdslb.com/x.json"},
+                ],
+            }
+        )
         with patcher:
             result = await fetch_video_subtitle_item("BV1", None)
 

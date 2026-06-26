@@ -10,9 +10,10 @@ from bili_unit._env import BiliSettings, get_settings, reload_settings
 def _clean_env_cache(monkeypatch):
     """Force fresh settings each test, isolated from real .env."""
     # Clear all BILI_* env vars so .env file values don't leak in
-    for _key in list(monkeypatch._monkeypatches.keys() if hasattr(monkeypatch, '_monkeypatches') else []):
+    for _key in list(monkeypatch._monkeypatches.keys() if hasattr(monkeypatch, "_monkeypatches") else []):
         pass
     import os
+
     for key in [k for k in os.environ if k.startswith("BILI_")]:
         monkeypatch.delenv(key, raising=False)
     # Point to a non-existent env file to prevent reading the real .env

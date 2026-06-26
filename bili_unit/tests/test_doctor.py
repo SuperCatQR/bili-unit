@@ -44,6 +44,7 @@ def _result(report: DoctorReport, name: str) -> CheckResult:
 # credential
 # ---------------------------------------------------------------------------
 
+
 async def test_credential_ok_when_valid(monkeypatch, tmp_path: Path) -> None:
     async def fake_get_credential(settings=None) -> _FakeCredential:
         return _FakeCredential(valid=True)
@@ -120,6 +121,7 @@ async def test_credential_uses_injected_settings(monkeypatch, tmp_path: Path) ->
 # db_dir
 # ---------------------------------------------------------------------------
 
+
 async def _ok_credential(monkeypatch) -> None:
     async def fake_get_credential(settings=None) -> _FakeCredential:
         return _FakeCredential(valid=True)
@@ -185,6 +187,7 @@ async def test_db_dir_fail_when_absent_and_no_writable_ancestor(monkeypatch, tmp
 # ---------------------------------------------------------------------------
 # asr_backend
 # ---------------------------------------------------------------------------
+
 
 async def test_asr_skipped_by_default(monkeypatch, tmp_path: Path) -> None:
     await _ok_credential(monkeypatch)
@@ -290,6 +293,7 @@ async def test_asr_not_configured_on_config_error(monkeypatch, tmp_path: Path) -
 # task_lock
 # ---------------------------------------------------------------------------
 
+
 class _TaskCheck:
     def __init__(self, *, can_start: bool, reason: str | None = None) -> None:
         self.can_start = can_start
@@ -354,6 +358,7 @@ async def test_task_lock_warn_does_not_fail_run(monkeypatch, tmp_path: Path) -> 
 # ---------------------------------------------------------------------------
 # rendering + CLI handler exit code
 # ---------------------------------------------------------------------------
+
 
 def test_doctor_report_render(capsys) -> None:
     report = DoctorReport(

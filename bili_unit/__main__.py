@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 from ._cli_render import CliRenderer
 from ._env import get_settings
@@ -29,6 +30,7 @@ logger = logging.getLogger("bili.cli")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _resolve_subset(
     *,
@@ -61,6 +63,7 @@ def _resolve_subset(
 # ---------------------------------------------------------------------------
 # Sub-command handlers
 # ---------------------------------------------------------------------------
+
 
 async def _handle_fetch(args: argparse.Namespace) -> None:
     """Run fetching via the unit-level BiliCommand."""
@@ -118,11 +121,7 @@ async def _handle_asr(args: argparse.Namespace) -> None:
             max_audio_tokens=args.max_audio_tokens,
         )
 
-        candidates = (
-            result.dry_run_candidates or []
-            if args.dry_run or result.budget_exceeded
-            else None
-        )
+        candidates = result.dry_run_candidates or [] if args.dry_run or result.budget_exceeded else None
     summary = await _load_cli_summary(args.uid, run_id=result.run_id)
     if summary is None:
         renderer.asr_result(
@@ -150,7 +149,7 @@ async def _load_cli_summary(
     filter_events_to_run: bool = True,
 ) -> RunSummary | None:
     try:
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "uid": uid,
             "root": get_settings().bili_db_dir,
             "run_id": run_id,
@@ -193,6 +192,7 @@ async def _handle_delete_uid(args: argparse.Namespace) -> None:
     async with session() as cmd:
         stats = await cmd.delete_uid(args.uid)
     renderer.delete_stats(stats)
+
 
 async def _handle_login(_args: argparse.Namespace) -> None:
     """QR code login."""
@@ -252,20 +252,28 @@ async def _handle_doctor(args: argparse.Namespace) -> None:
 # Argument parser
 # ---------------------------------------------------------------------------
 
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bili-unit",
         description="Bilibili data unit - unified CLI.",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true", help="Enable debug logging",
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable debug logging",
     )
     parser.add_argument(
-        "--quiet", "-q", action="store_true",
+        "--quiet",
+        "-q",
+        action="store_true",
         help="Only show warnings and errors (overrides --verbose)",
     )
     parser.add_argument(
-        "--log-file", default=None, metavar="PATH",
+        "--log-file",
+        default=None,
+        metavar="PATH",
         help="Also write DEBUG-level JSON Lines to PATH (handy for post-mortem)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -278,7 +286,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_fetch.add_argument("uid", type=int, help="Target Bilibili user uid")
     _add_fetch_selection_args(p_fetch)
     p_fetch.add_argument(
-        "--mode", "-m",
+        "--mode",
+        "-m",
         choices=["incremental", "refresh", "full"],
         default="incremental",
         help="Fetching mode (default: incremental)",
@@ -291,50 +300,53 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_proc.add_argument("uid", type=int, help="Target Bilibili user uid")
     p_proc.add_argument(
-        "--mode", "-m",
+        "--mode",
+        "-m",
         choices=["incremental", "full"],
         default="incremental",
         help="ASR mode (default: incremental)",
     )
     p_proc.add_argument(
-        "--asr-backend", "-b",
+        "--asr-backend",
+        "-b",
         choices=["mock", "mimo"],
         default=None,
-        help=(
-            "Override BILI_PROCESSING_ASR_BACKEND for this run "
-            "(e.g. -b mock to skip MiMo without editing .env)."
-        ),
+        help=("Override BILI_PROCESSING_ASR_BACKEND for this run (e.g. -b mock to skip MiMo without editing .env)."),
     )
     p_proc.add_argument(
-        "--limit", type=_positive_int, default=None, metavar="N",
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
         help="Process only the first N discovered bvids (after other filters).",
     )
     _add_asr_selection_args(p_proc)
     p_proc.add_argument(
-        "--retry-failed-only", action="store_true",
+        "--retry-failed-only",
+        action="store_true",
         help=(
             "Only process bvids whose previous ASR status is FAILED. "
             "Implies --mode incremental; conflicts with --mode full."
         ),
     )
     p_proc.add_argument(
-        "--dry-run", action="store_true",
-        help=(
-            "Discover candidates and print them without dispatching workers. "
-            "Does not update ASR task progress."
-        ),
+        "--dry-run",
+        action="store_true",
+        help=("Discover candidates and print them without dispatching workers. Does not update ASR task progress."),
     )
     p_proc.add_argument(
-        "--max-audio-seconds", type=_positive_float, default=None, metavar="SECONDS",
-        help=(
-            "Stop before ASR dispatch if discovered audio exceeds this many seconds."
-        ),
+        "--max-audio-seconds",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help=("Stop before ASR dispatch if discovered audio exceeds this many seconds."),
     )
     p_proc.add_argument(
-        "--max-audio-tokens", type=_positive_int, default=None, metavar="TOKENS",
-        help=(
-            "Stop before ASR dispatch if estimated audio tokens exceed this cap."
-        ),
+        "--max-audio-tokens",
+        type=_positive_int,
+        default=None,
+        metavar="TOKENS",
+        help=("Stop before ASR dispatch if estimated audio tokens exceed this cap."),
     )
 
     # --- login / init-mimo ---
@@ -373,7 +385,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_del = sub.add_parser("delete-uid", help="Delete all data for a uid")
     p_del.add_argument("uid", type=int, help="Target Bilibili user uid")
     p_del.add_argument(
-        "--yes", "-y", action="store_true",
+        "--yes",
+        "-y",
+        action="store_true",
         help="Skip confirmation prompt",
     )
 
@@ -383,7 +397,9 @@ def _build_parser() -> argparse.ArgumentParser:
 def _add_fetch_selection_args(parser: argparse.ArgumentParser) -> None:
     fetch_group = parser.add_mutually_exclusive_group()
     fetch_group.add_argument(
-        "--exclude", "--exclude-endpoints", "-x",
+        "--exclude",
+        "--exclude-endpoints",
+        "-x",
         dest="exclude_endpoints",
         nargs="+",
         default=None,
@@ -394,7 +410,9 @@ def _add_fetch_selection_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     fetch_group.add_argument(
-        "--include", "--endpoints", "-e",
+        "--include",
+        "--endpoints",
+        "-e",
         dest="endpoints",
         nargs="+",
         default=None,
@@ -402,7 +420,8 @@ def _add_fetch_selection_args(parser: argparse.ArgumentParser) -> None:
         help="Endpoint names to fetch (debug; mutually exclusive with -x).",
     )
     fetch_group.add_argument(
-        "--profile", "-p",
+        "--profile",
+        "-p",
         choices=["all", "minimal"],
         default="all",
         help=(
@@ -416,7 +435,9 @@ def _add_fetch_selection_args(parser: argparse.ArgumentParser) -> None:
 def _add_asr_selection_args(parser: argparse.ArgumentParser) -> None:
     bvid_group = parser.add_mutually_exclusive_group()
     bvid_group.add_argument(
-        "--include", "--only-bvids", "-e",
+        "--include",
+        "--only-bvids",
+        "-e",
         dest="only_bvids",
         nargs="+",
         default=None,
@@ -424,7 +445,9 @@ def _add_asr_selection_args(parser: argparse.ArgumentParser) -> None:
         help="Process only the given bvid(s); combinable with --limit.",
     )
     bvid_group.add_argument(
-        "--exclude", "--exclude-bvids", "-x",
+        "--exclude",
+        "--exclude-bvids",
+        "-x",
         dest="exclude_bvids",
         nargs="+",
         default=None,
@@ -458,6 +481,7 @@ def main() -> None:
     )
 
     import sys
+
     if sys.platform == "win32":
         # Proactor's __del__ logs noisy ConnectionResetError tracebacks during
         # interpreter shutdown when aiohttp transports outlive the loop.

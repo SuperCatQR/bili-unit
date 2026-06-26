@@ -222,10 +222,7 @@ def render_screen(
         right = detail[idx] if idx < len(detail) else ""
         body.append(f"{_pad(left, sidebar_width)} | {_fit(right, detail_width)}")
 
-    actions = "Actions: " + "  ".join(
-        f"{action.key}={action.label}"
-        for action in TUI_MVP_ACTIONS
-    )
+    actions = "Actions: " + "  ".join(f"{action.key}={action.label}" for action in TUI_MVP_ACTIONS)
     status = f"Status: uid={selected.uid} tab={TUI_DETAIL_TABS[_select_tab_index_for_count(selected_tab_index)].id}"
     lines = [
         header,
@@ -322,10 +319,7 @@ def _summary_lines(item: UidDashboardSnapshot) -> list[str]:
     lines: list[str] = []
     if manifest is not None:
         lines.append(
-            "raw: "
-            f"endpoints={manifest.endpoint_count} "
-            f"rows={manifest.raw_payload_count} "
-            f"videos={manifest.video_count}",
+            f"raw: endpoints={manifest.endpoint_count} rows={manifest.raw_payload_count} videos={manifest.video_count}",
         )
         lines.append(
             "asr: "
@@ -337,9 +331,7 @@ def _summary_lines(item: UidDashboardSnapshot) -> list[str]:
         latest = summary.run.run_id if summary.run is not None else "-"
         lines.append(f"latest run: {latest}")
         lines.append(
-            "stage: "
-            f"fetch={summary.fetch.status or '-'} "
-            f"asr={summary.asr.status or '-'}",
+            f"stage: fetch={summary.fetch.status or '-'} asr={summary.asr.status or '-'}",
         )
     return lines or ["no status"]
 
@@ -388,10 +380,7 @@ def _action_lines(item: UidDashboardSnapshot) -> list[str]:
     lines.append("d Delete UID (confirm)")
     if item.recommended_actions:
         lines.append("recommended:")
-        lines.extend(
-            f"{action.label}: {action.command}"
-            for action in item.recommended_actions
-        )
+        lines.extend(f"{action.label}: {action.command}" for action in item.recommended_actions)
     return lines
 
 

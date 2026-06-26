@@ -42,6 +42,7 @@ from bili_unit.fetching.runner._endpoint import _EndpointMixin
 
 # -- 1. media_list params_strategy must be JSON-safe --------------------------
 
+
 def test_media_list_params_strategy_is_json_serialisable():
     """The runner persists request_params (a copy of params_strategy) into
     progress as JSON. Embedding a Python enum here crashes the page-save
@@ -83,12 +84,12 @@ def test_fetch_user_media_list_accepts_int_sort_field():
     assert sort_param is not None
     annotation = str(sort_param.annotation)
     assert "int" in annotation, (
-        f"sort_field must accept int (catalog persists int for JSON safety); "
-        f"got annotation: {annotation}"
+        f"sort_field must accept int (catalog persists int for JSON safety); got annotation: {annotation}"
     )
 
 
 # -- 2. runner silent-RUNNING safety net --------------------------------------
+
 
 class _RunnerHarness(_EndpointMixin):
     """Minimal subclass to drive ``_run_endpoint`` standalone.
@@ -133,7 +134,10 @@ async def test_run_endpoint_catches_unexpected_exception_into_permanent(tmp_path
 
         spec = EndpointSpec(name="media_list", callable=lambda *_a, **_kw: None)
         await harness._run_endpoint(
-            uid=42, spec=spec, ep_name="media_list", credential=None,
+            uid=42,
+            spec=spec,
+            ep_name="media_list",
+            credential=None,
         )
 
         # The wrapper must record an error.

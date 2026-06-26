@@ -28,8 +28,12 @@ def test_upsert_persists_to_disk_atomically(tmp_path):
     cache = ASRCacheStore(tmp_path)
     page = cache.load_page(42, "BVabc", 0)
     seg = CachedSegment(
-        start_s=0.0, end_s=830.0, text="hello",
-        language="zh", duration=830.0, model="m",
+        start_s=0.0,
+        end_s=830.0,
+        text="hello",
+        language="zh",
+        duration=830.0,
+        model="m",
     )
     cache.upsert(page, seg)
 
@@ -51,94 +55,146 @@ def test_find_matches_within_tolerance(tmp_path):
     cache = ASRCacheStore(tmp_path)
     page = cache.load_page(1, "BV1", 0)
     seg = CachedSegment(
-        start_s=100.0, end_s=200.0, text="t",
-        language="zh", duration=100.0, model="m",
+        start_s=100.0,
+        end_s=200.0,
+        text="t",
+        language="zh",
+        duration=100.0,
+        model="m",
     )
     cache.upsert(page, seg)
 
     # Reload from disk.
     page2 = cache.load_page(1, "BV1", 0)
     # Exact match.
-    assert cache.find(
-        page2, 100.0, 200.0, language="zh", model="m", backend="",
-    ) is not None
+    assert (
+        cache.find(
+            page2,
+            100.0,
+            200.0,
+            language="zh",
+            model="m",
+            backend="",
+        )
+        is not None
+    )
     # Within tolerance (well below MATCH_TOLERANCE_S).
     near = MATCH_TOLERANCE_S * 0.5
-    assert cache.find(
-        page2,
-        100.0 + near,
-        200.0 - near,
-        language="zh",
-        model="m",
-        backend="",
-    ) is not None
+    assert (
+        cache.find(
+            page2,
+            100.0 + near,
+            200.0 - near,
+            language="zh",
+            model="m",
+            backend="",
+        )
+        is not None
+    )
     # Outside tolerance.
     far = MATCH_TOLERANCE_S * 2
-    assert cache.find(
-        page2, 100.0 + far, 200.0, language="zh", model="m", backend="",
-    ) is None
+    assert (
+        cache.find(
+            page2,
+            100.0 + far,
+            200.0,
+            language="zh",
+            model="m",
+            backend="",
+        )
+        is None
+    )
 
 
 def test_find_requires_matching_asr_namespace(tmp_path):
     cache = ASRCacheStore(tmp_path)
     page = cache.load_page(1, "BV1", 0)
-    cache.upsert(page, CachedSegment(
-        start_s=100.0,
-        end_s=200.0,
-        text="zh text",
-        language="zh",
-        duration=100.0,
-        model="mimo-v1",
-        backend="mimo:https://a.example/v1:mimo-v1",
-    ))
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=100.0,
+            end_s=200.0,
+            text="zh text",
+            language="zh",
+            duration=100.0,
+            model="mimo-v1",
+            backend="mimo:https://a.example/v1:mimo-v1",
+        ),
+    )
 
     page2 = cache.load_page(1, "BV1", 0)
-    assert cache.find(
-        page2,
-        100.0,
-        200.0,
-        language="zh",
-        model="mimo-v1",
-        backend="mimo:https://a.example/v1:mimo-v1",
-    ) is not None
-    assert cache.find(
-        page2,
-        100.0,
-        200.0,
-        language="en",
-        model="mimo-v1",
-        backend="mimo:https://a.example/v1:mimo-v1",
-    ) is None
-    assert cache.find(
-        page2,
-        100.0,
-        200.0,
-        language="zh",
-        model="mimo-v2",
-        backend="mimo:https://a.example/v1:mimo-v2",
-    ) is None
-    assert cache.find(
-        page2,
-        100.0,
-        200.0,
-        language="zh",
-        model="mimo-v1",
-        backend="mimo:https://b.example/v1:mimo-v1",
-    ) is None
+    assert (
+        cache.find(
+            page2,
+            100.0,
+            200.0,
+            language="zh",
+            model="mimo-v1",
+            backend="mimo:https://a.example/v1:mimo-v1",
+        )
+        is not None
+    )
+    assert (
+        cache.find(
+            page2,
+            100.0,
+            200.0,
+            language="en",
+            model="mimo-v1",
+            backend="mimo:https://a.example/v1:mimo-v1",
+        )
+        is None
+    )
+    assert (
+        cache.find(
+            page2,
+            100.0,
+            200.0,
+            language="zh",
+            model="mimo-v2",
+            backend="mimo:https://a.example/v1:mimo-v2",
+        )
+        is None
+    )
+    assert (
+        cache.find(
+            page2,
+            100.0,
+            200.0,
+            language="zh",
+            model="mimo-v1",
+            backend="mimo:https://b.example/v1:mimo-v1",
+        )
+        is None
+    )
 
 
 def test_upsert_replaces_within_tolerance(tmp_path):
     """Re-upsert with a near-identical range replaces (does not duplicate)."""
     cache = ASRCacheStore(tmp_path)
     page = cache.load_page(1, "BV1", 0)
-    cache.upsert(page, CachedSegment(
-        start_s=0.0, end_s=100.0, text="v1",
-        language="zh", duration=100.0, model="m",
-    ))
-    cache.upsert(page, CachedSegment(
-        start_s=0.05, end_s=99.95, text="v2",
-        language="zh", duration=100.0, model="m",
-    ))
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=0.0,
+            end_s=100.0,
+            text="v1",
+            language="zh",
+            duration=100.0,
+            model="m",
+        ),
+    )
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=0.05,
+            end_s=99.95,
+            text="v2",
+            language="zh",
+            duration=100.0,
+            model="m",
+        ),
+    )
 
     page2 = cache.load_page(1, "BV1", 0)
     assert len(page2.segments) == 1
@@ -148,14 +204,28 @@ def test_upsert_replaces_within_tolerance(tmp_path):
 def test_upsert_keeps_distinct_segments(tmp_path):
     cache = ASRCacheStore(tmp_path)
     page = cache.load_page(1, "BV1", 0)
-    cache.upsert(page, CachedSegment(
-        start_s=0.0, end_s=400.0, text="A",
-        language="zh", duration=400.0, model="m",
-    ))
-    cache.upsert(page, CachedSegment(
-        start_s=400.0, end_s=800.0, text="B",
-        language="zh", duration=400.0, model="m",
-    ))
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=0.0,
+            end_s=400.0,
+            text="A",
+            language="zh",
+            duration=400.0,
+            model="m",
+        ),
+    )
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=400.0,
+            end_s=800.0,
+            text="B",
+            language="zh",
+            duration=400.0,
+            model="m",
+        ),
+    )
 
     page2 = cache.load_page(1, "BV1", 0)
     assert len(page2.segments) == 2
@@ -201,10 +271,15 @@ def test_load_page_drops_version_mismatch(tmp_path):
     """A future / past schema version must be ignored, not honoured."""
     f = tmp_path / "1" / "BV1" / "0.json"
     f.parent.mkdir(parents=True)
-    f.write_text(json.dumps({
-        "version": CACHE_VERSION + 999,
-        "segments": [{"start_s": 0.0, "end_s": 1.0, "text": "old"}],
-    }), encoding="utf-8")
+    f.write_text(
+        json.dumps(
+            {
+                "version": CACHE_VERSION + 999,
+                "segments": [{"start_s": 0.0, "end_s": 1.0, "text": "old"}],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     cache = ASRCacheStore(tmp_path)
     page = cache.load_page(1, "BV1", 0)
@@ -247,15 +322,22 @@ async def test_transcribe_page_returns_segments_list(tmp_path):
         _make_seg(tmp_path, "s1.mp3", 300.0, 600.0),
         _make_seg(tmp_path, "s2.mp3", 600.0, 900.0),
     ]
-    backend = _StubASRBackend([
-        ASRResult(text="alpha", duration=300.0, model="stub-asr-v1"),
-        ASRResult(text="beta",  duration=300.0, model="stub-asr-v1"),
-        ASRResult(text="gamma", duration=300.0, model="stub-asr-v1"),
-    ])
+    backend = _StubASRBackend(
+        [
+            ASRResult(text="alpha", duration=300.0, model="stub-asr-v1"),
+            ASRResult(text="beta", duration=300.0, model="stub-asr-v1"),
+            ASRResult(text="gamma", duration=300.0, model="stub-asr-v1"),
+        ]
+    )
 
     trans = await audio_transcribe_page(
-        backend, cache, uid=1, bvid="BVseg", page_index=0,
-        segments=seg_files, asr_language="zh",
+        backend,
+        cache,
+        uid=1,
+        bvid="BVseg",
+        page_index=0,
+        segments=seg_files,
+        asr_language="zh",
     )
 
     segs = trans["segments"]
@@ -286,14 +368,21 @@ async def test_transcribe_page_segments_filled_from_cache(tmp_path):
         _make_seg(tmp_path, "s2.mp3", 600.0, 900.0),
     ]
 
-    backend1 = _StubASRBackend([
-        ASRResult(text="A", duration=300.0, model="stub-asr-v1"),
-        ASRResult(text="B", duration=300.0, model="stub-asr-v1"),
-        ASRResult(text="C", duration=300.0, model="stub-asr-v1"),
-    ])
+    backend1 = _StubASRBackend(
+        [
+            ASRResult(text="A", duration=300.0, model="stub-asr-v1"),
+            ASRResult(text="B", duration=300.0, model="stub-asr-v1"),
+            ASRResult(text="C", duration=300.0, model="stub-asr-v1"),
+        ]
+    )
     first = await audio_transcribe_page(
-        backend1, cache, uid=2, bvid="BVcacheFill", page_index=0,
-        segments=seg_files, asr_language="zh",
+        backend1,
+        cache,
+        uid=2,
+        bvid="BVcacheFill",
+        page_index=0,
+        segments=seg_files,
+        asr_language="zh",
     )
     assert backend1.calls == 3
     assert first["cache_hits"] == 0
@@ -301,8 +390,13 @@ async def test_transcribe_page_segments_filled_from_cache(tmp_path):
     # Second run with empty backend queue — all hits must come from cache.
     backend2 = _StubASRBackend([])
     second = await audio_transcribe_page(
-        backend2, cache, uid=2, bvid="BVcacheFill", page_index=0,
-        segments=seg_files, asr_language="zh",
+        backend2,
+        cache,
+        uid=2,
+        bvid="BVcacheFill",
+        page_index=0,
+        segments=seg_files,
+        asr_language="zh",
     )
 
     assert backend2.calls == 0
@@ -322,29 +416,50 @@ async def test_transcribe_page_segments_mixed_cache_and_fresh(tmp_path):
     """Two cache hits + one fresh ASR call still yields ordered 3-entry list."""
     cache = ASRCacheStore(tmp_path / "cache")
     page = cache.load_page(3, "BVmix", 0)
-    cache.upsert(page, CachedSegment(
-        start_s=0.0, end_s=300.0, text="cached-1",
-        language="zh", duration=300.0, model="stub-asr-v1",
-        backend="stub-asr",
-    ))
-    cache.upsert(page, CachedSegment(
-        start_s=300.0, end_s=600.0, text="cached-2",
-        language="zh", duration=300.0, model="stub-asr-v1",
-        backend="stub-asr",
-    ))
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=0.0,
+            end_s=300.0,
+            text="cached-1",
+            language="zh",
+            duration=300.0,
+            model="stub-asr-v1",
+            backend="stub-asr",
+        ),
+    )
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=300.0,
+            end_s=600.0,
+            text="cached-2",
+            language="zh",
+            duration=300.0,
+            model="stub-asr-v1",
+            backend="stub-asr",
+        ),
+    )
 
     seg_files = [
         _make_seg(tmp_path, "s0.mp3", 0.0, 300.0),
         _make_seg(tmp_path, "s1.mp3", 300.0, 600.0),
         _make_seg(tmp_path, "s2.mp3", 600.0, 900.0),
     ]
-    backend = _StubASRBackend([
-        ASRResult(text="fresh-3", duration=300.0, model="stub-asr-v1"),
-    ])
+    backend = _StubASRBackend(
+        [
+            ASRResult(text="fresh-3", duration=300.0, model="stub-asr-v1"),
+        ]
+    )
 
     trans = await audio_transcribe_page(
-        backend, cache, uid=3, bvid="BVmix", page_index=0,
-        segments=seg_files, asr_language="zh",
+        backend,
+        cache,
+        uid=3,
+        bvid="BVmix",
+        page_index=0,
+        segments=seg_files,
+        asr_language="zh",
     )
 
     assert backend.calls == 1
@@ -364,19 +479,24 @@ async def test_transcribe_page_segments_mixed_cache_and_fresh(tmp_path):
 async def test_transcribe_page_language_change_misses_cache(tmp_path):
     cache = ASRCacheStore(tmp_path / "cache")
     page = cache.load_page(4, "BVlang", 0)
-    cache.upsert(page, CachedSegment(
-        start_s=0.0,
-        end_s=30.0,
-        text="cached zh",
-        language="zh",
-        duration=30.0,
-        model="stub-asr-v1",
-        backend="stub-asr",
-    ))
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=0.0,
+            end_s=30.0,
+            text="cached zh",
+            language="zh",
+            duration=30.0,
+            model="stub-asr-v1",
+            backend="stub-asr",
+        ),
+    )
 
-    backend = _StubASRBackend([
-        ASRResult(text="fresh en", duration=30.0, model="stub-asr-v1"),
-    ])
+    backend = _StubASRBackend(
+        [
+            ASRResult(text="fresh en", duration=30.0, model="stub-asr-v1"),
+        ]
+    )
     trans = await audio_transcribe_page(
         backend,
         cache,
@@ -407,8 +527,7 @@ async def test_transcribe_page_retries_segment_rate_limit(tmp_path):
             self.calls += 1
             if self.calls < 3:
                 raise ASRAPIError(
-                    "MiMo ASR returned 429: {'code': '429', "
-                    "'message': 'Too many requests', 'type': 'limitation'}"
+                    "MiMo ASR returned 429: {'code': '429', 'message': 'Too many requests', 'type': 'limitation'}"
                 )
             return ASRResult(
                 text="after throttle",
@@ -505,8 +624,7 @@ async def test_transcribe_page_splits_high_risk_segment(monkeypatch, tmp_path):
             self.calls += 1
             if self.calls == 1:
                 raise ASRAPIError(
-                    "MiMo ASR rejected the request: The request was rejected "
-                    "because it was considered high risk"
+                    "MiMo ASR rejected the request: The request was rejected because it was considered high risk"
                 )
             return ASRResult(
                 text=f"piece-{self.calls - 1}",
@@ -550,6 +668,7 @@ async def test_transcribe_page_splits_high_risk_segment(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_transcribe_page_skips_min_high_risk_piece(monkeypatch, tmp_path):
     original = _make_seg(tmp_path, "orig.mp3", 0.0, 60.0)
+
     async def fake_convert_at_points(input_path, output_dir, points, ffmpeg_setting):
         out = []
         for start_s, end_s in points:
@@ -583,8 +702,7 @@ async def test_transcribe_page_skips_min_high_risk_piece(monkeypatch, tmp_path):
                     audio_tokens=7,
                 )
             raise ASRAPIError(
-                "MiMo ASR rejected the request: The request was rejected "
-                "because it was considered high risk"
+                "MiMo ASR rejected the request: The request was rejected because it was considered high risk"
             )
 
         async def close(self):
@@ -643,8 +761,7 @@ async def test_transcribe_page_high_risk_no_split_when_disabled(tmp_path):
 
         async def transcribe(self, audio_data, mime_type="audio/mp3", language="auto"):
             raise ASRAPIError(
-                "MiMo ASR rejected the request: The request was rejected "
-                "because it was considered high risk"
+                "MiMo ASR rejected the request: The request was rejected because it was considered high risk"
             )
 
         async def close(self):
@@ -679,10 +796,7 @@ async def test_transcribe_page_skips_short_empty_segment(tmp_path):
         async def transcribe(self, audio_data, mime_type="audio/mp3", language="auto"):
             self.calls += 1
             if self.calls == 2:
-                raise EmptyTranscriptError(
-                    "MiMo ASR returned empty transcription text; inspect the "
-                    "video manually"
-                )
+                raise EmptyTranscriptError("MiMo ASR returned empty transcription text; inspect the video manually")
             return ASRResult(
                 text="speech text",
                 duration=30.0,
@@ -720,9 +834,7 @@ async def test_transcribe_page_long_empty_segment_still_fails(tmp_path):
         model = "stub-asr-v1"
 
         async def transcribe(self, audio_data, mime_type="audio/mp3", language="auto"):
-            raise EmptyTranscriptError(
-                "MiMo ASR returned empty transcription text; inspect the video manually"
-            )
+            raise EmptyTranscriptError("MiMo ASR returned empty transcription text; inspect the video manually")
 
         async def close(self):
             return None

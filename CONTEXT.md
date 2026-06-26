@@ -106,3 +106,6 @@ _Avoid_: service, facade, api。
 ## Notes
 
 - 详细结构约束见 `docs/architecture.md`；数据契约见 `docs/schema.md`。
+- 提交前自检 / CI 门禁（顺序一致，见 `.github/workflows/ci.yml`）：
+  `uv run ruff check` → `uv run ruff format --check` → `uv run mypy bili_unit` → `uv run pytest`。
+  类型检查首次接入，`bili_unit/` 源码须零 error；测试目录暂不纳入门禁。

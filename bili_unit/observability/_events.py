@@ -7,7 +7,13 @@ from typing import Any, Literal
 
 EventLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 RunStatus = Literal[
-    "PENDING", "RUNNING", "SUCCESS", "PARTIAL", "FAILED", "CANCELLED", "DRY_RUN",
+    "PENDING",
+    "RUNNING",
+    "SUCCESS",
+    "PARTIAL",
+    "FAILED",
+    "CANCELLED",
+    "DRY_RUN",
 ]
 
 

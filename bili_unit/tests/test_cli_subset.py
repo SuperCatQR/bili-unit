@@ -14,15 +14,24 @@ ALL = ["a", "b", "c", "d"]
 
 def test_no_flags_means_run_everything():
     """Both None → keep downstream "all registered" expansion (return None)."""
-    assert _resolve_subset(
-        flag_label="endpoint", all_names=ALL, include=None, exclude=None,
-    ) is None
+    assert (
+        _resolve_subset(
+            flag_label="endpoint",
+            all_names=ALL,
+            include=None,
+            exclude=None,
+        )
+        is None
+    )
 
 
 def test_include_passes_through():
     """``-e`` with known names returns the same list."""
     assert _resolve_subset(
-        flag_label="endpoint", all_names=ALL, include=["a", "c"], exclude=None,
+        flag_label="endpoint",
+        all_names=ALL,
+        include=["a", "c"],
+        exclude=None,
     ) == ["a", "c"]
 
 
@@ -30,23 +39,29 @@ def test_include_unknown_name_raises():
     """Typo in ``-e`` should error rather than silently drop."""
     with pytest.raises(SystemExit):
         _resolve_subset(
-            flag_label="endpoint", all_names=ALL,
-            include=["a", "typo"], exclude=None,
+            flag_label="endpoint",
+            all_names=ALL,
+            include=["a", "typo"],
+            exclude=None,
         )
 
 
 def test_exclude_drops_named():
     """``-x b`` removes only ``b``; order of remaining names is preserved."""
     assert _resolve_subset(
-        flag_label="endpoint", all_names=ALL,
-        include=None, exclude=["b"],
+        flag_label="endpoint",
+        all_names=ALL,
+        include=None,
+        exclude=["b"],
     ) == ["a", "c", "d"]
 
 
 def test_exclude_multiple_drops_all_named():
     assert _resolve_subset(
-        flag_label="endpoint", all_names=ALL,
-        include=None, exclude=["b", "d"],
+        flag_label="endpoint",
+        all_names=ALL,
+        include=None,
+        exclude=["b", "d"],
     ) == ["a", "c"]
 
 
@@ -54,8 +69,10 @@ def test_exclude_unknown_name_raises():
     """Typo in ``-x`` should error rather than silently no-op."""
     with pytest.raises(SystemExit):
         _resolve_subset(
-            flag_label="endpoint", all_names=ALL,
-            include=None, exclude=["typo"],
+            flag_label="endpoint",
+            all_names=ALL,
+            include=None,
+            exclude=["typo"],
         )
 
 
@@ -63,8 +80,10 @@ def test_exclude_everything_raises():
     """``-x`` must not produce an empty run."""
     with pytest.raises(SystemExit):
         _resolve_subset(
-            flag_label="endpoint", all_names=ALL,
-            include=None, exclude=ALL,
+            flag_label="endpoint",
+            all_names=ALL,
+            include=None,
+            exclude=ALL,
         )
 
 
@@ -98,6 +117,7 @@ def test_fetch_accepts_generic_include_exclude_aliases():
 
 
 # --- Tests for --profile ----------------------------------------------------
+
 
 def test_profile_default_is_all():
     """No --profile flag → defaults to "all"."""

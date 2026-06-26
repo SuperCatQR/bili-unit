@@ -35,11 +35,9 @@ def user_endpoints() -> list[EndpointSpec]:
         ),
         EndpointSpec(
             name="access_id",
-            callable=lambda uid, cred=None, **kw: (
-                _wrap_scalar_result(
-                    user.User(uid, credential=cred).get_access_id(),
-                    key="access_id",
-                )
+            callable=lambda uid, cred=None, **kw: _wrap_scalar_result(
+                user.User(uid, credential=cred).get_access_id(),
+                key="access_id",
             ),
             credential_required=False,
             pagination_strategy="none",
@@ -82,7 +80,13 @@ def user_endpoints() -> list[EndpointSpec]:
         # --- T1: subscribed_bangumi ---
         EndpointSpec(
             name="subscribed_bangumi",
-            callable=_user_method("get_subscribed_bangumi", pn=1, ps=15, type_=user.BangumiType.BANGUMI, follow_status=user.BangumiFollowStatus.ALL),
+            callable=_user_method(
+                "get_subscribed_bangumi",
+                pn=1,
+                ps=15,
+                type_=user.BangumiType.BANGUMI,
+                follow_status=user.BangumiFollowStatus.ALL,
+            ),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 15},
             pagination_strategy="page",
@@ -170,5 +174,6 @@ def user_endpoints() -> list[EndpointSpec]:
             items_path="media_list",
         ),
     ]
+
 
 __all__ = ["user_endpoints"]
