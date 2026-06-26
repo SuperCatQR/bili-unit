@@ -203,9 +203,12 @@ async def _check_asr_backend(settings: BiliSettings) -> CheckResult:
     except ASRAPIError as exc:
         # Non-200 (e.g. 401 wrong key), refusal, or unexpected response shape:
         # the backend is reachable but the request was rejected. Spec maps this
-        # to FAIL (<http status / error>), not ERROR. LengthTruncatedError /
-        # EmptyTranscriptError subclass this too — for a tiny probe tone any of
-        # them means "configured backend did not yield a usable probe" → FAIL.
+        # to FAIL (<http status / error>), not ERROR. LengthTruncatedError
+        # subclasses ASRAPIError and is covered here too. EmptyTranscriptError
+        # does NOT (it is an AudioError, not an ASRAPIError): an empty probe
+        # transcript means the backend answered 200 and authed fine, so it is
+        # not a config/connectivity failure — letting it fall through to ERROR
+        # (exit 1) is the right outcome.
         return CheckResult("asr_backend", CheckStatus.FAIL, str(exc))
 
     model = result.model or settings.bili_processing_asr_model or "unknown"
