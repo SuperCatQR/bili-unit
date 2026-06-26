@@ -32,7 +32,7 @@ def _extract_item_ids(raw_payload: dict[str, Any], path: str | None) -> list[str
                 if not isinstance(current, list):
                     logger.warning("item_id_path: expected list at [*], got %s", type(current).__name__)
                     return []
-                remaining = segments[i + 1:]
+                remaining = segments[i + 1 :]
                 if not remaining:
                     # [*] is the last segment — return stringified elements
                     return [str(item) for item in current]
@@ -67,7 +67,8 @@ def _extract_item_ids(raw_payload: dict[str, Any], path: str | None) -> list[str
 
 
 def _extract_item_ids_multi(
-    raw_payload: dict[str, Any], paths: list[str],
+    raw_payload: dict[str, Any],
+    paths: list[str],
 ) -> list[str]:
     """Extract item IDs from raw_payload using multiple dot-paths, aggregating results."""
     ids: list[str] = []

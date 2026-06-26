@@ -58,16 +58,21 @@ async def _seed_videos_payload(store: FetchingStore, bvids: list[str]) -> None:
     rather than the resume branch (which would reset videos itself).
     """
     await store.init_task(["videos", "video_detail"])
-    await store.save_raw_payload("videos", "", {
-        "pages": [
-            {
-                "list": {"vlist": [{"bvid": bv} for bv in bvids]},
-                "page": {"count": len(bvids)},
-            },
-        ],
-    })
+    await store.save_raw_payload(
+        "videos",
+        "",
+        {
+            "pages": [
+                {
+                    "list": {"vlist": [{"bvid": bv} for bv in bvids]},
+                    "page": {"count": len(bvids)},
+                },
+            ],
+        },
+    )
     await store.update_endpoint_state(
-        "videos", status=EndpointStatus.SUCCESS.value,
+        "videos",
+        status=EndpointStatus.SUCCESS.value,
     )
     await store.update_task_status(TaskStatus.SUCCESS.value)
 
@@ -79,6 +84,7 @@ def _runner(store: FetchingStore, settings: BiliSettings, *, fetch_fn=None) -> R
 # ======================================================================
 # Client — _extract_bvids_from_videos
 # ======================================================================
+
 
 def test_extract_bvids_from_videos_basic():
     payload = {
@@ -117,6 +123,7 @@ def test_extract_bvids_from_videos_skips_missing_bvid():
 # Client — endpoint registration
 # ======================================================================
 
+
 def test_video_detail_endpoint_registered():
     spec = get_endpoint("video_detail")
     assert spec is not None
@@ -139,6 +146,7 @@ def test_existing_endpoints_are_uid_kind():
 # ======================================================================
 # Client — fetch_video_detail_item
 # ======================================================================
+
 
 async def test_fetch_video_detail_item_success():
     fake_info = {"bvid": "BV1", "title": "test"}
@@ -195,9 +203,12 @@ async def test_fetch_video_detail_item_permanent_business_code_maps_to_unavailab
 # Rate limit — video_detail uses an independent QPS budget
 # ======================================================================
 
+
 def test_rate_limit_video_detail_independent_qps():
     rl = RateLimitController(
-        global_qps=1.0, endpoint_qps=0.5, video_detail_qps=0.1,
+        global_qps=1.0,
+        endpoint_qps=0.5,
+        video_detail_qps=0.1,
     )
     assert rl._video_detail_qps == 0.1
     assert rl._endpoint_qps == 0.5
@@ -209,6 +220,7 @@ def test_rate_limit_video_detail_independent_qps():
 # ======================================================================
 # Runner — Phase 2: item-level fan-out
 # ======================================================================
+
 
 async def test_video_detail_basic_fanout(tmp_path: Path):
     """Run video_detail after videos SUCCESS -> all items fetched."""
@@ -223,7 +235,9 @@ async def test_video_detail_basic_fanout(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(store, _settings(tmp_path)).run_or_resume(
-                200, endpoints=["video_detail"], mode="incremental",
+                200,
+                endpoints=["video_detail"],
+                mode="incremental",
             )
 
         assert result.status == TaskStatus.SUCCESS
@@ -258,7 +272,9 @@ async def test_video_detail_source_not_available(tmp_path: Path):
         await store.update_task_status(TaskStatus.SUCCESS.value)
 
         result = await _runner(store, _settings(tmp_path)).run_or_resume(
-            201, endpoints=["video_detail"], mode="incremental",
+            201,
+            endpoints=["video_detail"],
+            mode="incremental",
         )
 
         assert result.endpoints.get("video_detail") == EndpointStatus.FAILED_PERMANENT
@@ -276,7 +292,9 @@ async def test_video_detail_incremental_skip_stored(tmp_path: Path):
         await _seed_videos_payload(store, ["BV1", "BV2", "BV3"])
         # Pre-store BV1.
         await store.save_raw_payload(
-            "video_detail", "BV1", {"info": {}, "tags": []},
+            "video_detail",
+            "BV1",
+            {"info": {}, "tags": []},
         )
 
         fetched: list[str] = []
@@ -289,7 +307,9 @@ async def test_video_detail_incremental_skip_stored(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(store, _settings(tmp_path)).run_or_resume(
-                202, endpoints=["video_detail"], mode="incremental",
+                202,
+                endpoints=["video_detail"],
+                mode="incremental",
             )
 
         assert result.status == TaskStatus.SUCCESS
@@ -306,7 +326,8 @@ async def test_video_detail_full_mode_refetches_all(tmp_path: Path):
         await _seed_videos_payload(store, ["BV1", "BV2"])
         # Pre-store BV1 with old data.
         await store.save_raw_payload(
-            "video_detail", "BV1",
+            "video_detail",
+            "BV1",
             {"info": {"bvid": "BV1", "old": True}, "tags": []},
         )
 
@@ -319,26 +340,33 @@ async def test_video_detail_full_mode_refetches_all(tmp_path: Path):
         async def fake_fetch_endpoint(uid, spec, credential, request_params, **kw):
             if spec.name == "videos":
                 return FetchPageResult(
-                    uid=uid, endpoint="videos",
+                    uid=uid,
+                    endpoint="videos",
                     raw_payload={
                         "list": {"vlist": [{"bvid": "BV1"}, {"bvid": "BV2"}]},
                         "page": {"count": 2},
                     },
-                    is_last_page=True, next_request=None,
+                    is_last_page=True,
+                    next_request=None,
                 )
             return FetchPageResult(
-                uid=uid, endpoint=spec.name,
-                raw_payload={}, is_last_page=True,
+                uid=uid,
+                endpoint=spec.name,
+                raw_payload={},
+                is_last_page=True,
             )
 
         spec = get_endpoint("video_detail")
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(
-                store, _settings(tmp_path),
+                store,
+                _settings(tmp_path),
                 fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint),
             ).run_or_resume(
-                203, endpoints=["video_detail"], mode="full",
+                203,
+                endpoints=["video_detail"],
+                mode="full",
             )
 
         assert result.status == TaskStatus.SUCCESS
@@ -367,7 +395,9 @@ async def test_video_detail_partial_item_status(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(store, _settings(tmp_path)).run_or_resume(
-                204, endpoints=["video_detail"], mode="incremental",
+                204,
+                endpoints=["video_detail"],
+                mode="incremental",
             )
 
         assert result.endpoints.get("video_detail") == EndpointStatus.PARTIAL_ITEM
@@ -386,7 +416,9 @@ async def test_video_detail_empty_items(tmp_path: Path):
         await _seed_videos_payload(store, [])
 
         result = await _runner(store, _settings(tmp_path)).run_or_resume(
-            205, endpoints=["video_detail"], mode="incremental",
+            205,
+            endpoints=["video_detail"],
+            mode="incremental",
         )
 
         assert result.endpoints.get("video_detail") == EndpointStatus.SUCCESS
@@ -401,19 +433,24 @@ async def test_video_detail_two_phase_with_videos(tmp_path: Path):
     """Running both videos + video_detail -> phase 1 videos, phase 2 video_detail."""
     ctx, store = await _open_store(tmp_path, 206)
     try:
+
         async def fake_fetch_endpoint(uid, spec, credential, request_params, **kw):
             if spec.name == "videos":
                 return FetchPageResult(
-                    uid=uid, endpoint="videos",
+                    uid=uid,
+                    endpoint="videos",
                     raw_payload={
                         "list": {"vlist": [{"bvid": "BV1"}, {"bvid": "BV2"}]},
                         "page": {"count": 2},
                     },
-                    is_last_page=True, next_request=None,
+                    is_last_page=True,
+                    next_request=None,
                 )
             return FetchPageResult(
-                uid=uid, endpoint=spec.name,
-                raw_payload={"ok": True}, is_last_page=True,
+                uid=uid,
+                endpoint=spec.name,
+                raw_payload={"ok": True},
+                is_last_page=True,
             )
 
         fetched_items: list[str] = []
@@ -426,10 +463,13 @@ async def test_video_detail_two_phase_with_videos(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(
-                store, _settings(tmp_path),
+                store,
+                _settings(tmp_path),
                 fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint),
             ).run_task(
-                206, endpoints=["videos", "video_detail"], mode="incremental",
+                206,
+                endpoints=["videos", "video_detail"],
+                mode="incremental",
             )
 
         assert result.status == TaskStatus.SUCCESS
@@ -441,6 +481,7 @@ async def test_video_detail_two_phase_with_videos(tmp_path: Path):
 # ======================================================================
 # Runner — _derive_status_from_statuses with PARTIAL_ITEM
 # ======================================================================
+
 
 def test_derive_status_partial_item_counts_as_success():
     statuses = [EndpointStatus.SUCCESS, EndpointStatus.PARTIAL_ITEM]
@@ -464,6 +505,7 @@ def test_derive_status_partial_item_with_failure():
 # Runner — item-level progress tracking
 # ======================================================================
 
+
 async def test_video_detail_progress_tracking(tmp_path: Path):
     """Progress is updated after each item; final cursor=None and counters set."""
     ctx, store = await _open_store(tmp_path, 210)
@@ -477,7 +519,9 @@ async def test_video_detail_progress_tracking(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             await _runner(store, _settings(tmp_path)).run_or_resume(
-                210, endpoints=["video_detail"], mode="incremental",
+                210,
+                endpoints=["video_detail"],
+                mode="incremental",
             )
 
         # fetch_progress row reflects completion: cursor=None, fetched=2, total=2.
@@ -500,6 +544,7 @@ async def test_video_detail_progress_tracking(tmp_path: Path):
 # ======================================================================
 # Runner — concurrent item processing
 # ======================================================================
+
 
 async def test_video_detail_items_processed_concurrently(tmp_path: Path):
     """Verify items are processed concurrently (not purely sequentially)."""
@@ -527,15 +572,15 @@ async def test_video_detail_items_processed_concurrently(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(store, _settings(tmp_path)).run_or_resume(
-                220, endpoints=["video_detail"], mode="incremental",
+                220,
+                endpoints=["video_detail"],
+                mode="incremental",
             )
 
         assert result.status == TaskStatus.SUCCESS
         # Bili default is 3 concurrent items; at the very least we must have
         # gone above 1 (proving real concurrency).
-        assert max_concurrent >= 2, (
-            f"Expected concurrent processing, max_concurrent={max_concurrent}"
-        )
+        assert max_concurrent >= 2, f"Expected concurrent processing, max_concurrent={max_concurrent}"
     finally:
         await ctx.close()
 
@@ -555,7 +600,9 @@ async def test_video_detail_concurrent_partial_failure(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(store, _settings(tmp_path)).run_or_resume(
-                221, endpoints=["video_detail"], mode="incremental",
+                221,
+                endpoints=["video_detail"],
+                mode="incremental",
             )
 
         assert result.endpoints.get("video_detail") == EndpointStatus.PARTIAL_ITEM
@@ -571,6 +618,7 @@ async def test_video_detail_concurrent_partial_failure(tmp_path: Path):
 # Runner — refresh mode (incremental + freshness window)
 # ======================================================================
 
+
 async def test_refresh_mode_skips_fresh_items(tmp_path: Path):
     """Refresh mode skips items fetched within the freshness window."""
     import time as _time
@@ -582,7 +630,8 @@ async def test_refresh_mode_skips_fresh_items(tmp_path: Path):
         # BV1 fetched recently (within the 7-day default window).
         recent_ms = int(_time.time() * 1000)
         await store.save_raw_payload(
-            "video_detail", "BV1",
+            "video_detail",
+            "BV1",
             {"info": {"bvid": "BV1", "old": True}, "tags": []},
             fetched_at_ms=recent_ms,
         )
@@ -597,7 +646,9 @@ async def test_refresh_mode_skips_fresh_items(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(store, _settings(tmp_path)).run_or_resume(
-                230, endpoints=["video_detail"], mode="refresh",
+                230,
+                endpoints=["video_detail"],
+                mode="refresh",
             )
 
         assert result.status == TaskStatus.SUCCESS
@@ -617,13 +668,15 @@ async def test_refresh_mode_refetches_stale_items(tmp_path: Path):
 
         stale_ms = int((_time.time() - 10 * 86400) * 1000)
         await store.save_raw_payload(
-            "video_detail", "BV1",
+            "video_detail",
+            "BV1",
             {"info": {"bvid": "BV1", "old": True}, "tags": []},
             fetched_at_ms=stale_ms,
         )
         recent_ms = int(_time.time() * 1000)
         await store.save_raw_payload(
-            "video_detail", "BV2",
+            "video_detail",
+            "BV2",
             {"info": {"bvid": "BV2", "ok": True}, "tags": []},
             fetched_at_ms=recent_ms,
         )
@@ -638,11 +691,13 @@ async def test_refresh_mode_refetches_stale_items(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(store, _settings(tmp_path)).run_or_resume(
-                231, endpoints=["video_detail"], mode="refresh",
+                231,
+                endpoints=["video_detail"],
+                mode="refresh",
             )
 
         assert result.status == TaskStatus.SUCCESS
-        assert "BV1" in fetched   # stale -> re-fetched
+        assert "BV1" in fetched  # stale -> re-fetched
         assert "BV2" not in fetched  # fresh -> skipped
 
         bv1 = await store.get_raw_payload("video_detail", "BV1")
@@ -668,7 +723,9 @@ async def test_refresh_mode_behaves_like_incremental_for_new_items(tmp_path: Pat
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(store, _settings(tmp_path)).run_or_resume(
-                232, endpoints=["video_detail"], mode="refresh",
+                232,
+                endpoints=["video_detail"],
+                mode="refresh",
             )
 
         assert result.status == TaskStatus.SUCCESS
@@ -680,6 +737,7 @@ async def test_refresh_mode_behaves_like_incremental_for_new_items(tmp_path: Pat
 # ======================================================================
 # Bug fix verification — endpoint state row reflects fanout outcome
 # ======================================================================
+
 
 async def test_endpoint_state_after_fanout_reflects_success(tmp_path: Path):
     """After _run_item_endpoint completes, get_endpoint_status returns
@@ -696,14 +754,12 @@ async def test_endpoint_state_after_fanout_reflects_success(tmp_path: Path):
         assert spec is not None
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_fetch_item)):
             result = await _runner(store, _settings(tmp_path)).run_or_resume(
-                240, endpoints=["video_detail"], mode="incremental",
+                240,
+                endpoints=["video_detail"],
+                mode="incremental",
             )
 
         assert result.status == TaskStatus.SUCCESS
-        assert (
-            await store.get_endpoint_status("video_detail")
-            == EndpointStatus.SUCCESS.value
-        )
+        assert await store.get_endpoint_status("video_detail") == EndpointStatus.SUCCESS.value
     finally:
         await ctx.close()
-

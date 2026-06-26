@@ -57,11 +57,7 @@ class UidDashboardSnapshot:
         """Stages whose current task state is RUNNING."""
         if self.run_summary is None:
             return ()
-        return tuple(
-            stage
-            for stage, task in sorted(self.run_summary.stage_tasks.items())
-            if task.status == "RUNNING"
-        )
+        return tuple(stage for stage, task in sorted(self.run_summary.stage_tasks.items()) if task.status == "RUNNING")
 
     @property
     def active(self) -> bool:
@@ -165,7 +161,8 @@ def _load_manifest_sync(path: Path, uid: int) -> ManifestSnapshot:
             video_count=_int_or(0, row["video_count"]),
             transcribed_count=_int_or(0, row["transcribed_count"]),
             transcription_failed_count=_int_or(
-                0, row["transcription_failed_count"],
+                0,
+                row["transcription_failed_count"],
             ),
             total_audio_tokens=_int_or(0, row["total_audio_tokens"]),
             total_audio_seconds=float(row["total_audio_seconds"] or 0.0),
@@ -206,10 +203,7 @@ def _recommend_actions(uid: int, summary: RunSummary) -> list[RecommendedAction]
             RecommendedAction(
                 kind="asr_run_missing",
                 label="Run missing ASR items",
-                command=(
-                    f"uv run bili-unit asr {uid} "
-                    f"--only-bvids {' '.join(bvids)}"
-                ),
+                command=(f"uv run bili-unit asr {uid} --only-bvids {' '.join(bvids)}"),
                 item_ids=bvids,
             ),
         )

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 # Task / Endpoint status enums (cf. fetching_engineering.md §12)
 # ---------------------------------------------------------------------------
 
+
 class TaskStatus(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -26,7 +27,7 @@ class EndpointStatus(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     SUCCESS = "SUCCESS"
-    PARTIAL_ITEM = "PARTIAL_ITEM"          # item-level fan-out: some items succeeded, some failed
+    PARTIAL_ITEM = "PARTIAL_ITEM"  # item-level fan-out: some items succeeded, some failed
     FAILED_RETRYABLE = "FAILED_RETRYABLE"
     FAILED_EXHAUSTED = "FAILED_EXHAUSTED"
     FAILED_PERMANENT = "FAILED_PERMANENT"
@@ -35,6 +36,7 @@ class EndpointStatus(StrEnum):
 # ---------------------------------------------------------------------------
 # Exceptions (cf. fetching_design.md §10)
 # ---------------------------------------------------------------------------
+
 
 class FetchingError(Exception):
     """Base for all fetching-layer exceptions."""
@@ -79,6 +81,7 @@ class ResourceUnavailableError(FetchingError):
 # Command / Runner result types
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class CommandResult:
     uid: int
@@ -96,6 +99,7 @@ class TaskResult:
 # ---------------------------------------------------------------------------
 # Assembly root — wires env → settings → rate limit → Command
 # ---------------------------------------------------------------------------
+
 
 async def assemble(settings: "BiliSettings | None" = None) -> "Command":
     """Read env, init HTTP backend, wire dependencies, return a Command.

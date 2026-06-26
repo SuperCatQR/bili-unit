@@ -48,6 +48,7 @@ async def _seed_video(store: ProcessingStore, bvid: str) -> None:
 # save_audio_transcription
 # ---------------------------------------------------------------------------
 
+
 async def test_save_audio_transcription_success_columns_and_payload(
     store: ProcessingStore,
 ) -> None:
@@ -257,8 +258,7 @@ async def test_save_audio_transcription_replaces_existing_row(
     )
 
     rows = await store.ctx.conn.fetch_all(
-        "SELECT status, transcript, payload, processed_at_ms "
-        "FROM audio_transcription WHERE bvid = ?",
+        "SELECT status, transcript, payload, processed_at_ms FROM audio_transcription WHERE bvid = ?",
         (bvid,),
     )
     assert len(rows) == 1
@@ -293,10 +293,13 @@ async def test_save_audio_transcription_failed_clears_materialized_rows(
             },
         },
     )
-    assert await store.ctx.conn.fetch_value(
-        "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
-        (bvid,),
-    ) == 1
+    assert (
+        await store.ctx.conn.fetch_value(
+            "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
+            (bvid,),
+        )
+        == 1
+    )
 
     await store.save_audio_transcription(
         bvid,
@@ -309,14 +312,20 @@ async def test_save_audio_transcription_failed_clears_materialized_rows(
         payload={"result": None},
     )
 
-    assert await store.ctx.conn.fetch_value(
-        "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
-        (bvid,),
-    ) == 0
-    assert await store.ctx.conn.fetch_value(
-        "SELECT COUNT(*) FROM audio_transcription_segment WHERE bvid = ?",
-        (bvid,),
-    ) == 0
+    assert (
+        await store.ctx.conn.fetch_value(
+            "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
+            (bvid,),
+        )
+        == 0
+    )
+    assert (
+        await store.ctx.conn.fetch_value(
+            "SELECT COUNT(*) FROM audio_transcription_segment WHERE bvid = ?",
+            (bvid,),
+        )
+        == 0
+    )
 
 
 async def test_save_audio_transcription_non_success_statuses_clear_materialized_rows(
@@ -335,11 +344,13 @@ async def test_save_audio_transcription_non_success_statuses_clear_materialized_
             cache_hits=0,
             payload={
                 "result": {
-                    "pages": [{
-                        "page_index": 0,
-                        "text": "ok",
-                        "segments": [{"start_s": 0, "end_s": 1, "text": "ok"}],
-                    }],
+                    "pages": [
+                        {
+                            "page_index": 0,
+                            "text": "ok",
+                            "segments": [{"start_s": 0, "end_s": 1, "text": "ok"}],
+                        }
+                    ],
                 },
             },
         )
@@ -354,14 +365,20 @@ async def test_save_audio_transcription_non_success_statuses_clear_materialized_
             payload={"status": status.upper()},
         )
 
-        assert await store.ctx.conn.fetch_value(
-            "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
-            (bvid,),
-        ) == 0
-        assert await store.ctx.conn.fetch_value(
-            "SELECT COUNT(*) FROM audio_transcription_segment WHERE bvid = ?",
-            (bvid,),
-        ) == 0
+        assert (
+            await store.ctx.conn.fetch_value(
+                "SELECT COUNT(*) FROM audio_transcription_page WHERE bvid = ?",
+                (bvid,),
+            )
+            == 0
+        )
+        assert (
+            await store.ctx.conn.fetch_value(
+                "SELECT COUNT(*) FROM audio_transcription_segment WHERE bvid = ?",
+                (bvid,),
+            )
+            == 0
+        )
 
 
 async def test_save_audio_transcription_success_resave_rebuilds_materialized_rows(
@@ -379,14 +396,16 @@ async def test_save_audio_transcription_success_resave_rebuilds_materialized_row
         cache_hits=0,
         payload={
             "result": {
-                "pages": [{
-                    "page_index": 0,
-                    "text": "one two",
-                    "segments": [
-                        {"start_s": 0, "end_s": 1, "text": "one"},
-                        {"start_s": 1, "end_s": 2, "text": "two"},
-                    ],
-                }],
+                "pages": [
+                    {
+                        "page_index": 0,
+                        "text": "one two",
+                        "segments": [
+                            {"start_s": 0, "end_s": 1, "text": "one"},
+                            {"start_s": 1, "end_s": 2, "text": "two"},
+                        ],
+                    }
+                ],
             },
         },
     )
@@ -400,18 +419,19 @@ async def test_save_audio_transcription_success_resave_rebuilds_materialized_row
         cache_hits=0,
         payload={
             "result": {
-                "pages": [{
-                    "page_index": 0,
-                    "text": "three",
-                    "segments": [{"start_s": 0, "end_s": 1, "text": "three"}],
-                }],
+                "pages": [
+                    {
+                        "page_index": 0,
+                        "text": "three",
+                        "segments": [{"start_s": 0, "end_s": 1, "text": "three"}],
+                    }
+                ],
             },
         },
     )
 
     rows = await store.ctx.conn.fetch_all(
-        "SELECT segment_no, transcript_text "
-        "FROM audio_transcription_segment WHERE bvid = ? ORDER BY segment_no",
+        "SELECT segment_no, transcript_text FROM audio_transcription_segment WHERE bvid = ? ORDER BY segment_no",
         (bvid,),
     )
     assert [dict(r) for r in rows] == [
@@ -422,6 +442,7 @@ async def test_save_audio_transcription_success_resave_rebuilds_materialized_row
 # ---------------------------------------------------------------------------
 # get_audio_status / get_audio_payload
 # ---------------------------------------------------------------------------
+
 
 async def test_get_audio_status_missing_returns_none(store: ProcessingStore) -> None:
     assert await store.get_audio_status("BVnope") is None
@@ -452,6 +473,7 @@ async def test_get_audio_payload_round_trip(store: ProcessingStore) -> None:
 # ---------------------------------------------------------------------------
 # list_audio_bvids / list_failed_audio_bvids
 # ---------------------------------------------------------------------------
+
 
 async def test_list_audio_bvids_filters_by_status(store: ProcessingStore) -> None:
     for bvid, status in [
@@ -507,6 +529,7 @@ async def test_list_audio_bvids_empty(store: ProcessingStore) -> None:
 # ---------------------------------------------------------------------------
 # init_task / update_task_pipeline / update_task_status / get_task
 # ---------------------------------------------------------------------------
+
 
 async def test_init_task_creates_row_with_pending_pipelines(
     store: ProcessingStore,
@@ -637,20 +660,34 @@ async def test_get_task_missing_returns_none(store: ProcessingStore) -> None:
 # record_error / list_errors
 # ---------------------------------------------------------------------------
 
+
 async def test_record_error_returns_monotonic_ids(store: ProcessingStore) -> None:
     id1 = await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="DownloadError", message="cdn 503",
-        retryable=True, detail={"retry_count": 0}, occurred_at_ms=1,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="DownloadError",
+        message="cdn 503",
+        retryable=True,
+        detail={"retry_count": 0},
+        occurred_at_ms=1,
     )
     id2 = await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="DownloadError", message="cdn 504",
-        retryable=True, detail={"retry_count": 1}, occurred_at_ms=2,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="DownloadError",
+        message="cdn 504",
+        retryable=True,
+        detail={"retry_count": 1},
+        occurred_at_ms=2,
     )
     id3 = await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV2",
-        error_type="ASRConfigError", message="bad key",
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV2",
+        error_type="ASRConfigError",
+        message="bad key",
         retryable=False,
     )
     assert id1 < id2 < id3
@@ -660,9 +697,14 @@ async def test_record_error_returns_monotonic_ids(store: ProcessingStore) -> Non
 
 async def test_record_error_persists_columns(store: ProcessingStore) -> None:
     eid = await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="DownloadError", message="boom",
-        retryable=True, detail={"k": "v"}, occurred_at_ms=99,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="DownloadError",
+        message="boom",
+        retryable=True,
+        detail={"k": "v"},
+        occurred_at_ms=99,
     )
     row = await store.ctx.conn.fetch_one(
         "SELECT stage, pipeline, item_type, item_id, error_type, message, "
@@ -684,19 +726,32 @@ async def test_record_error_persists_columns(store: ProcessingStore) -> None:
 
 async def test_record_error_retryable_tristate(store: ProcessingStore) -> None:
     id_true = await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="X", message="y", retryable=True,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="X",
+        message="y",
+        retryable=True,
     )
     id_false = await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="X", message="y", retryable=False,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="X",
+        message="y",
+        retryable=False,
     )
     id_unknown = await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="X", message="y", retryable=None,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="X",
+        message="y",
+        retryable=None,
     )
     rows = {
-        r["id"]: r for r in await store.ctx.conn.fetch_all(
+        r["id"]: r
+        for r in await store.ctx.conn.fetch_all(
             "SELECT id, retryable FROM stage_error",
         )
     }
@@ -707,12 +762,20 @@ async def test_record_error_retryable_tristate(store: ProcessingStore) -> None:
 
 async def test_list_errors_filters_by_pipeline(store: ProcessingStore) -> None:
     await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="X", message="a", retryable=True,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="X",
+        message="a",
+        retryable=True,
     )
     await store.record_error(
-        pipeline="subtitle", item_type="page", item_id="BV1",
-        error_type="Y", message="b", retryable=False,
+        pipeline="subtitle",
+        item_type="page",
+        item_id="BV1",
+        error_type="Y",
+        message="b",
+        retryable=False,
     )
     audio_errors = await store.list_errors(pipeline="audio")
     sub_errors = await store.list_errors(pipeline="subtitle")
@@ -727,12 +790,20 @@ async def test_list_errors_filters_by_pipeline(store: ProcessingStore) -> None:
 
 async def test_list_errors_filters_by_item_id(store: ProcessingStore) -> None:
     await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV_A",
-        error_type="X", message="a", retryable=True,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV_A",
+        error_type="X",
+        message="a",
+        retryable=True,
     )
     await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV_B",
-        error_type="X", message="b", retryable=True,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV_B",
+        error_type="X",
+        message="b",
+        retryable=True,
     )
     rows = await store.list_errors(item_id="BV_A")
     assert len(rows) == 1
@@ -741,12 +812,20 @@ async def test_list_errors_filters_by_item_id(store: ProcessingStore) -> None:
 
 async def test_list_errors_filters_by_item_type(store: ProcessingStore) -> None:
     await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="X", message="a", retryable=True,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="X",
+        message="a",
+        retryable=True,
     )
     await store.record_error(
-        pipeline="audio", item_type="frame", item_id="BV1",
-        error_type="X", message="b", retryable=True,
+        pipeline="audio",
+        item_type="frame",
+        item_id="BV1",
+        error_type="X",
+        message="b",
+        retryable=True,
     )
     trans = await store.list_errors(item_type="transcription")
     assert len(trans) == 1
@@ -756,10 +835,16 @@ async def test_list_errors_filters_by_item_type(store: ProcessingStore) -> None:
 async def test_list_errors_returns_newest_first(store: ProcessingStore) -> None:
     eids = []
     for i in range(3):
-        eids.append(await store.record_error(
-            pipeline="audio", item_type="transcription", item_id=f"BV{i}",
-            error_type="X", message=f"m{i}", retryable=None,
-        ))
+        eids.append(
+            await store.record_error(
+                pipeline="audio",
+                item_type="transcription",
+                item_id=f"BV{i}",
+                error_type="X",
+                message=f"m{i}",
+                retryable=None,
+            )
+        )
     rows = await store.list_errors()
     assert [r["id"] for r in rows] == list(reversed(eids))
 
@@ -768,9 +853,13 @@ async def test_list_errors_decodes_detail_and_retryable(
     store: ProcessingStore,
 ) -> None:
     await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="X", message="m",
-        retryable=None, detail={"k": [1, 2]},
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="X",
+        message="m",
+        retryable=None,
+        detail={"k": [1, 2]},
     )
     rows = await store.list_errors()
     assert len(rows) == 1
@@ -793,8 +882,12 @@ async def test_list_errors_does_not_leak_other_stage_rows(
         ") VALUES ('fetching', 'user_info', 'NetError', 'boom', 1, 1)",
     )
     await store.record_error(
-        pipeline="audio", item_type="transcription", item_id="BV1",
-        error_type="X", message="m", retryable=True,
+        pipeline="audio",
+        item_type="transcription",
+        item_id="BV1",
+        error_type="X",
+        message="m",
+        retryable=True,
     )
     rows = await store.list_errors()
     assert len(rows) == 1

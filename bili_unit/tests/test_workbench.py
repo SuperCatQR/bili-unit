@@ -89,9 +89,7 @@ async def test_workbench_run_summary_reads_existing_db(tmp_path: Path) -> None:
     await ctx.open()
     try:
         await ctx.conn.execute(
-            "INSERT INTO stage_task("
-            "stage, status, payload, created_at_ms, updated_at_ms"
-            ") VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
             ("fetching", "SUCCESS", '{"endpoints":[]}', 1, 2),
         )
     finally:
@@ -131,9 +129,7 @@ async def test_workbench_can_start_task_blocks_requested_running_stage(
     await ctx.open()
     try:
         await ctx.conn.execute(
-            "INSERT INTO stage_task("
-            "stage, status, payload, created_at_ms, updated_at_ms"
-            ") VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
             ("fetching", "RUNNING", '{"endpoints":[]}', 1, 2),
         )
     finally:
@@ -172,7 +168,9 @@ async def test_workbench_session_closes_underlying_command(
         return fake_workbench
 
     monkeypatch.setattr(
-        workbench_module, "assemble_workbench", fake_assemble_workbench,
+        workbench_module,
+        "assemble_workbench",
+        fake_assemble_workbench,
     )
 
     async with workbench_session(settings=settings) as workbench:

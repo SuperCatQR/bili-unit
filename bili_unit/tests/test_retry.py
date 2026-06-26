@@ -52,9 +52,13 @@ def test_parse_retry_delays_custom_default():
 @pytest.mark.asyncio
 async def test_succeeds_on_first_attempt():
     op = AsyncMock(return_value="ok")
-    driver = RetryDriver(RetryPolicy(
-        max_attempts=3, delays=[0, 0], classify=_retryable,
-    ))
+    driver = RetryDriver(
+        RetryPolicy(
+            max_attempts=3,
+            delays=[0, 0],
+            classify=_retryable,
+        )
+    )
     result = await driver.run(op)
     assert result == "ok"
     assert op.call_count == 1
@@ -76,9 +80,13 @@ async def test_succeeds_on_third_attempt_before_exhaustion():
         seen.append(outcome)
         return None
 
-    driver = RetryDriver(RetryPolicy(
-        max_attempts=4, delays=[0, 0, 0], classify=_retryable,
-    ))
+    driver = RetryDriver(
+        RetryPolicy(
+            max_attempts=4,
+            delays=[0, 0, 0],
+            classify=_retryable,
+        )
+    )
     with patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()):
         result = await driver.run(op, on_attempt_failed=cb)
     assert result == "yay"
@@ -99,9 +107,13 @@ async def test_exhausts_then_raises_last_exception():
         seen_will_retry.append(outcome.will_retry)
         return None
 
-    driver = RetryDriver(RetryPolicy(
-        max_attempts=3, delays=[0, 0], classify=_retryable,
-    ))
+    driver = RetryDriver(
+        RetryPolicy(
+            max_attempts=3,
+            delays=[0, 0],
+            classify=_retryable,
+        )
+    )
     with (
         patch("bili_unit._retry.asyncio.sleep", new=AsyncMock()),
         pytest.raises(RuntimeError, match="boom"),
@@ -125,9 +137,13 @@ async def test_permanent_classification_terminates_immediately():
         final_outcome.append(outcome)
         return None
 
-    driver = RetryDriver(RetryPolicy(
-        max_attempts=4, delays=[0, 0, 0], classify=_permanent,
-    ))
+    driver = RetryDriver(
+        RetryPolicy(
+            max_attempts=4,
+            delays=[0, 0, 0],
+            classify=_permanent,
+        )
+    )
     with pytest.raises(ValueError, match="nope"):
         await driver.run(op, on_attempt_failed=cb)
     # Single attempt, single callback, will_retry=False.
@@ -155,9 +171,13 @@ async def test_callback_override_replaces_default_delay():
         assert outcome.delay_seconds == 5
         return 99
 
-    driver = RetryDriver(RetryPolicy(
-        max_attempts=3, delays=[5, 5], classify=_retryable,
-    ))
+    driver = RetryDriver(
+        RetryPolicy(
+            max_attempts=3,
+            delays=[5, 5],
+            classify=_retryable,
+        )
+    )
     with patch("bili_unit._retry.asyncio.sleep", sleep_mock):
         result = await driver.run(op, on_attempt_failed=cb)
 
@@ -180,9 +200,13 @@ async def test_callback_none_keeps_default_delay():
     async def cb(_exc, _outcome):
         return None
 
-    driver = RetryDriver(RetryPolicy(
-        max_attempts=2, delays=[7], classify=_retryable,
-    ))
+    driver = RetryDriver(
+        RetryPolicy(
+            max_attempts=2,
+            delays=[7],
+            classify=_retryable,
+        )
+    )
     with patch("bili_unit._retry.asyncio.sleep", sleep_mock):
         await driver.run(op, on_attempt_failed=cb)
     sleep_mock.assert_awaited_once_with(7)
@@ -197,9 +221,13 @@ async def test_max_attempts_one_is_no_retry():
         calls[0] += 1
         raise RuntimeError("once")
 
-    driver = RetryDriver(RetryPolicy(
-        max_attempts=1, delays=[1], classify=_retryable,
-    ))
+    driver = RetryDriver(
+        RetryPolicy(
+            max_attempts=1,
+            delays=[1],
+            classify=_retryable,
+        )
+    )
     with pytest.raises(RuntimeError):
         await driver.run(op)
     assert calls[0] == 1
@@ -227,9 +255,13 @@ async def test_delay_clamps_at_last_value():
     async def fake_sleep(s):
         sleep_seen.append(s)
 
-    driver = RetryDriver(RetryPolicy(
-        max_attempts=5, delays=[1, 2], classify=_retryable,
-    ))
+    driver = RetryDriver(
+        RetryPolicy(
+            max_attempts=5,
+            delays=[1, 2],
+            classify=_retryable,
+        )
+    )
     with patch("bili_unit._retry.asyncio.sleep", side_effect=fake_sleep):
         result = await driver.run(op)
     assert result == "ok"

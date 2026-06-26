@@ -38,8 +38,11 @@ def _rate_limit() -> RateLimitController:
 
 def _fake_page(uid: int, payload: dict, *, endpoint: str = "user_info") -> FetchPageResult:
     return FetchPageResult(
-        uid=uid, endpoint=endpoint, raw_payload=payload,
-        is_last_page=True, next_request=None,
+        uid=uid,
+        endpoint=endpoint,
+        raw_payload=payload,
+        is_last_page=True,
+        next_request=None,
     )
 
 
@@ -58,8 +61,7 @@ async def _list_stage_runs(tmp_path: Path, uid: int) -> list[dict]:
     await ctx.open()
     try:
         rows = await ctx.conn.fetch_all(
-            "SELECT run_id, command, status, args_json "
-            "FROM stage_run WHERE uid = ? ORDER BY started_at_ms",
+            "SELECT run_id, command, status, args_json FROM stage_run WHERE uid = ? ORDER BY started_at_ms",
             (uid,),
         )
         return [
@@ -78,6 +80,7 @@ async def _list_stage_runs(tmp_path: Path, uid: int) -> list[dict]:
 # ======================================================================
 # command — idempotency
 # ======================================================================
+
 
 async def test_command_new_uid_creates_task(tmp_path: Path):
     settings = _settings(tmp_path)
@@ -130,7 +133,8 @@ async def test_command_partial_resumes(tmp_path: Path):
         raise Http412Error("412")
 
     cmd1 = Command(
-        settings, _rate_limit(),
+        settings,
+        _rate_limit(),
         fetch_fn=AsyncMock(side_effect=fake_fetch_1),
     )
     r1 = await cmd1.fetch_uid(20, endpoints=["user_info", "videos"])
@@ -141,14 +145,17 @@ async def test_command_partial_resumes(tmp_path: Path):
             return _fake_page(uid, {"ok": True}, endpoint="user_info")
         if spec.name == "videos":
             return FetchPageResult(
-                uid=uid, endpoint="videos",
+                uid=uid,
+                endpoint="videos",
                 raw_payload={"list": {"vlist": []}, "page": {"count": 0}},
-                is_last_page=True, next_request=None,
+                is_last_page=True,
+                next_request=None,
             )
         raise RuntimeError(f"unexpected {spec.name}")
 
     cmd2 = Command(
-        settings, _rate_limit(),
+        settings,
+        _rate_limit(),
         fetch_fn=AsyncMock(side_effect=fake_fetch_2),
     )
     r2 = await cmd2.fetch_uid(20, endpoints=["user_info", "videos"])

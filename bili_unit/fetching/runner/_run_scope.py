@@ -143,11 +143,7 @@ class FetchRunPlanner:
                 return FetchRunDecision(
                     scope=FetchRunScope(
                         uid=uid,
-                        endpoints=(
-                            list(endpoints)
-                            if endpoints is not None
-                            else all_endpoint_names()
-                        ),
+                        endpoints=(list(endpoints) if endpoints is not None else all_endpoint_names()),
                         fresh=False,
                         mode=mode,
                     ),

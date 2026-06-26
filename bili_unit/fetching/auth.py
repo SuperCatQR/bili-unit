@@ -63,6 +63,7 @@ async def reload_settings_and_credential() -> Credential:
 # QR code login
 # ---------------------------------------------------------------------------
 
+
 async def qr_login() -> Credential:
     """Interactive QR code login via terminal.
 
@@ -116,10 +117,7 @@ def save_credential_to_env(cred: Credential, env_path: str | Path = ".env") -> P
     }
 
     # Remove old BILI_* lines
-    new_lines = [
-        line for line in existing_lines
-        if not any(line.startswith(f"{k}=") for k in fields)
-    ]
+    new_lines = [line for line in existing_lines if not any(line.startswith(f"{k}=") for k in fields)]
 
     # Append new values
     for key, value in fields.items():

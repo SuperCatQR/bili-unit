@@ -116,11 +116,7 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         ),
         EndpointSpec(
             name="masterpiece",
-            callable=lambda uid, cred=None, **kw: (
-                _wrap_list_result(
-                    user.User(uid, credential=cred).get_masterpiece()
-                )
-            ),
+            callable=lambda uid, cred=None, **kw: _wrap_list_result(user.User(uid, credential=cred).get_masterpiece()),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="masterpiece",
@@ -163,12 +159,10 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         # album uses page_num/page_size (mapped from pn/ps in the callable)
         EndpointSpec(
             name="album",
-            callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_album(
-                    biz=kw.get("biz", user.AlbumType.ALL),
-                    page_num=kw.get("pn", 1),
-                    page_size=kw.get("ps", 30),
-                )
+            callable=lambda uid, cred=None, **kw: user.User(uid, credential=cred).get_album(
+                biz=kw.get("biz", user.AlbumType.ALL),
+                page_num=kw.get("pn", 1),
+                page_size=kw.get("ps", 30),
             ),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 30},
@@ -181,9 +175,7 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         # ================================================================
         EndpointSpec(
             name="channel_videos_season",
-            callable=lambda sid, cred=None, **kw: (
-                _paginate_channel_videos("season", kw["_uid"], int(sid), cred)
-            ),
+            callable=lambda sid, cred=None, **kw: _paginate_channel_videos("season", kw["_uid"], int(sid), cred),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="channel_videos_season",
@@ -194,9 +186,7 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         ),
         EndpointSpec(
             name="channel_videos_series",
-            callable=lambda sid, cred=None, **kw: (
-                _paginate_channel_videos("series", kw["_uid"], int(sid), cred)
-            ),
+            callable=lambda sid, cred=None, **kw: _paginate_channel_videos("series", kw["_uid"], int(sid), cred),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="channel_videos_series",
@@ -230,5 +220,6 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
             needs_parent_uid=True,
         ),
     ]
+
 
 __all__ = ["channel_and_upower_endpoints"]

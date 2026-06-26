@@ -3,6 +3,7 @@
 The unit writes a single DB file per uid (``{uid}.raw.db``). ``BiliCommand``
 deletes that file plus its WAL companions and the per-uid workdir.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,6 +21,7 @@ from bili_unit.processing.command import ProcessingCommand
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_settings(tmp_path: Path) -> BiliSettings:
     return BiliSettings(
@@ -48,6 +50,7 @@ async def _seed_uid(uid: int, settings: BiliSettings, *, with_workdir: bool = Tr
 # ---------------------------------------------------------------------------
 # BiliCommand.delete_uid — primary contract
 # ---------------------------------------------------------------------------
+
 
 @pytest_asyncio.fixture
 async def bili_cmd(tmp_path: Path):
@@ -176,6 +179,7 @@ async def test_bili_command_delete_uid_requires_settings(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 # Per-stage delete_uid — no-op contract
 # ---------------------------------------------------------------------------
+
 
 async def test_fetching_command_delete_uid_is_noop(tmp_path: Path) -> None:
     settings = _make_settings(tmp_path)

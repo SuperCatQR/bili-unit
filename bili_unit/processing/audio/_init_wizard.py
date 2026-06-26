@@ -29,11 +29,11 @@ logger = logging.getLogger("bili.processing.audio.init_wizard")
 # Ordered for menu display — first 3 are Token Plan clusters, then
 # pay-as-you-go, then custom (relays / self-hosted).
 PROFILE_CHOICES: list[tuple[str, str]] = [
-    ("token_plan_cn",  "Token Plan / 中国集群    (tp-* keys)"),
+    ("token_plan_cn", "Token Plan / 中国集群    (tp-* keys)"),
     ("token_plan_sgp", "Token Plan / 新加坡集群  (tp-* keys)"),
     ("token_plan_ams", "Token Plan / 欧洲集群    (tp-* keys)"),
-    ("pay_as_you_go",  "按量付费 / Pay-as-you-go  (sk-* keys)"),
-    ("custom",         "自定义 / 中转站 / 自建    (BASE_URL 自填)"),
+    ("pay_as_you_go", "按量付费 / Pay-as-you-go  (sk-* keys)"),
+    ("custom", "自定义 / 中转站 / 自建    (BASE_URL 自填)"),
 ]
 
 _FIELDS = (
@@ -117,7 +117,8 @@ def collect_config(
 
     while True:
         api_key = _prompt(
-            "\n请输入 API Key (tp-* / sk-* / 中转站发的 key): ", reader=reader,
+            "\n请输入 API Key (tp-* / sk-* / 中转站发的 key): ",
+            reader=reader,
         )
         if api_key:
             fields["BILI_PROCESSING_ASR_API_KEY"] = api_key
@@ -128,7 +129,8 @@ def collect_config(
 
 
 def write_env(
-    fields: dict[str, str], env_path: str | Path = ".env",
+    fields: dict[str, str],
+    env_path: str | Path = ".env",
 ) -> Path:
     """Append / overwrite BILI_PROCESSING_ASR_* keys in *env_path*.
 
@@ -146,10 +148,7 @@ def write_env(
     # leave everything else (including unmanaged ASR_* keys like
     # ASR_LANGUAGE / ASR_TIMEOUT) untouched.
     managed = set(_FIELDS)
-    new_lines = [
-        line for line in existing_lines
-        if not any(line.startswith(f"{k}=") for k in managed)
-    ]
+    new_lines = [line for line in existing_lines if not any(line.startswith(f"{k}=") for k in managed)]
 
     for key in _FIELDS:
         new_lines.append(f"{key}={fields.get(key, '')}")

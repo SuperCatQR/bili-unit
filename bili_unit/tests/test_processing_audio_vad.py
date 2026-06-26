@@ -185,6 +185,8 @@ def test_stitch_respects_custom_probe_window():
 
     # Tiny probe (5) cannot see the overlap → plain join, overlap appears twice.
     narrow_out = stitch_transcripts(
-        [left, right], probe_chars=5, min_overlap_chars=20,
+        [left, right],
+        probe_chars=5,
+        min_overlap_chars=20,
     )
     assert narrow_out.count(overlap) == 2

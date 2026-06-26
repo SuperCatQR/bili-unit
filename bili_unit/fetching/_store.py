@@ -168,7 +168,9 @@ class FetchingStore:
     # ------------------------------------------------------------------
 
     async def get_raw_payload(
-        self, endpoint: str, item_id: str = "",
+        self,
+        endpoint: str,
+        item_id: str = "",
     ) -> dict | None:
         """Return the stored payload dict for (endpoint, item_id), or None."""
         row = await self._ctx.conn.fetch_one(
@@ -180,12 +182,13 @@ class FetchingStore:
         return json.loads(row["payload"])
 
     async def get_raw_fetched_at_ms(
-        self, endpoint: str, item_id: str = "",
+        self,
+        endpoint: str,
+        item_id: str = "",
     ) -> int | None:
         """Return fetched_at_ms for (endpoint, item_id), or None if absent."""
         row = await self._ctx.conn.fetch_one(
-            "SELECT fetched_at_ms FROM raw_payload "
-            "WHERE endpoint = ? AND item_id = ?",
+            "SELECT fetched_at_ms FROM raw_payload WHERE endpoint = ? AND item_id = ?",
             (endpoint, item_id),
         )
         if row is None:
@@ -195,8 +198,7 @@ class FetchingStore:
     async def get_progress(self, endpoint: str) -> dict | None:
         """Return {cursor, total, fetched, updated_at_ms} for ``endpoint``, or None."""
         row = await self._ctx.conn.fetch_one(
-            "SELECT cursor, total, fetched, updated_at_ms FROM fetch_progress "
-            "WHERE endpoint = ?",
+            "SELECT cursor, total, fetched, updated_at_ms FROM fetch_progress WHERE endpoint = ?",
             (endpoint,),
         )
         if row is None:
@@ -225,9 +227,7 @@ class FetchingStore:
         the old runner used to skip already-fetched items in incremental mode.
         """
         rows = await self._ctx.conn.fetch_all(
-            "SELECT item_id FROM raw_payload "
-            "WHERE endpoint = ? AND item_id <> '' "
-            "ORDER BY item_id",
+            "SELECT item_id FROM raw_payload WHERE endpoint = ? AND item_id <> '' ORDER BY item_id",
             (endpoint,),
         )
         return [r["item_id"] for r in rows]
@@ -235,8 +235,7 @@ class FetchingStore:
     async def list_fanout_payloads(self, endpoint: str) -> dict[str, dict]:
         """Return ``{item_id: payload}`` for every fanout row of ``endpoint``."""
         rows = await self._ctx.conn.fetch_all(
-            "SELECT item_id, payload FROM raw_payload "
-            "WHERE endpoint = ? AND item_id <> ''",
+            "SELECT item_id, payload FROM raw_payload WHERE endpoint = ? AND item_id <> ''",
             (endpoint,),
         )
         return {r["item_id"]: json.loads(r["payload"]) for r in rows}
@@ -244,8 +243,7 @@ class FetchingStore:
     async def list_fanout_payload_records(self, endpoint: str) -> dict[str, dict]:
         """Return fanout rows keyed by item_id, including payload and timestamp."""
         rows = await self._ctx.conn.fetch_all(
-            "SELECT item_id, payload, fetched_at_ms FROM raw_payload "
-            "WHERE endpoint = ? AND item_id <> ''",
+            "SELECT item_id, payload, fetched_at_ms FROM raw_payload WHERE endpoint = ? AND item_id <> ''",
             (endpoint,),
         )
         return {
@@ -259,8 +257,7 @@ class FetchingStore:
     async def list_item_ages_ms(self, endpoint: str) -> dict[str, int]:
         """Return ``{item_id: fetched_at_ms}`` for refresh-mode age comparisons."""
         rows = await self._ctx.conn.fetch_all(
-            "SELECT item_id, fetched_at_ms FROM raw_payload "
-            "WHERE endpoint = ? AND item_id <> ''",
+            "SELECT item_id, fetched_at_ms FROM raw_payload WHERE endpoint = ? AND item_id <> ''",
             (endpoint,),
         )
         return {r["item_id"]: r["fetched_at_ms"] for r in rows}
@@ -290,8 +287,7 @@ class FetchingStore:
                 (_FETCHING_STAGE, "PENDING", payload_json, now, now),
             ),
             (
-                "UPDATE stage_task SET payload = ?, updated_at_ms = ? "
-                "WHERE stage = ?",
+                "UPDATE stage_task SET payload = ?, updated_at_ms = ? WHERE stage = ?",
                 (payload_json, now, _FETCHING_STAGE),
             ),
         ]
@@ -319,8 +315,7 @@ class FetchingStore:
         if status not in {"PENDING", "RUNNING"}:
             statements.append(
                 (
-                    "INSERT INTO meta(key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     ("last_fetched_at_ms", str(now)),
                 ),
             )
@@ -437,7 +432,8 @@ class FetchingStore:
         return [r["endpoint"] for r in rows]
 
     async def list_endpoint_statuses(
-        self, endpoints: list[str] | None = None,
+        self,
+        endpoints: list[str] | None = None,
     ) -> dict[str, str]:
         """Return ``{endpoint: status}`` for known endpoint state rows."""
         if endpoints is None:
@@ -448,8 +444,7 @@ class FetchingStore:
             rows = []
             for endpoint in endpoints:
                 row = await self._ctx.conn.fetch_one(
-                    "SELECT endpoint, status FROM fetch_endpoint_state "
-                    "WHERE endpoint = ?",
+                    "SELECT endpoint, status FROM fetch_endpoint_state WHERE endpoint = ?",
                     (endpoint,),
                 )
                 if row is not None:
@@ -501,8 +496,7 @@ class FetchingStore:
         feed back into a retry-only fetch.
         """
         error_rows = await self._ctx.conn.fetch_all(
-            "SELECT detail FROM stage_error "
-            "WHERE stage = ? AND endpoint = ? AND detail IS NOT NULL",
+            "SELECT detail FROM stage_error WHERE stage = ? AND endpoint = ? AND detail IS NOT NULL",
             (_FETCHING_STAGE, endpoint),
         )
         failed: set[str] = set()
@@ -573,9 +567,7 @@ class FetchingStore:
         stored as 1 / 0 / NULL respectively.
         """
         ts = _now_ms() if occurred_at_ms is None else occurred_at_ms
-        retryable_int: int | None = (
-            None if retryable is None else (1 if retryable else 0)
-        )
+        retryable_int: int | None = None if retryable is None else (1 if retryable else 0)
         detail_json = _dump_json(detail)
         # SQLite 3.35+ supports INSERT ... RETURNING; we run it through
         # fetch_one to read back the new rowid in a single round-trip.
@@ -599,7 +591,8 @@ class FetchingStore:
         return int(row["id"])
 
     async def list_errors(
-        self, endpoint: str | None = None,
+        self,
+        endpoint: str | None = None,
     ) -> list[dict]:
         """Return error rows (newest first), optionally filtered by endpoint.
 
@@ -624,9 +617,7 @@ class FetchingStore:
             )
         out: list[dict] = []
         for row in rows:
-            retryable: bool | None = (
-                None if row["retryable"] is None else bool(row["retryable"])
-            )
+            retryable: bool | None = None if row["retryable"] is None else bool(row["retryable"])
             out.append(
                 {
                     "id": row["id"],

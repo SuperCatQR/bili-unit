@@ -20,6 +20,7 @@ from bili_unit.fetching._endpoint_catalog import get_endpoint
 # Client — _extract_opus_ids_from_opus
 # ======================================================================
 
+
 def test_extract_opus_ids_basic():
     payload = {
         "pages": [
@@ -68,6 +69,7 @@ def test_extract_opus_ids_tolerates_malformed_pages():
 # ======================================================================
 # Client — opus_detail endpoint registration
 # ======================================================================
+
 
 def test_opus_detail_endpoint_registered():
     spec = get_endpoint("opus_detail")

@@ -1,6 +1,7 @@
 """Top-level helper surface self-check: ``__version__`` exists, every name in
 ``__all__`` is importable, and the load-bearing helpers are reachable.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -17,9 +18,7 @@ def test_all_names_importable() -> None:
     """``from bili_unit import <name>`` works for every name in __all__."""
     mod = importlib.import_module("bili_unit")
     for name in bili_unit.__all__:
-        assert hasattr(mod, name), (
-            f"{name!r} declared in __all__ but missing from module"
-        )
+        assert hasattr(mod, name), f"{name!r} declared in __all__ but missing from module"
 
 
 def test_expected_top_level_names() -> None:

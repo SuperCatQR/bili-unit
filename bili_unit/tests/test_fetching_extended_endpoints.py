@@ -80,6 +80,7 @@ def _rate_limit() -> RateLimitController:
 # catalog static checks
 # ---------------------------------------------------------------------------
 
+
 def test_extended_endpoint_surface_registered():
     names = {ep.name for ep in ENDPOINTS}
     assert names >= USER_EXTENDED_ENDPOINTS
@@ -128,6 +129,7 @@ def test_endpoint_credential_flags_match_known_sdk_verify_contract():
 # fetch_endpoint pagination strategies
 # ---------------------------------------------------------------------------
 
+
 async def test_fetch_endpoint_oid_pagination():
     spec = get_endpoint("media_list")
     assert spec is not None
@@ -157,20 +159,25 @@ async def test_fetch_endpoint_oid_pagination():
 # per-page helper plumbing (subtitle / danmakus serialisation)
 # ---------------------------------------------------------------------------
 
+
 async def test_video_per_page_helper_serialises_pages():
     spec = get_endpoint("video_subtitle")
     assert spec is not None
 
     with patch("bili_unit.fetching._adapters._subtitle.Video") as MockVideo:
         instance = MockVideo.return_value
-        instance.get_pages = AsyncMock(return_value=[
-            {"cid": 111, "part": "p1"},
-            {"cid": 222, "part": "p2"},
-        ])
-        instance.get_subtitle = AsyncMock(side_effect=[
-            {"subtitles": [{"id": 1}]},
-            {"subtitles": [{"id": 2}]},
-        ])
+        instance.get_pages = AsyncMock(
+            return_value=[
+                {"cid": 111, "part": "p1"},
+                {"cid": 222, "part": "p2"},
+            ]
+        )
+        instance.get_subtitle = AsyncMock(
+            side_effect=[
+                {"subtitles": [{"id": 1}]},
+                {"subtitles": [{"id": 2}]},
+            ]
+        )
 
         result = await spec.callable("BV1", None)
 
@@ -217,6 +224,7 @@ async def test_upower_qa_detail_item_uses_parent_uid():
 # per-item raw payloads via the SQLite store.
 # ---------------------------------------------------------------------------
 
+
 async def test_runner_can_fanout_new_video_endpoint(tmp_path: Path):
     settings = _settings(tmp_path)
     rl = _rate_limit()
@@ -246,11 +254,15 @@ async def test_runner_can_fanout_new_video_endpoint(tmp_path: Path):
         store = FetchingStore(ctx)
         with patch.object(spec, "callable", new=AsyncMock(side_effect=fake_item)):
             runner = Runner(
-                store, rl, settings,
+                store,
+                rl,
+                settings,
                 fetch_fn=AsyncMock(side_effect=fake_fetch_endpoint),
             )
             result = await runner.run_or_resume(
-                uid, endpoints=["video_subtitle"], mode="incremental",
+                uid,
+                endpoints=["video_subtitle"],
+                mode="incremental",
             )
 
         assert result.endpoints["video_subtitle"] == EndpointStatus.SUCCESS

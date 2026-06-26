@@ -22,9 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("bili.processing.audio.downloader")
 
 _DEFAULT_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/125.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
 _DEFAULT_REFERER = "https://www.bilibili.com"
 
@@ -66,9 +64,7 @@ class AudioDownloader:
         try:
             data = await video.get_download_url(page_index=page_index)
         except Exception as exc:
-            raise DownloadError(
-                f"get_download_url failed for {bvid}: {exc}"
-            ) from exc
+            raise DownloadError(f"get_download_url failed for {bvid}: {exc}") from exc
 
         detecter = VideoDownloadURLDataDetecter(data)
         quality_enum = _resolve_quality(quality)
@@ -87,9 +83,7 @@ class AudioDownloader:
                     audio_stream = s
                     break
             if audio_stream is None:
-                raise DownloadError(
-                    f"no audio stream found for {bvid} page {page_index}"
-                )
+                raise DownloadError(f"no audio stream found for {bvid} page {page_index}")
 
         # Extract duration from the raw data when available.
         duration = _extract_duration(data)
@@ -125,17 +119,13 @@ class AudioDownloader:
                 session.get(url, headers=headers) as resp,
             ):
                 if resp.status != 200:
-                    raise DownloadError(
-                        f"CDN download returned {resp.status} for {url}"
-                    )
+                    raise DownloadError(f"CDN download returned {resp.status} for {url}")
                 total_bytes = 0
                 with open(dest_path, "wb") as f:
                     async for chunk in resp.content.iter_chunked(8192):
                         total_bytes += len(chunk)
                         if total_bytes > self._max_size_bytes:
-                            raise DownloadError(
-                                f"CDN download exceeded {self._max_size_bytes} bytes for {url}"
-                            )
+                            raise DownloadError(f"CDN download exceeded {self._max_size_bytes} bytes for {url}")
                         f.write(chunk)
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise DownloadError(f"CDN download failed for {url}: {exc}") from exc
@@ -144,6 +134,7 @@ class AudioDownloader:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _resolve_quality(quality: str):
     """Map a quality string like ``"64K"`` to ``AudioQuality._64K``."""

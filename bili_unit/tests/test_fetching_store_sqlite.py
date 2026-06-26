@@ -34,13 +34,13 @@ async def store(tmp_path: Path):
 # raw DB writes
 # ---------------------------------------------------------------------------
 
+
 async def test_save_raw_payload_endpoint_level(store: FetchingStore) -> None:
     payload = {"list": {"vlist": [{"aid": 1}]}, "page": {"count": 1}}
     await store.save_raw_payload("user_info", "", payload)
 
     row = await store.ctx.conn.fetch_one(
-        "SELECT endpoint, item_id, payload, fetched_at_ms FROM raw_payload "
-        "WHERE endpoint = ? AND item_id = ?",
+        "SELECT endpoint, item_id, payload, fetched_at_ms FROM raw_payload WHERE endpoint = ? AND item_id = ?",
         ("user_info", ""),
     )
     assert row is not None
@@ -53,12 +53,14 @@ async def test_save_raw_payload_endpoint_level(store: FetchingStore) -> None:
 async def test_save_raw_payload_fanout_item(store: FetchingStore) -> None:
     payload = {"bvid": "BV1abc", "title": "demo"}
     await store.save_raw_payload(
-        "video_detail", "BV1abc", payload, fetched_at_ms=12345,
+        "video_detail",
+        "BV1abc",
+        payload,
+        fetched_at_ms=12345,
     )
 
     row = await store.ctx.conn.fetch_one(
-        "SELECT payload, fetched_at_ms FROM raw_payload "
-        "WHERE endpoint = ? AND item_id = ?",
+        "SELECT payload, fetched_at_ms FROM raw_payload WHERE endpoint = ? AND item_id = ?",
         ("video_detail", "BV1abc"),
     )
     assert row is not None
@@ -83,12 +85,15 @@ async def test_save_raw_page_and_progress_atomic(store: FetchingStore) -> None:
     payload = {"pages": [{"pn": 1}]}
     progress = {"cursor": "next-token", "total": 100, "fetched": 30}
     await store.save_raw_page_and_progress(
-        "videos", "", payload, progress, fetched_at_ms=500,
+        "videos",
+        "",
+        payload,
+        progress,
+        fetched_at_ms=500,
     )
 
     payload_row = await store.ctx.conn.fetch_one(
-        "SELECT payload, fetched_at_ms FROM raw_payload "
-        "WHERE endpoint = ? AND item_id = ?",
+        "SELECT payload, fetched_at_ms FROM raw_payload WHERE endpoint = ? AND item_id = ?",
         ("videos", ""),
     )
     assert payload_row is not None
@@ -96,8 +101,7 @@ async def test_save_raw_page_and_progress_atomic(store: FetchingStore) -> None:
     assert payload_row["fetched_at_ms"] == 500
 
     prog_row = await store.ctx.conn.fetch_one(
-        "SELECT cursor, total, fetched, updated_at_ms FROM fetch_progress "
-        "WHERE endpoint = ?",
+        "SELECT cursor, total, fetched, updated_at_ms FROM fetch_progress WHERE endpoint = ?",
         ("videos",),
     )
     assert prog_row is not None
@@ -111,10 +115,14 @@ async def test_save_raw_page_and_progress_dict_cursor(store: FetchingStore) -> N
     """Dict cursor (e.g. next_request) is JSON-serialised on write."""
     progress = {"cursor": {"pn": 2, "ps": 30}, "total": None, "fetched": None}
     await store.save_raw_page_and_progress(
-        "videos", "", {"x": 1}, progress,
+        "videos",
+        "",
+        {"x": 1},
+        progress,
     )
     row = await store.ctx.conn.fetch_one(
-        "SELECT cursor FROM fetch_progress WHERE endpoint = ?", ("videos",),
+        "SELECT cursor FROM fetch_progress WHERE endpoint = ?",
+        ("videos",),
     )
     assert row is not None
     assert json.loads(row["cursor"]) == {"pn": 2, "ps": 30}
@@ -127,8 +135,7 @@ async def test_save_progress_alone(store: FetchingStore) -> None:
         updated_at_ms=999,
     )
     row = await store.ctx.conn.fetch_one(
-        "SELECT cursor, total, fetched, updated_at_ms FROM fetch_progress "
-        "WHERE endpoint = ?",
+        "SELECT cursor, total, fetched, updated_at_ms FROM fetch_progress WHERE endpoint = ?",
         ("videos",),
     )
     assert row is not None
@@ -155,6 +162,7 @@ async def test_save_progress_upserts(store: FetchingStore) -> None:
 # raw DB reads
 # ---------------------------------------------------------------------------
 
+
 async def test_get_raw_payload_round_trip(store: FetchingStore) -> None:
     payload = {"a": 1, "nested": {"b": [1, 2, 3]}}
     await store.save_raw_payload("user_info", "", payload)
@@ -170,7 +178,10 @@ async def test_get_raw_payload_missing(store: FetchingStore) -> None:
 async def test_get_raw_fetched_at_ms_round_trip(store: FetchingStore) -> None:
     await store.save_raw_payload("user_info", "", {"ok": True}, fetched_at_ms=111)
     await store.save_raw_payload(
-        "video_detail", "BV1", {"ok": True}, fetched_at_ms=222,
+        "video_detail",
+        "BV1",
+        {"ok": True},
+        fetched_at_ms=222,
     )
 
     assert await store.get_raw_fetched_at_ms("user_info") == 111
@@ -180,7 +191,8 @@ async def test_get_raw_fetched_at_ms_round_trip(store: FetchingStore) -> None:
 
 async def test_get_progress_round_trip_string_cursor(store: FetchingStore) -> None:
     await store.save_progress(
-        "videos", {"cursor": "tok-1", "total": 10, "fetched": 3},
+        "videos",
+        {"cursor": "tok-1", "total": 10, "fetched": 3},
     )
     got = await store.get_progress("videos")
     assert got is not None
@@ -242,13 +254,22 @@ async def test_list_fanout_payload_records_round_trip(
     store: FetchingStore,
 ) -> None:
     await store.save_raw_payload(
-        "video_detail", "BV1", {"id": 1}, fetched_at_ms=1000,
+        "video_detail",
+        "BV1",
+        {"id": 1},
+        fetched_at_ms=1000,
     )
     await store.save_raw_payload(
-        "video_detail", "BV2", {"id": 2}, fetched_at_ms=2000,
+        "video_detail",
+        "BV2",
+        {"id": 2},
+        fetched_at_ms=2000,
     )
     await store.save_raw_payload(
-        "video_detail", "", {"meta": True}, fetched_at_ms=500,
+        "video_detail",
+        "",
+        {"meta": True},
+        fetched_at_ms=500,
     )
 
     assert await store.list_fanout_payload_records("video_detail") == {
@@ -270,12 +291,12 @@ async def test_list_item_ages_ms_round_trip(store: FetchingStore) -> None:
 # main DB writes — task + endpoint state
 # ---------------------------------------------------------------------------
 
+
 async def test_init_task_seeds_task_and_endpoints(store: FetchingStore) -> None:
     await store.init_task(["user_info", "videos", "video_detail"])
 
     task_row = await store.ctx.conn.fetch_one(
-        "SELECT stage, status, payload, created_at_ms, updated_at_ms "
-        "FROM stage_task WHERE stage = ?",
+        "SELECT stage, status, payload, created_at_ms, updated_at_ms FROM stage_task WHERE stage = ?",
         ("fetching",),
     )
     assert task_row is not None
@@ -293,7 +314,9 @@ async def test_init_task_seeds_task_and_endpoints(store: FetchingStore) -> None:
         "FROM fetch_endpoint_state ORDER BY endpoint",
     )
     assert {r["endpoint"] for r in ep_rows} == {
-        "user_info", "videos", "video_detail",
+        "user_info",
+        "videos",
+        "video_detail",
     }
     for row in ep_rows:
         assert row["status"] == "PENDING"
@@ -325,7 +348,9 @@ async def test_init_task_idempotent(store: FetchingStore) -> None:
     assert user_state["status"] == "SUCCESS"
     assert user_state["retry_count"] == 2
     assert user_state["item_progress"] == {
-        "total": 10, "completed": 10, "failed": 0,
+        "total": 10,
+        "completed": 10,
+        "failed": 0,
     }
 
     # newly added endpoint is created PENDING
@@ -411,6 +436,7 @@ async def test_update_endpoint_state_preserves_unset_fields(
 # main DB reads
 # ---------------------------------------------------------------------------
 
+
 async def test_get_task_status_missing(store: FetchingStore) -> None:
     assert await store.get_task_status() is None
 
@@ -426,6 +452,7 @@ async def test_get_endpoint_state_missing(store: FetchingStore) -> None:
 # ---------------------------------------------------------------------------
 # error sink
 # ---------------------------------------------------------------------------
+
 
 async def test_record_error_returns_monotonic_ids(store: FetchingStore) -> None:
     id1 = await store.record_error(
@@ -462,7 +489,8 @@ async def test_record_error_persists_all_fields(store: FetchingStore) -> None:
         occurred_at_ms=12345,
     )
     row = await store.ctx.conn.fetch_one(
-        "SELECT * FROM stage_error WHERE id = ?", (err_id,),
+        "SELECT * FROM stage_error WHERE id = ?",
+        (err_id,),
     )
     assert row is not None
     assert row["stage"] == "fetching"
@@ -484,7 +512,8 @@ async def test_record_error_retryable_unknown_stored_as_null(
         retryable=None,
     )
     row = await store.ctx.conn.fetch_one(
-        "SELECT retryable FROM stage_error WHERE id = ?", (err_id,),
+        "SELECT retryable FROM stage_error WHERE id = ?",
+        (err_id,),
     )
     assert row is not None
     assert row["retryable"] is None
@@ -494,13 +523,22 @@ async def test_list_errors_unfiltered_returns_newest_first(
     store: FetchingStore,
 ) -> None:
     id_a = await store.record_error(
-        endpoint="ep_a", error_type="E", message="a", retryable=True,
+        endpoint="ep_a",
+        error_type="E",
+        message="a",
+        retryable=True,
     )
     id_b = await store.record_error(
-        endpoint="ep_b", error_type="E", message="b", retryable=False,
+        endpoint="ep_b",
+        error_type="E",
+        message="b",
+        retryable=False,
     )
     id_c = await store.record_error(
-        endpoint=None, error_type="E", message="c", retryable=None,
+        endpoint=None,
+        error_type="E",
+        message="c",
+        retryable=None,
     )
 
     errors = await store.list_errors()
@@ -512,13 +550,22 @@ async def test_list_errors_unfiltered_returns_newest_first(
 
 async def test_list_errors_filtered_by_endpoint(store: FetchingStore) -> None:
     await store.record_error(
-        endpoint="ep_a", error_type="E", message="a1", retryable=True,
+        endpoint="ep_a",
+        error_type="E",
+        message="a1",
+        retryable=True,
     )
     await store.record_error(
-        endpoint="ep_b", error_type="E", message="b1", retryable=True,
+        endpoint="ep_b",
+        error_type="E",
+        message="b1",
+        retryable=True,
     )
     await store.record_error(
-        endpoint="ep_a", error_type="E", message="a2", retryable=False,
+        endpoint="ep_a",
+        error_type="E",
+        message="a2",
+        retryable=False,
         detail={"x": 1},
     )
 
@@ -531,6 +578,7 @@ async def test_list_errors_filtered_by_endpoint(store: FetchingStore) -> None:
 # ---------------------------------------------------------------------------
 # list_failed_items
 # ---------------------------------------------------------------------------
+
 
 async def test_list_failed_items_drops_already_succeeded(
     store: FetchingStore,
@@ -639,6 +687,7 @@ async def test_list_unavailable_items_only_returns_terminal_unavailable(
 # Misc / smoke
 # ---------------------------------------------------------------------------
 
+
 async def test_get_endpoint_status_after_state_writes(
     store: FetchingStore,
 ) -> None:
@@ -652,7 +701,8 @@ async def test_get_endpoint_status_after_state_writes(
 
 @pytest.mark.parametrize("item_id", ["", "BV1", "CV987", "opus_42"])
 async def test_save_raw_payload_handles_various_item_ids(
-    store: FetchingStore, item_id: str,
+    store: FetchingStore,
+    item_id: str,
 ) -> None:
     await store.save_raw_payload("ep", item_id, {"i": item_id})
     got = await store.get_raw_payload("ep", item_id)

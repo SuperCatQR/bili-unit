@@ -37,7 +37,10 @@ class Command:
         self._fetch_fn = fetch_fn
 
     async def fetch_uid(
-        self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental",
+        self,
+        uid: int,
+        endpoints: list[str] | None = None,
+        mode: str = "incremental",
     ) -> CommandResult:
         """Trigger fetching for a uid.
 
@@ -60,7 +63,9 @@ class Command:
                 },
             )
             runner = Runner(
-                store, self._rl, self._settings,
+                store,
+                self._rl,
+                self._settings,
                 stale_running_threshold_ms=self._stale_running_threshold_ms,
                 fetch_fn=self._fetch_fn,
                 reporter=RunReporter(run_context, SqliteSink(ctx.conn)),

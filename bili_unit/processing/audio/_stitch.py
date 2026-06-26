@@ -100,7 +100,8 @@ def stitch_transcripts(
     out = cleaned[0]
     for nxt in cleaned[1:]:
         out = _splice_pair(
-            out, nxt,
+            out,
+            nxt,
             probe_chars=probe_chars,
             min_overlap_chars=min_overlap_chars,
         )

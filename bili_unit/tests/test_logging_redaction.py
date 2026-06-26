@@ -3,6 +3,7 @@
 Uses tmp_path to write a log file; resets the 'bili_unit' logger after each
 test to avoid handler/level pollution.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -16,6 +17,7 @@ from bili_unit._logging import RedactingFilter, configure_logging
 # ---------------------------------------------------------------------------
 # Fixture: restore the bili_unit logger after each test
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _reset_bili_unit_logger():
@@ -32,6 +34,7 @@ def _reset_bili_unit_logger():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_redacting_filter_rewrites_secret_record():
     """A log record containing a secret keyword is rewritten to [REDACTED secret]."""

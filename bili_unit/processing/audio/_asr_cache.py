@@ -77,9 +77,7 @@ class CachedSegment:
     def from_dict(cls, raw: dict) -> CachedSegment:
         audio_tokens_raw = raw.get("audio_tokens")
         try:
-            audio_tokens = (
-                int(audio_tokens_raw) if audio_tokens_raw is not None else None
-            )
+            audio_tokens = int(audio_tokens_raw) if audio_tokens_raw is not None else None
         except (TypeError, ValueError):
             audio_tokens = None
         return cls(
@@ -87,9 +85,7 @@ class CachedSegment:
             end_s=float(raw["end_s"]),
             text=str(raw.get("text", "")),
             language=str(raw.get("language", "")),
-            duration=(
-                float(raw["duration"]) if raw.get("duration") is not None else None
-            ),
+            duration=(float(raw["duration"]) if raw.get("duration") is not None else None),
             model=str(raw.get("model", "")),
             audio_tokens=audio_tokens,
             backend=str(raw.get("backend", "")),
@@ -183,7 +179,10 @@ class ASRCacheStore:
         segs_raw = raw.get("segments") or []
         segments = [CachedSegment.from_dict(s) for s in segs_raw]
         return _PageCache(
-            uid=uid, bvid=bvid, page_index=page_index, segments=segments,
+            uid=uid,
+            bvid=bvid,
+            page_index=page_index,
+            segments=segments,
         )
 
     def find(

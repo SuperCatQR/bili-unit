@@ -37,14 +37,15 @@ _LIVE_LOCK = threading.Lock()
 # Formatters
 # ---------------------------------------------------------------------------
 
+
 class HumanFormatter(logging.Formatter):
     """终端可读：``HH:MM:SS LEVEL   logger.name  event  k=v k=v``"""
 
     LEVEL_COLORS = {
-        "DEBUG": "\x1b[37m",     # gray
-        "INFO": "\x1b[36m",      # cyan
-        "WARNING": "\x1b[33m",   # yellow
-        "ERROR": "\x1b[31m",     # red
+        "DEBUG": "\x1b[37m",  # gray
+        "INFO": "\x1b[36m",  # cyan
+        "WARNING": "\x1b[33m",  # yellow
+        "ERROR": "\x1b[31m",  # red
         "CRITICAL": "\x1b[35m",  # magenta
     }
     RESET = "\x1b[0m"
@@ -57,9 +58,7 @@ class HumanFormatter(logging.Formatter):
         ts = time.strftime("%H:%M:%S", time.localtime(record.created))
         level_text = f"{record.levelname:<7}"
         if self._color:
-            level_text = (
-                f"{self.LEVEL_COLORS.get(record.levelname, '')}{level_text}{self.RESET}"
-            )
+            level_text = f"{self.LEVEL_COLORS.get(record.levelname, '')}{level_text}{self.RESET}"
 
         extras = _extract_extras(record)
         kv = " ".join(f"{k}={_short(v)}" for k, v in extras.items())
@@ -92,11 +91,7 @@ class JsonFormatter(logging.Formatter):
 
 def _extract_extras(record: logging.LogRecord) -> dict[str, Any]:
     """挑出调用方通过 ``extra={...}`` 注入的字段。"""
-    return {
-        k: v
-        for k, v in record.__dict__.items()
-        if k not in _RESERVED and not k.startswith("_")
-    }
+    return {k: v for k, v in record.__dict__.items() if k not in _RESERVED and not k.startswith("_")}
 
 
 def _short(v: Any) -> Any:
@@ -111,6 +106,7 @@ def _short(v: Any) -> Any:
 # ---------------------------------------------------------------------------
 # ProgressAwareHandler
 # ---------------------------------------------------------------------------
+
 
 class ProgressAwareHandler(logging.StreamHandler):
     """StreamHandler 变体：写日志前先清空进度条，写完让进度条重绘。"""
@@ -130,6 +126,7 @@ class ProgressAwareHandler(logging.StreamHandler):
 # ---------------------------------------------------------------------------
 # RedactingFilter — drop records containing credential keywords
 # ---------------------------------------------------------------------------
+
 
 class RedactingFilter(logging.Filter):
     """Drop common credential keywords from log records before emission."""
@@ -152,6 +149,7 @@ class RedactingFilter(logging.Filter):
 # ---------------------------------------------------------------------------
 # configure_logging — single CLI entry-point
 # ---------------------------------------------------------------------------
+
 
 def configure_logging(
     *,
@@ -204,6 +202,7 @@ def configure_logging(
 # ---------------------------------------------------------------------------
 # Progress — stdlib-only progress bar
 # ---------------------------------------------------------------------------
+
 
 class Progress:
     """简易进度条，写到 stderr。
@@ -363,6 +362,7 @@ class Progress:
 # ---------------------------------------------------------------------------
 # Helpers for callers
 # ---------------------------------------------------------------------------
+
 
 def progress_for(
     items: Iterable[Any] | None,

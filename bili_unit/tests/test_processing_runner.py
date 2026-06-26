@@ -1,4 +1,4 @@
-﻿# Integration tests for processing runner / command 鈥?Phase 3.3 SQLite rewrite.
+# Integration tests for processing runner / command 鈥?Phase 3.3 SQLite rewrite.
 #
 # After the SQLite refactor:
 #   - ``ProcessingCommand`` builds its own per-uid stores (no ``data`` /
@@ -60,9 +60,15 @@ async def _fake_process_audio_one(runner, uid, item, credential):
     bvid = item.item_id
     now = int(time.time() * 1000)
     pages = [
-        {"page_index": p["page_index"], "cid": p["cid"],
-         "duration": 60.0, "text": f"mock transcription for {bvid}",
-         "language": "auto", "asr_model": "mock-asr-v0", "segments": []}
+        {
+            "page_index": p["page_index"],
+            "cid": p["cid"],
+            "duration": 60.0,
+            "text": f"mock transcription for {bvid}",
+            "language": "auto",
+            "asr_model": "mock-asr-v0",
+            "segments": [],
+        }
         for p in item.item_data.get("pages", [])
     ]
     payload = {
@@ -97,31 +103,32 @@ async def _fake_process_audio_one(runner, uid, item, credential):
 
 # -- seeding helpers --------------------------------------------------------
 
+
 async def _seed_video_pages(
-    settings: BiliSettings, uid: int, bvids: list[str],
-    *, pages_per_bvid: int = 1,
+    settings: BiliSettings,
+    uid: int,
+    bvids: list[str],
+    *,
+    pages_per_bvid: int = 1,
 ) -> None:
     """Write raw video_detail payloads so the runner can discover ``bvids``."""
-    pages_template = [
-        {"cid": idx + 1, "part": f"P{idx + 1}", "duration": 60}
-        for idx in range(pages_per_bvid)
-    ]
+    pages_template = [{"cid": idx + 1, "part": f"P{idx + 1}", "duration": 60} for idx in range(pages_per_bvid)]
     ctx = UidContext(uid, settings.bili_db_dir)
     await ctx.open()
     try:
         for bvid in bvids:
-            payload = json.dumps({
-                "info": {
-                    "bvid": bvid,
-                    "title": f"title-{bvid}",
-                    "duration": 60 * pages_per_bvid,
-                    "pages": pages_template,
-                },
-            })
+            payload = json.dumps(
+                {
+                    "info": {
+                        "bvid": bvid,
+                        "title": f"title-{bvid}",
+                        "duration": 60 * pages_per_bvid,
+                        "pages": pages_template,
+                    },
+                }
+            )
             await ctx.conn.execute(
-                "INSERT OR REPLACE INTO raw_payload"
-                "(endpoint, item_id, payload, fetched_at_ms) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) VALUES (?, ?, ?, ?)",
                 ("video_detail", bvid, payload, 0),
             )
     finally:
@@ -155,17 +162,19 @@ async def _list_audio_items(settings: BiliSettings, uid: int) -> list[dict]:
         )
         out = []
         for r in rows:
-            out.append({
-                "bvid": r["bvid"],
-                "status": r["status"],
-                "transcription_source": r["transcription_source"],
-                "transcript": r["transcript"],
-                "audio_tokens": r["audio_tokens"],
-                "seconds": r["seconds"],
-                "cache_hits": r["cache_hits"],
-                "payload": json.loads(r["payload"]),
-                "processed_at_ms": r["processed_at_ms"],
-            })
+            out.append(
+                {
+                    "bvid": r["bvid"],
+                    "status": r["status"],
+                    "transcription_source": r["transcription_source"],
+                    "transcript": r["transcript"],
+                    "audio_tokens": r["audio_tokens"],
+                    "seconds": r["seconds"],
+                    "cache_hits": r["cache_hits"],
+                    "payload": json.loads(r["payload"]),
+                    "processed_at_ms": r["processed_at_ms"],
+                }
+            )
         return out
     finally:
         await ctx.close()
@@ -256,6 +265,7 @@ class _NullProgress:
 
 # -- fixtures ---------------------------------------------------------------
 
+
 @pytest_asyncio.fixture
 async def settings(tmp_path: Path):
     return _make_settings(tmp_path)
@@ -269,7 +279,8 @@ async def cmd(settings: BiliSettings):
         credential_provider=AsyncMock(return_value=None),
     )
     with patch.object(
-        ProcessingRunner, "_process_audio_one",
+        ProcessingRunner,
+        "_process_audio_one",
         new=_fake_process_audio_one,
     ):
         yield c
@@ -277,6 +288,7 @@ async def cmd(settings: BiliSettings):
 
 
 # ---------- audio pipeline integration ---------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_audio_pipeline_discovers_and_processes(cmd, settings):
@@ -480,11 +492,7 @@ async def test_audio_worker_safety_net_persists_failed_item(tmp_path):
     assert items[0]["bvid"] == "BVsafety"
     assert items[0]["status"] == "failed"
     errs = await _list_processing_errors(s, uid)
-    assert any(
-        e["error_type"] == "RuntimeError"
-        and e["item_id"] == "BVsafety"
-        for e in errs
-    )
+    assert any(e["error_type"] == "RuntimeError" and e["item_id"] == "BVsafety" for e in errs)
     await cmd.close()
 
 
@@ -539,6 +547,7 @@ async def test_audio_pipeline_no_video_detail(cmd, settings):
 
 
 # ---------- retry behaviour -------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_is_retryable_classification():
@@ -705,9 +714,7 @@ async def test_audio_all_empty_transcript_fails_persistently(tmp_path):
 
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(
-        side_effect=EmptyTranscriptError(
-            "MiMo ASR returned empty transcription text; inspect the video manually"
-        )
+        side_effect=EmptyTranscriptError("MiMo ASR returned empty transcription text; inspect the video manually")
     )
     mock_asr.model = "mock-asr"
     mock_asr.close = AsyncMock()
@@ -762,9 +769,7 @@ async def test_audio_legacy_empty_transcript_api_error_no_retry(tmp_path):
 
     mock_asr = AsyncMock()
     mock_asr.transcribe = AsyncMock(
-        side_effect=ASRAPIError(
-            "MiMo ASR returned empty transcription text; inspect the video manually"
-        )
+        side_effect=ASRAPIError("MiMo ASR returned empty transcription text; inspect the video manually")
     )
     mock_asr.model = "mock-asr"
     mock_asr.close = AsyncMock()
@@ -792,8 +797,8 @@ async def test_audio_legacy_empty_transcript_api_error_no_retry(tmp_path):
 # These hit the audio mixin's _do_audio_work directly via a patched runner;
 # the runner needs a settings object but no stores (the work fn doesn't write).
 
-def _make_unit_runner(settings, *, downloader_factory=None, convert_fn=None,
-                     asr_backend=None) -> ProcessingRunner:
+
+def _make_unit_runner(settings, *, downloader_factory=None, convert_fn=None, asr_backend=None) -> ProcessingRunner:
     """Build a ProcessingRunner with optional injected pieces 鈥?for unit-style
     tests that exercise the audio_work helpers without a store."""
     return ProcessingRunner(
@@ -836,10 +841,12 @@ async def test_audio_duration_uses_page_metadata_not_last_segment(tmp_path):
     mock_convert = AsyncMock(return_value=seg_files)
 
     mock_asr = AsyncMock()
-    mock_asr.transcribe = AsyncMock(side_effect=[
-        ASRResult(text="part-A", duration=830.0, model="m"),
-        ASRResult(text="part-B", duration=204.0, model="m"),
-    ])
+    mock_asr.transcribe = AsyncMock(
+        side_effect=[
+            ASRResult(text="part-A", duration=830.0, model="m"),
+            ASRResult(text="part-B", duration=204.0, model="m"),
+        ]
+    )
     mock_asr.model = "m"
     mock_asr.close = AsyncMock()
 
@@ -891,10 +898,12 @@ async def test_audio_duration_falls_back_to_segment_sum_when_no_metadata(tmp_pat
     mock_convert = AsyncMock(return_value=seg_files)
 
     mock_asr = AsyncMock()
-    mock_asr.transcribe = AsyncMock(side_effect=[
-        ASRResult(text="x", duration=300.0, model="m"),
-        ASRResult(text="y", duration=120.0, model="m"),
-    ])
+    mock_asr.transcribe = AsyncMock(
+        side_effect=[
+            ASRResult(text="x", duration=300.0, model="m"),
+            ASRResult(text="y", duration=120.0, model="m"),
+        ]
+    )
     mock_asr.model = "m"
 
     runner = _make_unit_runner(
@@ -927,11 +936,22 @@ async def test_audio_asr_cache_skips_segments_on_retry(tmp_path):
 
     cache = ASRCacheStore(s.bili_processing_asr_cache_dir)
     page = cache.load_page(uid, bvid, 0)
-    cache.upsert(page, CachedSegment(start_s=0.0, end_s=830.0, text="cached-A", language="auto", duration=830.0, model="m", backend="test-asr"))
-    cache.upsert(page, CachedSegment(start_s=830.0, end_s=1660.0, text="cached-B", language="auto", duration=830.0, model="m", backend="test-asr"))
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=0.0, end_s=830.0, text="cached-A", language="auto", duration=830.0, model="m", backend="test-asr"
+        ),
+    )
+    cache.upsert(
+        page,
+        CachedSegment(
+            start_s=830.0, end_s=1660.0, text="cached-B", language="auto", duration=830.0, model="m", backend="test-asr"
+        ),
+    )
 
     work_item = WorkItem(
-        item_type="audio", item_id=bvid,
+        item_type="audio",
+        item_id=bvid,
         item_data={"bvid": bvid, "pages": [{"page_index": 0, "cid": 1, "duration": 2000, "part": "p1"}]},
     )
 
@@ -987,7 +1007,8 @@ async def test_audio_asr_cache_persists_on_failure(tmp_path):
     bvid = "BVfail"
 
     work_item = WorkItem(
-        item_type="audio", item_id=bvid,
+        item_type="audio",
+        item_id=bvid,
         item_data={"bvid": bvid, "pages": [{"page_index": 0, "cid": 1, "duration": 1660, "part": "p1"}]},
     )
 
@@ -1047,7 +1068,8 @@ async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path):
     bvid = "BVoff"
 
     work_item = WorkItem(
-        item_type="audio", item_id=bvid,
+        item_type="audio",
+        item_id=bvid,
         item_data={"bvid": bvid, "pages": [{"page_index": 0, "cid": 1, "duration": 100, "part": "p1"}]},
     )
 
@@ -1077,6 +1099,7 @@ async def test_audio_asr_cache_disabled_bypasses_cache(tmp_path):
 
 # ---------- A2: max_tokens doubling helper exercised end-to-end --------------
 
+
 @pytest.mark.asyncio
 async def test_transcribe_segment_with_token_doubling_grows_until_success():
     """The doubling helper grows max_completion_tokens 1024→2048→4096→8192 on length truncation."""
@@ -1092,8 +1115,7 @@ async def test_transcribe_segment_with_token_doubling_grows_until_success():
         model = "mock-asr"
         cache_namespace = "mock"
 
-        async def transcribe(self, audio_data, *, mime_type="audio/mp3",
-                             language="auto", max_completion_tokens=None):
+        async def transcribe(self, audio_data, *, mime_type="audio/mp3", language="auto", max_completion_tokens=None):
             captured.append(max_completion_tokens)
             # First three attempts (1024/2048/4096) return length-truncated;
             # the cap (8192) succeeds.
@@ -1136,8 +1158,7 @@ async def test_transcribe_segment_token_doubling_exhausts_at_cap():
         model = "mock-asr"
         cache_namespace = "mock"
 
-        async def transcribe(self, audio_data, *, mime_type="audio/mp3",
-                             language="auto", max_completion_tokens=None):
+        async def transcribe(self, audio_data, *, mime_type="audio/mp3", language="auto", max_completion_tokens=None):
             raise LengthTruncatedError("truncated")
 
         async def close(self):
@@ -1162,6 +1183,7 @@ async def test_transcribe_segment_token_doubling_exhausts_at_cap():
 
 
 # ---------- C2: asr.segment.progress + asr.item.progress events --------------
+
 
 @pytest.mark.asyncio
 async def test_audio_emits_segment_and_item_progress_events(tmp_path):
@@ -1214,11 +1236,15 @@ async def test_audio_emits_segment_and_item_progress_events(tmp_path):
     # One page → one item.progress with pages_done=1, pages_total=1.
     assert len(item_progress) == 1
     assert item_progress[0]["data"] == {
-        "uid": uid, "bvid": bvid, "pages_done": 1, "pages_total": 1,
+        "uid": uid,
+        "bvid": bvid,
+        "pages_done": 1,
+        "pages_total": 1,
     }
 
 
 # ---------- C3: failure_category persisted in audio_transcription.payload ----
+
 
 @pytest.mark.asyncio
 async def test_audio_max_tokens_failure_records_failure_category(tmp_path):
@@ -1309,5 +1335,3 @@ async def test_audio_network_failure_records_failure_category_network(tmp_path):
 # was dropped in the Phase 6 rewrite. Aggregate-view assertions now live in
 # the SQLite-store contract tests (see test_processing_store_sqlite.py and
 # the per-stage SQL view tests).
-
-

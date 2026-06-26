@@ -123,12 +123,7 @@ def _paginate_oid(
     if not items or (total_count > 0 and len(items) >= total_count):
         return True, None
     last = items[-1] if isinstance(items[-1], dict) else {}
-    next_oid = (
-        last.get("aid")
-        or last.get("id")
-        or last.get("oid")
-        or last.get("param")
-    )
+    next_oid = last.get("aid") or last.get("id") or last.get("oid") or last.get("param")
     if not next_oid or len(items) < ps:
         return True, None
     return False, {**request_params, "oid": next_oid}

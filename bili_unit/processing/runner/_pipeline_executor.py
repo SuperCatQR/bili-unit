@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from ...observability import RunReporter
     from .._store import ProcessingStore
 
+
 @dataclass(frozen=True)
 class WorkItem:
     """A single processing work unit, addressable by (item_type, item_id).
@@ -143,6 +144,7 @@ class AudioItemPersistence:
     ) -> None:
         if error is not None:
             from ._audio_work import audio_failure_category  # noqa: PLC0415
+
             record = {**record, "failure_category": audio_failure_category(error)}
         await store.save_audio_transcription(
             ctx.item_id,
@@ -166,9 +168,7 @@ class AudioItemPersistence:
             result = {}
         transcription_source = result.get("transcription_source")
         pages = result.get("pages") or []
-        transcript = "\n".join(
-            p.get("text", "") for p in pages if isinstance(p, dict)
-        )
+        transcript = "\n".join(p.get("text", "") for p in pages if isinstance(p, dict))
         cost = result.get("cost") or {}
         audio_tokens = cost.get("audio_tokens")
         seconds = cost.get("seconds")
@@ -207,22 +207,23 @@ async def run_item_with_retry(
     """
 
     def _classify(exc: Exception) -> RetryClassification:
-        return (
-            RetryClassification.RETRYABLE
-            if is_retryable(exc)
-            else RetryClassification.PERMANENT
-        )
+        return RetryClassification.RETRYABLE if is_retryable(exc) else RetryClassification.PERMANENT
 
     async def _on_attempt_failed(
-        exc: Exception, outcome: RetryOutcome,
+        exc: Exception,
+        outcome: RetryOutcome,
     ) -> int | None:
         now = int(time.time() * 1000)
         if outcome.will_retry:
             logger.info(
                 ctx.retry_event,
-                extra={"uid": ctx.uid, ctx.log_id_field: ctx.log_id_value,
-                       "retry": outcome.attempt,
-                       "delay_s": outcome.delay_seconds, "error": str(exc)},
+                extra={
+                    "uid": ctx.uid,
+                    ctx.log_id_field: ctx.log_id_value,
+                    "retry": outcome.attempt,
+                    "delay_s": outcome.delay_seconds,
+                    "error": str(exc),
+                },
             )
             if reporter is not None:
                 await reporter.emit(
@@ -248,7 +249,10 @@ async def run_item_with_retry(
                 detail={"retry_count": outcome.attempt},
             )
             record = _build_record_payload(
-                ctx, ProcessingItemStatus.FAILED.value, None, now,
+                ctx,
+                ProcessingItemStatus.FAILED.value,
+                None,
+                now,
                 retry_count=outcome.attempt,
             )
             await persistence.save_failure(store, ctx, record, error=exc)
@@ -258,8 +262,12 @@ async def run_item_with_retry(
         if ctx.failed_event is not None:
             logger.warning(
                 ctx.failed_event,
-                extra={"uid": ctx.uid, ctx.log_id_field: ctx.log_id_value,
-                       "retry_count": outcome.attempt, "error": str(exc)},
+                extra={
+                    "uid": ctx.uid,
+                    ctx.log_id_field: ctx.log_id_value,
+                    "retry_count": outcome.attempt,
+                    "error": str(exc),
+                },
             )
         if reporter is not None:
             await reporter.emit(
@@ -283,20 +291,22 @@ async def run_item_with_retry(
             error_type=type(exc).__name__,
             message=str(exc),
             retryable=False,
-            detail=(
-                {"retry_count": outcome.attempt}
-                if outcome.attempt > 1 else None
-            ),
+            detail=({"retry_count": outcome.attempt} if outcome.attempt > 1 else None),
         )
         record = _build_record_payload(
-            ctx, ProcessingItemStatus.FAILED.value, None, now,
+            ctx,
+            ProcessingItemStatus.FAILED.value,
+            None,
+            now,
             retry_count=outcome.attempt if outcome.attempt > 1 else 0,
         )
         await persistence.save_failure(store, ctx, record, error=exc)
         return None
 
     policy = RetryPolicy(
-        max_attempts=max_attempts, delays=delays, classify=_classify,
+        max_attempts=max_attempts,
+        delays=delays,
+        classify=_classify,
     )
     driver = RetryDriver(policy)
 
@@ -307,7 +317,10 @@ async def run_item_with_retry(
 
     now = int(time.time() * 1000)
     record = _build_record_payload(
-        ctx, ProcessingItemStatus.SUCCESS.value, result, now,
+        ctx,
+        ProcessingItemStatus.SUCCESS.value,
+        result,
+        now,
     )
     await persistence.save_success(store, ctx, record, result)
     return True

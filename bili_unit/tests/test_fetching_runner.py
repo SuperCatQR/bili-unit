@@ -28,6 +28,7 @@ from bili_unit.observability import RunContext, RunReporter, SqliteSink
 # Helpers (intentionally inline — conftest.py is frozen during Phase 6).
 # ---------------------------------------------------------------------------
 
+
 def _settings(tmp_path: Path) -> BiliSettings:
     return BiliSettings(bili_db_dir=str(tmp_path))
 
@@ -53,8 +54,7 @@ def _runner(store: FetchingStore, settings: BiliSettings, *, fetch_fn=None, **kw
 
 async def _list_stage_events(ctx: UidContext) -> list[dict]:
     rows = await ctx.conn.fetch_all(
-        "SELECT event, level, stage, endpoint, item_type, item_id, data_json "
-        "FROM stage_event ORDER BY id",
+        "SELECT event, level, stage, endpoint, item_type, item_id, data_json FROM stage_event ORDER BY id",
     )
     return [
         {
@@ -72,8 +72,7 @@ async def _list_stage_events(ctx: UidContext) -> list[dict]:
 
 async def _list_stage_runs(ctx: UidContext) -> list[dict]:
     rows = await ctx.conn.fetch_all(
-        "SELECT command, status, args_json, summary_json "
-        "FROM stage_run ORDER BY started_at_ms",
+        "SELECT command, status, args_json, summary_json FROM stage_run ORDER BY started_at_ms",
     )
     return [
         {
@@ -114,8 +113,11 @@ class _NullProgress:
 
 def _fake_page(uid: int, payload: dict, *, endpoint: str = "user_info") -> FetchPageResult:
     return FetchPageResult(
-        uid=uid, endpoint=endpoint, raw_payload=payload,
-        is_last_page=True, next_request=None,
+        uid=uid,
+        endpoint=endpoint,
+        raw_payload=payload,
+        is_last_page=True,
+        next_request=None,
     )
 
 
@@ -127,7 +129,8 @@ def _fake_videos_page(
     total_count: int | None = None,
 ) -> FetchPageResult:
     return FetchPageResult(
-        uid=0, endpoint="videos",
+        uid=0,
+        endpoint="videos",
         raw_payload={
             "list": {"vlist": [{"bvid": bv} for bv in bvids]},
             "page": {"count": total_count if total_count is not None else len(bvids)},
@@ -145,14 +148,18 @@ async def _seed_videos_payload(store: FetchingStore, bvids: list[str], *, ep: st
     reset the seeded endpoint).
     """
     await store.init_task([ep])
-    await store.save_raw_payload(ep, "", {
-        "pages": [
-            {
-                "list": {"vlist": [{"bvid": bv} for bv in bvids]},
-                "page": {"count": len(bvids)},
-            },
-        ],
-    })
+    await store.save_raw_payload(
+        ep,
+        "",
+        {
+            "pages": [
+                {
+                    "list": {"vlist": [{"bvid": bv} for bv in bvids]},
+                    "page": {"count": len(bvids)},
+                },
+            ],
+        },
+    )
     await store.update_endpoint_state(ep, status=EndpointStatus.SUCCESS.value)
     await store.update_task_status(TaskStatus.SUCCESS.value)
 
@@ -161,11 +168,13 @@ async def _seed_videos_payload(store: FetchingStore, bvids: list[str], *, ep: st
 # runner — single endpoint success
 # ======================================================================
 
+
 async def test_runner_single_success(tmp_path: Path):
     ctx, store = await _open_store(tmp_path, 1)
     try:
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(return_value=_fake_page(1, {"ok": True})),
         )
         result = await runner.run_task(1, endpoints=["user_info"])
@@ -181,9 +190,11 @@ async def test_runner_single_success(tmp_path: Path):
 # runner — partial failure (one success, one permanent fail)
 # ======================================================================
 
+
 async def test_runner_partial(tmp_path: Path):
     ctx, store = await _open_store(tmp_path, 2)
     try:
+
         async def fake_fetch(uid, spec, credential, request_params, **kw):
             if spec.name == "user_info":
                 return _fake_page(uid, {"ok": True})
@@ -192,7 +203,8 @@ async def test_runner_partial(tmp_path: Path):
             raise RuntimeError(spec.name)
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_task(2, endpoints=["user_info", "videos"])
@@ -210,6 +222,7 @@ async def test_runner_partial(tmp_path: Path):
 # ======================================================================
 # runner — credential-required endpoints fail without blocking public endpoints
 # ======================================================================
+
 
 async def test_runner_public_endpoint_does_not_get_credential(tmp_path: Path):
     ctx, store = await _open_store(tmp_path, 3)
@@ -250,6 +263,7 @@ async def test_runner_credential_required_auth_failure_is_permanent(tmp_path: Pa
 # runner — 412 retry -> recover
 # ======================================================================
 
+
 async def test_runner_412_retry_eventually_succeeds(tmp_path: Path):
     ctx, store = await _open_store(tmp_path, 4)
     try:
@@ -262,7 +276,8 @@ async def test_runner_412_retry_eventually_succeeds(tmp_path: Path):
             return _fake_page(uid, {"ok": True})
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_task(4, endpoints=["user_info"])
@@ -278,6 +293,7 @@ async def test_runner_412_retry_eventually_succeeds(tmp_path: Path):
 # runner — progress resumption (videos multi-page with mid-run failure)
 # ======================================================================
 
+
 async def test_runner_progress_resumption(tmp_path: Path):
     """First run: page 1 succeeds, page 2 fails -> progress saved at page 2.
     Second run: resume from page 2 cursor and finish.
@@ -291,7 +307,8 @@ async def test_runner_progress_resumption(tmp_path: Path):
             call_log.append(("run1", pn))
             if pn == 1:
                 return FetchPageResult(
-                    uid=uid, endpoint="videos",
+                    uid=uid,
+                    endpoint="videos",
                     raw_payload={
                         "list": {"vlist": [{"bvid": f"BV{i}"} for i in range(30)]},
                         "page": {"count": 65},
@@ -302,7 +319,8 @@ async def test_runner_progress_resumption(tmp_path: Path):
             raise Http412Error("412 page 2")
 
         runner1 = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch_1),
         )
         result1 = await runner1.run_task(5, endpoints=["videos"])
@@ -314,17 +332,17 @@ async def test_runner_progress_resumption(tmp_path: Path):
         assert progress["cursor"] == {"pn": 2, "ps": 30}
         stored_after_page_1 = await store.get_raw_payload("videos")
         assert stored_after_page_1 is not None
-        assert [
-            item["bvid"]
-            for item in stored_after_page_1["pages"][0]["list"]["vlist"]
-        ] == [f"BV{i}" for i in range(30)]
+        assert [item["bvid"] for item in stored_after_page_1["pages"][0]["list"]["vlist"]] == [
+            f"BV{i}" for i in range(30)
+        ]
 
         # Second run — must start from page 2.
         async def fake_fetch_2(uid, spec, credential, request_params, **kw):
             pn = request_params.get("pn", 1)
             call_log.append(("run2", pn))
             return FetchPageResult(
-                uid=uid, endpoint="videos",
+                uid=uid,
+                endpoint="videos",
                 raw_payload={
                     "list": {"vlist": [{"bvid": "BV999"}]},
                     "page": {"count": 65},
@@ -334,7 +352,8 @@ async def test_runner_progress_resumption(tmp_path: Path):
             )
 
         runner2 = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch_2),
         )
         # FAILED_EXHAUSTED -> resume_task (run_or_resume's else branch).
@@ -348,6 +367,7 @@ async def test_runner_progress_resumption(tmp_path: Path):
 # ======================================================================
 # _extract_item_ids — pure function tests
 # ======================================================================
+
 
 def test_extract_item_ids_videos_shape():
     payload = {
@@ -396,6 +416,7 @@ def test_extract_item_ids_expand_is_last_segment():
 # Incremental mode — boundary detection
 # ======================================================================
 
+
 async def test_incremental_boundary_hit_stops_early(tmp_path: Path):
     """Stored IDs all appear on page 1 -> boundary hit -> one safety page -> stop."""
     ctx, store = await _open_store(tmp_path, 100)
@@ -413,11 +434,14 @@ async def test_incremental_boundary_hit_stops_early(tmp_path: Path):
             return _fake_videos_page(["BV6", "BV7"], is_last=True)
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            100, endpoints=["videos"], mode="incremental",
+            100,
+            endpoints=["videos"],
+            mode="incremental",
         )
 
         assert result.status == TaskStatus.SUCCESS
@@ -457,22 +481,21 @@ async def test_incremental_backfills_incomplete_page_listing(tmp_path: Path):
             return _fake_videos_page(["BV5"], is_last=True, total_count=5)
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            112, endpoints=["videos"], mode="incremental",
+            112,
+            endpoints=["videos"],
+            mode="incremental",
         )
 
         assert result.status == TaskStatus.SUCCESS
         assert call_log == [1, 2, 3]
         stored = await store.get_raw_payload("videos")
         assert stored is not None
-        stored_bvids = [
-            item["bvid"]
-            for page in stored["pages"]
-            for item in page["list"]["vlist"]
-        ]
+        stored_bvids = [item["bvid"] for page in stored["pages"] for item in page["list"]["vlist"]]
         assert stored_bvids == ["BV1", "BV2", "BV3", "BV4", "BV5"]
     finally:
         await ctx.close()
@@ -483,15 +506,19 @@ async def test_incremental_backfills_incomplete_cursor_listing(tmp_path: Path):
     ctx, store = await _open_store(tmp_path, 113)
     try:
         await store.init_task(["opus"])
-        await store.save_raw_payload("opus", "", {
-            "pages": [
-                {
-                    "items": [{"opus_id": "O1"}, {"opus_id": "O2"}],
-                    "has_more": True,
-                    "offset": "old-next",
-                },
-            ],
-        })
+        await store.save_raw_payload(
+            "opus",
+            "",
+            {
+                "pages": [
+                    {
+                        "items": [{"opus_id": "O1"}, {"opus_id": "O2"}],
+                        "has_more": True,
+                        "offset": "old-next",
+                    },
+                ],
+            },
+        )
         await store.update_endpoint_state("opus", status=EndpointStatus.SUCCESS.value)
         await store.update_task_status(TaskStatus.SUCCESS.value)
 
@@ -527,11 +554,14 @@ async def test_incremental_backfills_incomplete_cursor_listing(tmp_path: Path):
             )
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            113, endpoints=["opus"], mode="incremental",
+            113,
+            endpoints=["opus"],
+            mode="incremental",
         )
 
         assert result.status == TaskStatus.SUCCESS
@@ -556,18 +586,22 @@ async def test_incremental_new_ids_continue_then_boundary(tmp_path: Path):
             call_log.append(pn)
             if pn == 1:
                 return _fake_videos_page(
-                    ["BV1", "BV2", "BV3", "BV4", "BV5", "BV6"], next_pn=2,
+                    ["BV1", "BV2", "BV3", "BV4", "BV5", "BV6"],
+                    next_pn=2,
                 )
             elif pn == 2:
                 return _fake_videos_page(["BV4", "BV5", "BV6"], next_pn=3)
             return _fake_videos_page(["BV7"], is_last=True)
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            101, endpoints=["videos"], mode="incremental",
+            101,
+            endpoints=["videos"],
+            mode="incremental",
         )
 
         assert result.status == TaskStatus.SUCCESS
@@ -575,11 +609,7 @@ async def test_incremental_new_ids_continue_then_boundary(tmp_path: Path):
 
         stored = await store.get_raw_payload("videos")
         assert stored is not None
-        stored_bvids = [
-            item["bvid"]
-            for page in stored["pages"]
-            for item in page["list"]["vlist"]
-        ]
+        stored_bvids = [item["bvid"] for page in stored["pages"] for item in page["list"]["vlist"]]
         assert stored_bvids == ["BV1", "BV2", "BV3", "BV4", "BV5", "BV6", "BV7"]
     finally:
         await ctx.close()
@@ -588,6 +618,7 @@ async def test_incremental_new_ids_continue_then_boundary(tmp_path: Path):
 # ======================================================================
 # Incremental mode — no stored data
 # ======================================================================
+
 
 async def test_incremental_no_stored_data_fetches_all(tmp_path: Path):
     """No stored data -> known_ids=None -> fetches all pages like first run."""
@@ -609,11 +640,14 @@ async def test_incremental_no_stored_data_fetches_all(tmp_path: Path):
             return _fake_videos_page(["BV3"], is_last=True)
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            102, endpoints=["videos"], mode="incremental",
+            102,
+            endpoints=["videos"],
+            mode="incremental",
         )
 
         assert result.status == TaskStatus.SUCCESS
@@ -630,19 +664,18 @@ async def test_incremental_no_stored_data_fetches_all(tmp_path: Path):
 # Incremental mode — overwrite behaviour
 # ======================================================================
 
+
 async def test_incremental_preserves_unseen_stored_pages(tmp_path: Path):
     """Incremental keeps old pages whose items were not seen this run."""
     ctx, store = await _open_store(tmp_path, 103)
     try:
         # Seed with 5 old pages.
-        old_pages = [
-            {"list": {"vlist": [{"bvid": f"OLD{i}"}]}, "page": {"count": 5}}
-            for i in range(5)
-        ]
+        old_pages = [{"list": {"vlist": [{"bvid": f"OLD{i}"}]}, "page": {"count": 5}} for i in range(5)]
         await store.init_task(["videos"])
         await store.save_raw_payload("videos", "", {"pages": old_pages})
         await store.update_endpoint_state(
-            "videos", status=EndpointStatus.SUCCESS.value,
+            "videos",
+            status=EndpointStatus.SUCCESS.value,
         )
         await store.update_task_status(TaskStatus.SUCCESS.value)
 
@@ -650,21 +683,20 @@ async def test_incremental_preserves_unseen_stored_pages(tmp_path: Path):
             return _fake_videos_page(["OLD0", "OLD1"], next_pn=2)
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            103, endpoints=["videos"], mode="incremental",
+            103,
+            endpoints=["videos"],
+            mode="incremental",
         )
 
         assert result.status == TaskStatus.SUCCESS
         stored = await store.get_raw_payload("videos")
         assert stored is not None
-        stored_bvids = [
-            item["bvid"]
-            for page in stored["pages"]
-            for item in page["list"]["vlist"]
-        ]
+        stored_bvids = [item["bvid"] for page in stored["pages"] for item in page["list"]["vlist"]]
         assert stored_bvids == ["OLD0", "OLD1", "OLD2", "OLD3", "OLD4"]
     finally:
         await ctx.close()
@@ -673,6 +705,7 @@ async def test_incremental_preserves_unseen_stored_pages(tmp_path: Path):
 # ======================================================================
 # Full mode
 # ======================================================================
+
 
 async def test_full_mode_overwrites_existing(tmp_path: Path):
     """Full mode ignores existing data and overwrites."""
@@ -687,11 +720,14 @@ async def test_full_mode_overwrites_existing(tmp_path: Path):
             return _fake_videos_page(["NEW3"], is_last=True)
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            104, endpoints=["videos"], mode="full",
+            104,
+            endpoints=["videos"],
+            mode="full",
         )
 
         assert result.status == TaskStatus.SUCCESS
@@ -711,11 +747,13 @@ async def test_full_mode_does_not_accumulate(tmp_path: Path):
     """Running full mode twice does NOT accumulate pages."""
     ctx, store = await _open_store(tmp_path, 105)
     try:
+
         async def fake_fetch_1(uid, spec, credential, request_params, **kw):
             return _fake_videos_page(["A1", "A2"], is_last=True)
 
         await _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch_1),
         ).run_task(105, endpoints=["videos"], mode="full")
 
@@ -728,7 +766,8 @@ async def test_full_mode_does_not_accumulate(tmp_path: Path):
             return _fake_videos_page(["B1"], is_last=True)
 
         await _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch_2),
         ).run_task(105, endpoints=["videos"], mode="full")
 
@@ -746,7 +785,9 @@ async def test_full_mode_resets_exhausted_task(tmp_path: Path):
     try:
         await store.init_task(["videos"])
         await store.update_endpoint_state(
-            "videos", status=EndpointStatus.FAILED_EXHAUSTED.value, retry_count=3,
+            "videos",
+            status=EndpointStatus.FAILED_EXHAUSTED.value,
+            retry_count=3,
         )
         await store.update_task_status(TaskStatus.FAILED_EXHAUSTED.value)
 
@@ -754,11 +795,14 @@ async def test_full_mode_resets_exhausted_task(tmp_path: Path):
             return _fake_videos_page(["NEW1"], is_last=True)
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            106, endpoints=["videos"], mode="full",
+            106,
+            endpoints=["videos"],
+            mode="full",
         )
 
         assert result.status == TaskStatus.SUCCESS
@@ -771,6 +815,7 @@ async def test_full_mode_resets_exhausted_task(tmp_path: Path):
 # Mode switching — run_or_resume behaviour
 # ======================================================================
 
+
 async def test_run_or_resume_success_incremental_enters_scan(tmp_path: Path):
     """SUCCESS task + incremental mode -> re-runs endpoints for scan."""
     ctx, store = await _open_store(tmp_path, 107)
@@ -782,7 +827,9 @@ async def test_run_or_resume_success_incremental_enters_scan(tmp_path: Path):
 
         fetch_mock = AsyncMock(side_effect=fake_fetch)
         result = await _runner(
-            store, _settings(tmp_path), fetch_fn=fetch_mock,
+            store,
+            _settings(tmp_path),
+            fetch_fn=fetch_mock,
         ).run_or_resume(107, endpoints=["videos"], mode="incremental")
 
         assert result.status == TaskStatus.SUCCESS
@@ -801,7 +848,8 @@ async def test_run_or_resume_success_full_triggers_refetch(tmp_path: Path):
             return _fake_videos_page(["NEW1", "NEW2"], is_last=True)
 
         result = await _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         ).run_or_resume(108, endpoints=["videos"], mode="full")
 
@@ -820,18 +868,23 @@ async def test_run_or_resume_failed_permanent_both_modes(tmp_path: Path):
     try:
         await store.init_task(["videos"])
         await store.update_endpoint_state(
-            "videos", status=EndpointStatus.FAILED_PERMANENT.value,
+            "videos",
+            status=EndpointStatus.FAILED_PERMANENT.value,
         )
         await store.update_task_status(TaskStatus.FAILED_PERMANENT.value)
 
         fetch_mock = AsyncMock(return_value=_fake_videos_page(["X"], is_last=True))
         r1 = await _runner(
-            store, _settings(tmp_path), fetch_fn=fetch_mock,
+            store,
+            _settings(tmp_path),
+            fetch_fn=fetch_mock,
         ).run_or_resume(109, endpoints=["videos"], mode="incremental")
         assert r1.status == TaskStatus.FAILED_PERMANENT
 
         r2 = await _runner(
-            store, _settings(tmp_path), fetch_fn=fetch_mock,
+            store,
+            _settings(tmp_path),
+            fetch_fn=fetch_mock,
         ).run_or_resume(109, endpoints=["videos"], mode="full")
         assert r2.status == TaskStatus.FAILED_PERMANENT
 
@@ -844,6 +897,7 @@ async def test_run_or_resume_failed_permanent_both_modes(tmp_path: Path):
 # Incremental mode — non-paginated endpoint
 # ======================================================================
 
+
 async def test_incremental_non_paginated_overwrites(tmp_path: Path):
     """Non-paginated endpoint (user_info) in incremental mode simply overwrites."""
     ctx, store = await _open_store(tmp_path, 110)
@@ -851,12 +905,14 @@ async def test_incremental_non_paginated_overwrites(tmp_path: Path):
         await store.init_task(["user_info"])
         await store.save_raw_payload("user_info", "", {"name": "old_name"})
         await store.update_endpoint_state(
-            "user_info", status=EndpointStatus.SUCCESS.value,
+            "user_info",
+            status=EndpointStatus.SUCCESS.value,
         )
         await store.update_task_status(TaskStatus.SUCCESS.value)
 
         result = await _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(return_value=_fake_page(110, {"name": "new_name"})),
         ).run_or_resume(110, endpoints=["user_info"], mode="incremental")
 
@@ -870,6 +926,7 @@ async def test_incremental_non_paginated_overwrites(tmp_path: Path):
 # Command mode passthrough
 # ======================================================================
 
+
 async def test_command_mode_passthrough(tmp_path: Path):
     """Mode parameter passes from Command -> Runner; both modes succeed."""
     from bili_unit.fetching.command import Command
@@ -880,7 +937,8 @@ async def test_command_mode_passthrough(tmp_path: Path):
         return _fake_page(uid, {"ok": True})
 
     cmd = Command(
-        settings, _fast_rate_limit(),
+        settings,
+        _fast_rate_limit(),
         fetch_fn=AsyncMock(side_effect=fake_fetch),
     )
     r1 = await cmd.fetch_uid(111, endpoints=["user_info"], mode="incremental")
@@ -893,6 +951,7 @@ async def test_command_mode_passthrough(tmp_path: Path):
 # ======================================================================
 # Bug: endpoint status after exhaustion (subscribed_bangumi)
 # ======================================================================
+
 
 async def test_endpoint_status_after_exhaustion(tmp_path: Path):
     """After FetchingError exhausts retries, the store reports FAILED_EXHAUSTED.
@@ -907,11 +966,13 @@ async def test_endpoint_status_after_exhaustion(tmp_path: Path):
 
     ctx, store = await _open_store(tmp_path, 200)
     try:
+
         async def always_fail(uid, spec, credential, request_params, **kw):
             raise RequestError("53013: user privacy restricted")
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=always_fail),
         )
         result = await runner.run_task(200, endpoints=["subscribed_bangumi"])
@@ -929,18 +990,24 @@ async def test_endpoint_status_after_exhaustion(tmp_path: Path):
 # Incremental mode — anchor pagination (upower_qa)
 # ======================================================================
 
+
 async def test_incremental_anchor_pagination_boundary(tmp_path: Path):
     """Anchor-paginated endpoint detects boundary in incremental mode."""
     ctx, store = await _open_store(tmp_path, 300)
     try:
         await store.init_task(["upower_qa"])
-        await store.save_raw_payload("upower_qa", "", {
-            "pages": [
-                {"list": [{"qa_id": 101}, {"qa_id": 102}, {"qa_id": 103}], "anchor": 0},
-            ],
-        })
+        await store.save_raw_payload(
+            "upower_qa",
+            "",
+            {
+                "pages": [
+                    {"list": [{"qa_id": 101}, {"qa_id": 102}, {"qa_id": 103}], "anchor": 0},
+                ],
+            },
+        )
         await store.update_endpoint_state(
-            "upower_qa", status=EndpointStatus.SUCCESS.value,
+            "upower_qa",
+            status=EndpointStatus.SUCCESS.value,
         )
         await store.update_task_status(TaskStatus.SUCCESS.value)
 
@@ -951,22 +1018,29 @@ async def test_incremental_anchor_pagination_boundary(tmp_path: Path):
             call_log.append(anchor)
             if anchor == 0:
                 return FetchPageResult(
-                    uid=uid, endpoint="upower_qa",
+                    uid=uid,
+                    endpoint="upower_qa",
                     raw_payload={"list": [{"qa_id": 101}, {"qa_id": 102}], "anchor": 200},
-                    is_last_page=False, next_request={"anchor": 200},
+                    is_last_page=False,
+                    next_request={"anchor": 200},
                 )
             return FetchPageResult(
-                uid=uid, endpoint="upower_qa",
+                uid=uid,
+                endpoint="upower_qa",
                 raw_payload={"list": [{"qa_id": 103}], "anchor": 0},
-                is_last_page=True, next_request=None,
+                is_last_page=True,
+                next_request=None,
             )
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            300, endpoints=["upower_qa"], mode="incremental",
+            300,
+            endpoints=["upower_qa"],
+            mode="incremental",
         )
 
         assert result.status == TaskStatus.SUCCESS
@@ -983,13 +1057,18 @@ async def test_incremental_anchor_pagination_new_ids(tmp_path: Path):
     ctx, store = await _open_store(tmp_path, 301)
     try:
         await store.init_task(["upower_qa"])
-        await store.save_raw_payload("upower_qa", "", {
-            "pages": [
-                {"list": [{"qa_id": 101}, {"qa_id": 102}], "anchor": 0},
-            ],
-        })
+        await store.save_raw_payload(
+            "upower_qa",
+            "",
+            {
+                "pages": [
+                    {"list": [{"qa_id": 101}, {"qa_id": 102}], "anchor": 0},
+                ],
+            },
+        )
         await store.update_endpoint_state(
-            "upower_qa", status=EndpointStatus.SUCCESS.value,
+            "upower_qa",
+            status=EndpointStatus.SUCCESS.value,
         )
         await store.update_task_status(TaskStatus.SUCCESS.value)
 
@@ -1000,28 +1079,37 @@ async def test_incremental_anchor_pagination_new_ids(tmp_path: Path):
             call_log.append(anchor)
             if anchor == 0:
                 return FetchPageResult(
-                    uid=uid, endpoint="upower_qa",
+                    uid=uid,
+                    endpoint="upower_qa",
                     raw_payload={"list": [{"qa_id": 101}, {"qa_id": 201}], "anchor": 201},
-                    is_last_page=False, next_request={"anchor": 201},
+                    is_last_page=False,
+                    next_request={"anchor": 201},
                 )
             elif anchor == 201:
                 return FetchPageResult(
-                    uid=uid, endpoint="upower_qa",
+                    uid=uid,
+                    endpoint="upower_qa",
                     raw_payload={"list": [{"qa_id": 201}], "anchor": 301},
-                    is_last_page=False, next_request={"anchor": 301},
+                    is_last_page=False,
+                    next_request={"anchor": 301},
                 )
             return FetchPageResult(
-                uid=uid, endpoint="upower_qa",
+                uid=uid,
+                endpoint="upower_qa",
                 raw_payload={"list": [{"qa_id": 301}], "anchor": 0},
-                is_last_page=True, next_request=None,
+                is_last_page=True,
+                next_request=None,
             )
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_or_resume(
-            301, endpoints=["upower_qa"], mode="incremental",
+            301,
+            endpoints=["upower_qa"],
+            mode="incremental",
         )
 
         assert result.status == TaskStatus.SUCCESS
@@ -1037,6 +1125,7 @@ async def test_incremental_anchor_pagination_new_ids(tmp_path: Path):
 # runner — ResourceUnavailableError handling (no retry, no fan-out abort)
 # ======================================================================
 
+
 async def test_anchor_pagination_loop_stops_and_saves_pages(tmp_path: Path):
     """Repeated next_request stops pagination instead of looping forever."""
     ctx, store = await _open_store(tmp_path, 302)
@@ -1048,20 +1137,26 @@ async def test_anchor_pagination_loop_stops_and_saves_pages(tmp_path: Path):
             call_log.append(anchor)
             if anchor == 0:
                 return FetchPageResult(
-                    uid=uid, endpoint="upower_qa",
+                    uid=uid,
+                    endpoint="upower_qa",
                     raw_payload={"list": [{"qa_id": 101}], "anchor": 100},
-                    is_last_page=False, next_request={"anchor": 100},
+                    is_last_page=False,
+                    next_request={"anchor": 100},
                 )
             if anchor == 100:
                 return FetchPageResult(
-                    uid=uid, endpoint="upower_qa",
+                    uid=uid,
+                    endpoint="upower_qa",
                     raw_payload={"list": [{"qa_id": 102}], "anchor": 200},
-                    is_last_page=False, next_request={"anchor": 200},
+                    is_last_page=False,
+                    next_request={"anchor": 200},
                 )
             return FetchPageResult(
-                uid=uid, endpoint="upower_qa",
+                uid=uid,
+                endpoint="upower_qa",
                 raw_payload={"list": [{"qa_id": 103}], "anchor": 100},
-                is_last_page=False, next_request={"anchor": 100},
+                is_last_page=False,
+                next_request={"anchor": 100},
             )
 
         runner = _runner(
@@ -1096,15 +1191,9 @@ async def test_anchor_pagination_loop_stops_and_saves_pages(tmp_path: Path):
             "fetch.endpoint.completed",
             "fetch.run.completed",
         ]
-        page_saved = [
-            event for event in events
-            if event["event"] == "fetch.endpoint.page_saved"
-        ]
+        page_saved = [event for event in events if event["event"] == "fetch.endpoint.page_saved"]
         assert [event["data"]["page_count"] for event in page_saved] == [1, 2, 3]
-        loop_event = next(
-            event for event in events
-            if event["event"] == "fetch.endpoint.pagination_loop_detected"
-        )
+        loop_event = next(event for event in events if event["event"] == "fetch.endpoint.pagination_loop_detected")
         assert loop_event["level"] == "WARNING"
         assert loop_event["endpoint"] == "upower_qa"
         assert loop_event["data"]["request_params"] == {"anchor": 100}
@@ -1123,7 +1212,8 @@ async def test_runner_resource_unavailable_skips_retry(tmp_path: Path):
             raise ResourceUnavailableError("subscribed_bangumi code=53013: privacy")
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
         )
         result = await runner.run_task(701, endpoints=["subscribed_bangumi"])
@@ -1141,14 +1231,19 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(tmp_path: Pa
     ctx, store = await _open_store(tmp_path, 702)
     try:
         await store.init_task(["videos", "video_detail"])
-        await store.save_raw_payload("videos", "", {
-            "pages": [
-                {"list": {"vlist": [{"bvid": "BV_ok"}, {"bvid": "BV_dead"}]}},
-            ],
-        })
+        await store.save_raw_payload(
+            "videos",
+            "",
+            {
+                "pages": [
+                    {"list": {"vlist": [{"bvid": "BV_ok"}, {"bvid": "BV_dead"}]}},
+                ],
+            },
+        )
         await store.update_endpoint_state("videos", status=EndpointStatus.SUCCESS.value)
         await store.update_endpoint_state(
-            "video_detail", status=EndpointStatus.PENDING.value,
+            "video_detail",
+            status=EndpointStatus.PENDING.value,
         )
 
         call_log: list[str] = []
@@ -1176,10 +1271,7 @@ async def test_item_fanout_resource_unavailable_only_skips_one_item(tmp_path: Pa
         assert call_log.count("BV_ok") == 1
 
         # video_detail status -> SUCCESS: terminally unavailable items are skipped.
-        assert (
-            await store.get_endpoint_status("video_detail")
-            == EndpointStatus.SUCCESS.value
-        )
+        assert await store.get_endpoint_status("video_detail") == EndpointStatus.SUCCESS.value
 
         # The successful item is stored.
         ok = await store.get_raw_payload("video_detail", "BV_ok")
@@ -1226,31 +1318,36 @@ async def test_article_detail_fanout_filters_note_opus_style_items(tmp_path: Pat
     ctx, store = await _open_store(tmp_path, 703)
     try:
         await store.init_task(["articles", "article_detail"])
-        await store.save_raw_payload("articles", "", {
-            "pages": [
-                {
-                    "articles": [
-                        {
-                            "id": 50612667,
-                            "template_id": 4,
-                            "origin_template_id": 5,
-                            "type": 2,
-                            "category": {"id": 42, "name": "全部笔记"},
-                        },
-                        {
-                            "id": 100,
-                            "template_id": 1,
-                            "origin_template_id": 1,
-                            "type": 0,
-                            "category": {"id": 1, "name": "旧专栏"},
-                        },
-                    ],
-                },
-            ],
-        })
+        await store.save_raw_payload(
+            "articles",
+            "",
+            {
+                "pages": [
+                    {
+                        "articles": [
+                            {
+                                "id": 50612667,
+                                "template_id": 4,
+                                "origin_template_id": 5,
+                                "type": 2,
+                                "category": {"id": 42, "name": "全部笔记"},
+                            },
+                            {
+                                "id": 100,
+                                "template_id": 1,
+                                "origin_template_id": 1,
+                                "type": 0,
+                                "category": {"id": 1, "name": "旧专栏"},
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
         await store.update_endpoint_state("articles", status=EndpointStatus.SUCCESS.value)
         await store.update_endpoint_state(
-            "article_detail", status=EndpointStatus.PENDING.value,
+            "article_detail",
+            status=EndpointStatus.PENDING.value,
         )
 
         call_log: list[str] = []
@@ -1305,14 +1402,19 @@ async def test_item_fanout_incremental_skips_unavailable_items(tmp_path: Path):
     ctx, store = await _open_store(tmp_path, 7021)
     try:
         await store.init_task(["videos", "video_detail"])
-        await store.save_raw_payload("videos", "", {
-            "pages": [
-                {"list": {"vlist": [{"bvid": "BV_ok"}, {"bvid": "BV_dead"}]}},
-            ],
-        })
+        await store.save_raw_payload(
+            "videos",
+            "",
+            {
+                "pages": [
+                    {"list": {"vlist": [{"bvid": "BV_ok"}, {"bvid": "BV_dead"}]}},
+                ],
+            },
+        )
         await store.update_endpoint_state("videos", status=EndpointStatus.SUCCESS.value)
         await store.update_endpoint_state(
-            "video_detail", status=EndpointStatus.PENDING.value,
+            "video_detail",
+            status=EndpointStatus.PENDING.value,
         )
 
         first_calls: list[str] = []
@@ -1334,11 +1436,15 @@ async def test_item_fanout_incremental_skips_unavailable_items(tmp_path: Path):
 
         second_fetch = AsyncMock(return_value={"info": {"unexpected": True}})
         await store.update_endpoint_state(
-            "video_detail", status=EndpointStatus.PENDING.value,
+            "video_detail",
+            status=EndpointStatus.PENDING.value,
         )
         with patch.object(spec, "callable", second_fetch):
             await runner._run_item_endpoint(
-                7021, spec, credential=None, mode="incremental",
+                7021,
+                spec,
+                credential=None,
+                mode="incremental",
             )
 
         assert second_fetch.await_count == 0
@@ -1356,24 +1462,31 @@ async def test_parallel_item_phase_suppresses_nested_progress(tmp_path: Path):
     ctx, store = await _open_store(tmp_path, 703)
     try:
         await store.init_task(["videos", "video_detail"])
-        await store.save_raw_payload("videos", "", {
-            "pages": [{"list": {"vlist": [{"bvid": "BV1"}]}}],
-        })
+        await store.save_raw_payload(
+            "videos",
+            "",
+            {
+                "pages": [{"list": {"vlist": [{"bvid": "BV1"}]}}],
+            },
+        )
         await store.update_endpoint_state("videos", status=EndpointStatus.SUCCESS.value)
         await store.update_endpoint_state(
-            "video_detail", status=EndpointStatus.PENDING.value,
+            "video_detail",
+            status=EndpointStatus.PENDING.value,
         )
 
         runner = _runner(store, _settings(tmp_path))
         calls: list[dict] = []
 
         async def fake_run_item_endpoint(uid, spec, credential, mode, *, show_progress=True):
-            calls.append({
-                "uid": uid,
-                "endpoint": spec.name,
-                "mode": mode,
-                "show_progress": show_progress,
-            })
+            calls.append(
+                {
+                    "uid": uid,
+                    "endpoint": spec.name,
+                    "mode": mode,
+                    "show_progress": show_progress,
+                }
+            )
             await store.update_endpoint_state(
                 spec.name,
                 status=EndpointStatus.SUCCESS.value,
@@ -1381,19 +1494,25 @@ async def test_parallel_item_phase_suppresses_nested_progress(tmp_path: Path):
             )
 
         with patch.object(
-            runner, "_run_item_endpoint", new=fake_run_item_endpoint,
+            runner,
+            "_run_item_endpoint",
+            new=fake_run_item_endpoint,
         ):
             result = await runner.run_or_resume(
-                703, endpoints=["video_detail"], mode="full",
+                703,
+                endpoints=["video_detail"],
+                mode="full",
             )
 
         assert result.status == TaskStatus.SUCCESS
-        assert calls == [{
-            "uid": 703,
-            "endpoint": "video_detail",
-            "mode": "full",
-            "show_progress": False,
-        }]
+        assert calls == [
+            {
+                "uid": 703,
+                "endpoint": "video_detail",
+                "mode": "full",
+                "show_progress": False,
+            }
+        ]
     finally:
         await ctx.close()
 
@@ -1474,6 +1593,7 @@ async def test_runner_mixed_public_private_auth_failure_keeps_public_endpoint(
 ):
     ctx, store = await _open_store(tmp_path, 3004)
     try:
+
         async def fake_fetch(uid, spec, credential, request_params, **kw):
             assert spec.name == "user_info"
             assert credential is None
@@ -1489,7 +1609,8 @@ async def test_runner_mixed_public_private_auth_failure_keeps_public_endpoint(
             new=AsyncMock(side_effect=AuthError("no sessdata")),
         ):
             result = await runner.run_task(
-                3004, endpoints=["user_info", "user_medal"],
+                3004,
+                endpoints=["user_info", "user_medal"],
             )
         assert result.status == TaskStatus.PARTIAL
         assert result.endpoints["user_info"] == EndpointStatus.SUCCESS
@@ -1502,19 +1623,22 @@ async def test_runner_mixed_public_private_auth_failure_keeps_public_endpoint(
 # Stale RUNNING takeover (issue #3)
 # ======================================================================
 
+
 async def test_running_task_within_threshold_is_rejected(tmp_path: Path):
     """Fresh RUNNING task (recent updated_at) -> returns RUNNING, no work done."""
     ctx, store = await _open_store(tmp_path, 9001)
     try:
         await store.init_task(["user_info"])
         await store.update_endpoint_state(
-            "user_info", status=EndpointStatus.RUNNING.value,
+            "user_info",
+            status=EndpointStatus.RUNNING.value,
         )
         # Mark task RUNNING — store stamps updated_at_ms with now, so it's "fresh".
         await store.update_task_status(TaskStatus.RUNNING.value)
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(return_value=_fake_page(9001, {"ok": True})),
             stale_running_threshold_ms=15 * 60 * 1000,
         )
@@ -1522,16 +1646,14 @@ async def test_running_task_within_threshold_is_rejected(tmp_path: Path):
 
         assert result.status == TaskStatus.RUNNING
         # Endpoint not touched — still RUNNING in store.
-        assert (
-            await store.get_endpoint_status("user_info")
-            == EndpointStatus.RUNNING.value
-        )
+        assert await store.get_endpoint_status("user_info") == EndpointStatus.RUNNING.value
     finally:
         await ctx.close()
 
 
 async def test_running_task_past_threshold_is_taken_over(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """Stale RUNNING task -> resumes; final status reflects actual run."""
     import time as _time
@@ -1540,36 +1662,38 @@ async def test_running_task_past_threshold_is_taken_over(
     try:
         await store.init_task(["user_info"])
         await store.update_endpoint_state(
-            "user_info", status=EndpointStatus.PENDING.value,
+            "user_info",
+            status=EndpointStatus.PENDING.value,
         )
         await store.update_task_status(TaskStatus.RUNNING.value)
 
         # Push the runner's clock 30 min ahead so the task looks stale.
         future_time = _time.time() + 30 * 60
         monkeypatch.setattr(
-            "bili_unit.fetching.runner.time.time", lambda: future_time,
+            "bili_unit.fetching.runner.time.time",
+            lambda: future_time,
         )
 
         async def fake_fetch(uid_arg, spec, credential, request_params, **kw):
             return _fake_page(uid_arg, {"name": "ok"})
 
         runner = _runner(
-            store, _settings(tmp_path), fetch_fn=fake_fetch,
+            store,
+            _settings(tmp_path),
+            fetch_fn=fake_fetch,
             stale_running_threshold_ms=15 * 60 * 1000,
         )
         result = await runner.run_or_resume(9002, endpoints=["user_info"])
 
         assert result.status != TaskStatus.RUNNING
-        assert (
-            await store.get_endpoint_status("user_info")
-            == EndpointStatus.SUCCESS.value
-        )
+        assert await store.get_endpoint_status("user_info") == EndpointStatus.SUCCESS.value
     finally:
         await ctx.close()
 
 
 async def test_running_task_with_missing_updated_at_is_treated_as_stale(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """Defensive: tv.updated_at == None -> age_ms huge -> stale -> takeover.
 
@@ -1582,20 +1706,24 @@ async def test_running_task_with_missing_updated_at_is_treated_as_stale(
     try:
         await store.init_task(["user_info"])
         await store.update_endpoint_state(
-            "user_info", status=EndpointStatus.PENDING.value,
+            "user_info",
+            status=EndpointStatus.PENDING.value,
         )
         await store.update_task_status(TaskStatus.RUNNING.value)
 
         future_time = _time.time() + 30 * 60
         monkeypatch.setattr(
-            "bili_unit.fetching.runner.time.time", lambda: future_time,
+            "bili_unit.fetching.runner.time.time",
+            lambda: future_time,
         )
 
         async def fake_fetch(uid_arg, spec, credential, request_params, **kw):
             return _fake_page(uid_arg, {"name": "ok"})
 
         runner = _runner(
-            store, _settings(tmp_path), fetch_fn=fake_fetch,
+            store,
+            _settings(tmp_path),
+            fetch_fn=fake_fetch,
             stale_running_threshold_ms=15 * 60 * 1000,
         )
         result = await runner.run_or_resume(9004, endpoints=["user_info"])
@@ -1612,7 +1740,8 @@ async def test_resume_with_explicit_endpoints_does_not_resume_old_endpoint_set(
     try:
         await store.init_task(["videos"])
         await store.update_endpoint_state(
-            "videos", status=EndpointStatus.FAILED_EXHAUSTED.value,
+            "videos",
+            status=EndpointStatus.FAILED_EXHAUSTED.value,
         )
         await store.update_task_status(TaskStatus.PARTIAL.value)
 
@@ -1640,39 +1769,42 @@ async def test_pagination_loop_with_total_mismatch_reports_error(tmp_path: Path)
     """When pagination loops with expected_total > fetched_count, level=ERROR."""
     ctx, store = await _open_store(tmp_path, 303)
     try:
+
         async def fake_fetch(uid, spec, credential, request_params, **kw):
             pn = request_params.get("pn", 1)
             # page.count claims 100 archives total, but server keeps returning pn=2.
             if pn == 1:
                 return FetchPageResult(
-                    uid=uid, endpoint="videos",
+                    uid=uid,
+                    endpoint="videos",
                     raw_payload={
                         "list": {"vlist": [{"bvid": "BV1"}]},
                         "page": {"count": 100, "pn": 1, "ps": 30},
                     },
-                    is_last_page=False, next_request={"pn": 2, "ps": 30},
+                    is_last_page=False,
+                    next_request={"pn": 2, "ps": 30},
                 )
             return FetchPageResult(
-                uid=uid, endpoint="videos",
+                uid=uid,
+                endpoint="videos",
                 raw_payload={
                     "list": {"vlist": [{"bvid": "BV2"}]},
                     "page": {"count": 100, "pn": 2, "ps": 30},
                 },
-                is_last_page=False, next_request={"pn": 2, "ps": 30},
+                is_last_page=False,
+                next_request={"pn": 2, "ps": 30},
             )
 
         runner = _runner(
-            store, _settings(tmp_path),
+            store,
+            _settings(tmp_path),
             fetch_fn=AsyncMock(side_effect=fake_fetch),
             reporter=_reporter(ctx, 303, mode="full", endpoints=["videos"]),
         )
         await runner.run_task(303, endpoints=["videos"])
 
         events = await _list_stage_events(ctx)
-        loop_event = next(
-            event for event in events
-            if event["event"] == "fetch.endpoint.pagination_loop_detected"
-        )
+        loop_event = next(event for event in events if event["event"] == "fetch.endpoint.pagination_loop_detected")
         assert loop_event["level"] == "ERROR"
         assert loop_event["data"]["mismatch"] is True
         assert loop_event["data"]["expected_total"] == 100

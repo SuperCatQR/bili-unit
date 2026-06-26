@@ -33,6 +33,7 @@ async def test_auth_with_sessdata_only(monkeypatch):
     reload_settings()
     cred = await get_credential()
     from bilibili_api import Credential
+
     assert isinstance(cred, Credential)
 
 
@@ -58,5 +59,6 @@ async def test_auth_reload_picks_up_changes(monkeypatch):
 
     monkeypatch.setenv("BILI_SESSDATA", "new")
     from bili_unit.fetching.auth import reload_settings_and_credential
+
     c2 = await reload_settings_and_credential()
     assert c2 is not None

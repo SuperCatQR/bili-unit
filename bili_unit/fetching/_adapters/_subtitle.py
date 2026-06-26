@@ -139,13 +139,15 @@ async def fetch_video_subtitle_item(
             else:
                 content = []
 
-            rows.append({
-                "page_index": idx,
-                "cid": cid,
-                "part": part,
-                "result": index_safe,
-                "content": content,
-            })
+            rows.append(
+                {
+                    "page_index": idx,
+                    "cid": cid,
+                    "part": part,
+                    "result": index_safe,
+                    "content": content,
+                }
+            )
 
     return {"pages": pages, "subtitle": rows}
 

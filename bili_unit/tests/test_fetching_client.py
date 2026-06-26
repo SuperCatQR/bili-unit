@@ -281,8 +281,14 @@ async def test_fetch_endpoint_pagination_page():
 # ======================================================================
 
 _T2_UID_NONE = [
-    "user_medal", "space_notice", "all_followings", "top_videos",
-    "masterpiece", "article_list", "cheese", "elec_monthly",
+    "user_medal",
+    "space_notice",
+    "all_followings",
+    "top_videos",
+    "masterpiece",
+    "article_list",
+    "cheese",
+    "elec_monthly",
 ]
 
 _T2_CRED_REQUIRED = {"user_medal", "all_followings", "elec_monthly", "upower_qa"}

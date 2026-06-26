@@ -86,9 +86,7 @@ class BiliCommand:
                 if companion.exists():
                     companion.unlink()
         if paths.workdir.exists():
-            stats["workdir_files"] = sum(
-                1 for path in paths.workdir.rglob("*") if path.is_file()
-            )
+            stats["workdir_files"] = sum(1 for path in paths.workdir.rglob("*") if path.is_file())
             shutil.rmtree(paths.workdir)
         return stats
 

@@ -304,17 +304,18 @@ async def test_run_summary_reads_current_state_without_run_records(tmp_path: Pat
             "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
             "VALUES ('asr', 'PARTIAL', ?, 1, 2)",
             (
-                json.dumps({
-                    "pipelines": {
-                        "audio": {"status": "PARTIAL", "items": {}},
-                    },
-                }),
+                json.dumps(
+                    {
+                        "pipelines": {
+                            "audio": {"status": "PARTIAL", "items": {}},
+                        },
+                    }
+                ),
             ),
         )
         for bvid in ("BVok", "BVmissing"):
             await ctx_db.conn.execute(
-                "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) VALUES (?, ?, ?, ?)",
                 ("video_detail", bvid, json.dumps({"info": {"bvid": bvid}}), 1),
             )
         await ctx_db.conn.execute(
@@ -432,8 +433,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
             ),
         )
     await ctx_db.conn.execute(
-        "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
         (
             "fetching",
             "PARTIAL",
@@ -443,19 +443,20 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
         ),
     )
     await ctx_db.conn.execute(
-        "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO stage_task(stage, status, payload, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
         (
             "asr",
             "PARTIAL",
-            json.dumps({
-                "pipelines": {
-                    "audio": {
-                        "status": "PARTIAL",
-                        "items": {},
+            json.dumps(
+                {
+                    "pipelines": {
+                        "audio": {
+                            "status": "PARTIAL",
+                            "items": {},
+                        },
                     },
-                },
-            }),
+                }
+            ),
             1,
             2,
         ),
@@ -492,8 +493,7 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
     )
     for bvid in ("BV1", "BV2", "BV3"):
         await ctx_db.conn.execute(
-            "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO raw_payload(endpoint, item_id, payload, fetched_at_ms) VALUES (?, ?, ?, ?)",
             ("video_detail", bvid, json.dumps({"info": {"bvid": bvid}}), 1),
         )
     await ctx_db.conn.execute(
@@ -515,5 +515,6 @@ async def _seed_summary_state(ctx_db: UidContext) -> None:
 def test_run_summary_schema_version() -> None:
     """RunSummary.schema_version is now 2 after dropping ParseSummary."""
     from bili_unit.observability.summary import RunSummary
+
     instance = RunSummary(uid=42)
     assert instance.schema_version == 2

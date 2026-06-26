@@ -29,9 +29,7 @@ async def list_audio_work_items(conn: Connection) -> dict[str, list[dict]]:
     to dispatch its worker.
     """
     rows = await conn.fetch_all(
-        "SELECT item_id, payload FROM raw_payload "
-        "WHERE endpoint = ? AND item_id <> '' "
-        "ORDER BY item_id ASC",
+        "SELECT item_id, payload FROM raw_payload WHERE endpoint = ? AND item_id <> '' ORDER BY item_id ASC",
         (_VIDEO_DETAIL_ENDPOINT,),
     )
     out: dict[str, list[dict]] = {}
@@ -52,21 +50,25 @@ async def list_audio_work_items(conn: Connection) -> dict[str, list[dict]]:
             for page_no, p in enumerate(raw_pages, start=1):
                 if not isinstance(p, dict):
                     continue
-                pages.append({
-                    "page_index": page_no - 1,
-                    "cid": int(p.get("cid") or 0),
-                    "duration": int(p.get("duration") or 0),
-                    "part": str(p.get("part") or ""),
-                })
+                pages.append(
+                    {
+                        "page_index": page_no - 1,
+                        "cid": int(p.get("cid") or 0),
+                        "duration": int(p.get("duration") or 0),
+                        "part": str(p.get("part") or ""),
+                    }
+                )
         if not pages:
             # Single-page fallback so single-part videos and videos missing
             # the ``pages`` array still get one work item.
-            pages = [{
-                "page_index": 0,
-                "cid": int(info.get("cid") or 0),
-                "duration": int(info.get("duration") or 0),
-                "part": "",
-            }]
+            pages = [
+                {
+                    "page_index": 0,
+                    "cid": int(info.get("cid") or 0),
+                    "duration": int(info.get("duration") or 0),
+                    "part": "",
+                }
+            ]
         out[bvid] = pages
     return out
 

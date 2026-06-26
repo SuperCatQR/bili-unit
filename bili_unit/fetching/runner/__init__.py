@@ -1,4 +1,4 @@
-﻿# runner 鈥?orchestrates fetch execution, retries, and progress tracking.
+# runner 鈥?orchestrates fetch execution, retries, and progress tracking.
 #
 # Split into sub-modules for maintainability:
 #   _item_ids.py    鈥?item ID extraction (pure functions)
@@ -58,6 +58,7 @@ FetchEndpointFn = Callable[..., Awaitable[Any]]
 # Runner
 # ---------------------------------------------------------------------------
 
+
 class Runner(_EndpointMixin, _ItemFanoutMixin):
     def __init__(
         self,
@@ -84,20 +85,27 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
     # -- public ------------------------------------------------------------
 
     async def run_task(
-        self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental",
+        self,
+        uid: int,
+        endpoints: list[str] | None = None,
+        mode: str = "incremental",
     ) -> TaskResult:
         return await self._run_with_reporting(
             uid,
             endpoints,
             mode=mode,
             scope_loader=lambda: self._run_planner.new_scope(
-                uid, endpoints, mode=mode,
+                uid,
+                endpoints,
+                mode=mode,
             ),
             scope_result=lambda scope: self._run(scope),
         )
 
     async def resume_task(
-        self, uid: int, endpoints: list[str] | None = None,
+        self,
+        uid: int,
+        endpoints: list[str] | None = None,
     ) -> TaskResult:
         return await self._run_with_reporting(
             uid,
@@ -108,7 +116,10 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         )
 
     async def run_or_resume(
-        self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental",
+        self,
+        uid: int,
+        endpoints: list[str] | None = None,
+        mode: str = "incremental",
     ) -> TaskResult:
         """Entry point for command: new task or resume existing.
 
@@ -123,7 +134,9 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
             endpoints,
             mode=mode,
             scope_loader=lambda: self._run_planner.run_or_resume_scope(
-                uid, endpoints, mode=mode,
+                uid,
+                endpoints,
+                mode=mode,
             ),
             scope_result=self._result_from_scope_decision,
         )
@@ -219,8 +232,11 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                                 continue
                             uid_tasks.append(
                                 self._run_endpoint(
-                                    uid, src_spec, spec.source_endpoint,
-                                    credential, mode,
+                                    uid,
+                                    src_spec,
+                                    spec.source_endpoint,
+                                    credential,
+                                    mode,
                                 ),
                             )
 
@@ -244,16 +260,11 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                     src_state = await self._store.get_endpoint_state(
                         spec.source_endpoint,
                     )
-                    if (
-                        src_state is None
-                        or src_state.get("status") != EndpointStatus.SUCCESS.value
-                    ):
+                    if src_state is None or src_state.get("status") != EndpointStatus.SUCCESS.value:
                         err_id = await self._store.record_error(
                             endpoint=ep_name,
                             error_type="FetchingError",
-                            message=(
-                                f"source endpoint {spec.source_endpoint} not SUCCESS"
-                            ),
+                            message=(f"source endpoint {spec.source_endpoint} not SUCCESS"),
                             retryable=False,
                         )
                         await self._store.update_endpoint_state(
@@ -264,7 +275,8 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                         logger.info(
                             "item_endpoint_source_failed",
                             extra={
-                                "uid": uid, "endpoint": ep_name,
+                                "uid": uid,
+                                "endpoint": ep_name,
                                 "source_endpoint": spec.source_endpoint,
                             },
                         )
@@ -279,7 +291,11 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                         continue
                 item_tasks.append(
                     self._run_item_endpoint(
-                        uid, spec, credential, mode, show_progress=False,
+                        uid,
+                        spec,
+                        credential,
+                        mode,
+                        show_progress=False,
                     ),
                 )
 
@@ -301,7 +317,8 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         )
         await self._store.update_task_status(final_task_status.value)
         return TaskResult(
-            uid=uid, status=final_task_status,
+            uid=uid,
+            status=final_task_status,
             endpoints=endpoint_statuses,
         )
 
@@ -318,10 +335,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         endpoints are marked individually below instead of failing the whole
         fetching run before public endpoints get a chance to complete.
         """
-        needs_credential = any(
-            spec is not None and spec.credential_required
-            for spec in specs_by_name.values()
-        )
+        needs_credential = any(spec is not None and spec.credential_required for spec in specs_by_name.values())
         if not needs_credential:
             return None
         try:
@@ -335,11 +349,14 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
             )
             logger.info(
                 "credential_unavailable",
-                extra={"uid": uid, "credential_required_endpoints": [
-                    ep_name
-                    for ep_name, spec in specs_by_name.items()
-                    if spec is not None and spec.credential_required
-                ]},
+                extra={
+                    "uid": uid,
+                    "credential_required_endpoints": [
+                        ep_name
+                        for ep_name, spec in specs_by_name.items()
+                        if spec is not None and spec.credential_required
+                    ],
+                },
             )
             return None
 
@@ -371,9 +388,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
             if reporter is not None:
                 summary = {
                     "status": result.status.value,
-                    "endpoints": {
-                        key: value.value for key, value in result.endpoints.items()
-                    },
+                    "endpoints": {key: value.value for key, value in result.endpoints.items()},
                 }
                 await reporter.emit(
                     "fetch.run.completed",
@@ -417,7 +432,6 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         assert decision.scope is not None
         return self._run(decision.scope)
 
-
     @staticmethod
     def _derive_status_from_statuses(
         statuses: list[EndpointStatus],
@@ -426,18 +440,10 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
             return TaskStatus.PENDING
         if all(s in (EndpointStatus.SUCCESS, EndpointStatus.PARTIAL_ITEM) for s in statuses):
             return TaskStatus.SUCCESS
-        has_perm_fail = any(
-            s == EndpointStatus.FAILED_PERMANENT for s in statuses
-        )
-        has_exhausted = any(
-            s == EndpointStatus.FAILED_EXHAUSTED for s in statuses
-        )
-        has_retryable = any(
-            s == EndpointStatus.FAILED_RETRYABLE for s in statuses
-        )
-        has_success = any(
-            s in (EndpointStatus.SUCCESS, EndpointStatus.PARTIAL_ITEM) for s in statuses
-        )
+        has_perm_fail = any(s == EndpointStatus.FAILED_PERMANENT for s in statuses)
+        has_exhausted = any(s == EndpointStatus.FAILED_EXHAUSTED for s in statuses)
+        has_retryable = any(s == EndpointStatus.FAILED_RETRYABLE for s in statuses)
+        has_success = any(s in (EndpointStatus.SUCCESS, EndpointStatus.PARTIAL_ITEM) for s in statuses)
 
         if has_perm_fail:
             return TaskStatus.PARTIAL if has_success else TaskStatus.FAILED_PERMANENT

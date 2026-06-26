@@ -17,38 +17,40 @@ logger = logging.getLogger("bili.fetching.rate_limit")
 # QPS budget so the fan-out doesn't burn the global allowance the way a
 # uid-level endpoint would.  Tracked here rather than via EndpointSpec.kind
 # to keep the rate limiter independent of the spec module.
-_ITEM_FANOUT_ENDPOINTS: frozenset[str] = frozenset({
-    "video_detail",
-    "video_pages",
-    "video_detail_full",
-    "video_ai_conclusion",
-    "video_danmaku_snapshot",
-    "video_danmaku_view",
-    "video_danmaku_xml",
-    "video_danmakus",
-    "video_online",
-    "video_pay_coins",
-    "video_pbp",
-    "video_player_info",
-    "video_private_notes",
-    "video_public_notes",
-    "video_related",
-    "video_relation",
-    "video_special_dms",
-    "video_subtitle",
-    "video_up_mid",
-    "video_snapshot",
-    "video_download_url",
-    "video_is_episode",
-    "video_is_forbid_note",
-    "video_chargers",
-    "article_detail",
-    "opus_detail",
-    "article_list_detail",
-    "channel_videos_season",
-    "channel_videos_series",
-    "upower_qa_detail",
-})
+_ITEM_FANOUT_ENDPOINTS: frozenset[str] = frozenset(
+    {
+        "video_detail",
+        "video_pages",
+        "video_detail_full",
+        "video_ai_conclusion",
+        "video_danmaku_snapshot",
+        "video_danmaku_view",
+        "video_danmaku_xml",
+        "video_danmakus",
+        "video_online",
+        "video_pay_coins",
+        "video_pbp",
+        "video_player_info",
+        "video_private_notes",
+        "video_public_notes",
+        "video_related",
+        "video_relation",
+        "video_special_dms",
+        "video_subtitle",
+        "video_up_mid",
+        "video_snapshot",
+        "video_download_url",
+        "video_is_episode",
+        "video_is_forbid_note",
+        "video_chargers",
+        "article_detail",
+        "opus_detail",
+        "article_list_detail",
+        "channel_videos_season",
+        "channel_videos_series",
+        "upower_qa_detail",
+    }
+)
 
 
 class RateLimitController:
@@ -83,7 +85,8 @@ class RateLimitController:
         self._pause_seconds = pause_seconds
         self._recovery_cooldown = recovery_cooldown
         self._global: AsyncLimiter = AsyncLimiter(
-            max_rate=max(round(global_qps * 10), 1), time_period=10,
+            max_rate=max(round(global_qps * 10), 1),
+            time_period=10,
         )
         self._endpoint_limiters: dict[str, AsyncLimiter] = {}
         self._lock = asyncio.Lock()
@@ -114,11 +117,7 @@ class RateLimitController:
             async with self._lock:
                 ep_limiter = self._endpoint_limiters.get(endpoint)
                 if ep_limiter is None:
-                    qps = (
-                        self._video_detail_qps
-                        if endpoint in _ITEM_FANOUT_ENDPOINTS
-                        else self._endpoint_qps
-                    )
+                    qps = self._video_detail_qps if endpoint in _ITEM_FANOUT_ENDPOINTS else self._endpoint_qps
                     ep_limiter = AsyncLimiter(
                         max_rate=max(round(qps * 10), 1),
                         time_period=10,
@@ -169,7 +168,8 @@ class RateLimitController:
         if self._global_qps < self._orig_global_qps:
             self._global_qps = self._recover_step(self._global_qps, self._orig_global_qps)
             self._global = AsyncLimiter(
-                max_rate=max(round(self._global_qps * 10), 1), time_period=10,
+                max_rate=max(round(self._global_qps * 10), 1),
+                time_period=10,
             )
             global_changed = True
 
@@ -188,12 +188,14 @@ class RateLimitController:
                 if ep_name in _ITEM_FANOUT_ENDPOINTS:
                     if vd_changed:
                         self._endpoint_limiters[ep_name] = AsyncLimiter(
-                            max_rate=max(round(self._video_detail_qps * 10), 1), time_period=10,
+                            max_rate=max(round(self._video_detail_qps * 10), 1),
+                            time_period=10,
                         )
                 else:
                     if ep_changed:
                         self._endpoint_limiters[ep_name] = AsyncLimiter(
-                            max_rate=max(round(self._endpoint_qps * 10), 1), time_period=10,
+                            max_rate=max(round(self._endpoint_qps * 10), 1),
+                            time_period=10,
                         )
 
         self._recovered_until = epoch + self._recovery_cooldown
@@ -222,7 +224,8 @@ class RateLimitController:
             new_global = max(0.05, self._global_qps / 2)
             self._global_qps = new_global
             self._global = AsyncLimiter(
-                max_rate=max(round(new_global * 10), 1), time_period=10,
+                max_rate=max(round(new_global * 10), 1),
+                time_period=10,
             )
 
             # halve endpoint QPS if limiter exists
@@ -235,7 +238,8 @@ class RateLimitController:
                     new_ep = max(0.05, self._endpoint_qps / 2)
                     self._endpoint_qps = new_ep
                 self._endpoint_limiters[endpoint] = AsyncLimiter(
-                    max_rate=max(round(new_ep * 10), 1), time_period=10,
+                    max_rate=max(round(new_ep * 10), 1),
+                    time_period=10,
                 )
 
             # pause

@@ -266,7 +266,8 @@ class ProcessingStore:
         return _load_json(row["payload"])
 
     async def list_audio_bvids(
-        self, status: str | None = None,
+        self,
+        status: str | None = None,
     ) -> list[str]:
         """Return all bvids in ``audio_transcription``, optionally filtered by status."""
         if status is None:
@@ -311,9 +312,7 @@ class ProcessingStore:
             )
             if row is None:
                 payload = {
-                    "pipelines": {
-                        p: {"status": "PENDING", "items": {}} for p in pipelines
-                    },
+                    "pipelines": {p: {"status": "PENDING", "items": {}} for p in pipelines},
                 }
                 await self._ctx.conn.execute(
                     "INSERT INTO stage_task("
@@ -339,8 +338,7 @@ class ProcessingStore:
             if not mutated:
                 return  # nothing new to write
             await self._ctx.conn.execute(
-                "UPDATE stage_task SET payload = ?, updated_at_ms = ? "
-                "WHERE stage = ?",
+                "UPDATE stage_task SET payload = ?, updated_at_ms = ? WHERE stage = ?",
                 (
                     json.dumps(payload, ensure_ascii=False),
                     now,
@@ -383,8 +381,7 @@ class ProcessingStore:
             if coverage is not None:
                 entry["coverage"] = coverage
             await self._ctx.conn.execute(
-                "UPDATE stage_task SET payload = ?, updated_at_ms = ? "
-                "WHERE stage = ?",
+                "UPDATE stage_task SET payload = ?, updated_at_ms = ? WHERE stage = ?",
                 (
                     json.dumps(payload, ensure_ascii=False),
                     _now_ms(),
@@ -404,8 +401,7 @@ class ProcessingStore:
         if status not in {"PENDING", "RUNNING"}:
             statements.append(
                 (
-                    "INSERT INTO meta(key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     ("last_processed_at_ms", str(now)),
                 ),
             )
@@ -418,8 +414,7 @@ class ProcessingStore:
         an empty dict in the returned mapping.
         """
         row = await self._ctx.conn.fetch_one(
-            "SELECT status, payload, created_at_ms, updated_at_ms "
-            "FROM stage_task WHERE stage = ?",
+            "SELECT status, payload, created_at_ms, updated_at_ms FROM stage_task WHERE stage = ?",
             (_PROCESSING_STAGE,),
         )
         if row is None:
@@ -507,18 +502,20 @@ class ProcessingStore:
         rows = await self._ctx.conn.fetch_all(sql, tuple(params))
         out: list[dict] = []
         for row in rows:
-            out.append({
-                "id": row["id"],
-                "stage": row["stage"],
-                "pipeline": row["pipeline"],
-                "item_type": row["item_type"],
-                "item_id": row["item_id"],
-                "error_type": row["error_type"],
-                "message": row["message"],
-                "retryable": _retryable_from_int(row["retryable"]),
-                "detail": _load_json(row["detail"]),
-                "occurred_at_ms": row["occurred_at_ms"],
-            })
+            out.append(
+                {
+                    "id": row["id"],
+                    "stage": row["stage"],
+                    "pipeline": row["pipeline"],
+                    "item_type": row["item_type"],
+                    "item_id": row["item_id"],
+                    "error_type": row["error_type"],
+                    "message": row["message"],
+                    "retryable": _retryable_from_int(row["retryable"]),
+                    "detail": _load_json(row["detail"]),
+                    "occurred_at_ms": row["occurred_at_ms"],
+                }
+            )
         return out
 
 

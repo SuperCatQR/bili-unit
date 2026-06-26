@@ -69,6 +69,7 @@ async def test_rate_limit_does_not_modify_task():
 # QPS recovery (cooldown-based recovery after 412)
 # ======================================================================
 
+
 @pytest.mark.asyncio
 async def test_recovery_no_412_no_change():
     """QPS stays at original when no 412 has occurred."""
@@ -86,8 +87,10 @@ async def test_recovery_before_cooldown_no_change():
     import bili_unit.fetching.rate_limit as rl_mod
 
     rl = RateLimitController(
-        global_qps=1.0, endpoint_qps=0.5,
-        recovery_cooldown=300, pause_seconds=0,
+        global_qps=1.0,
+        endpoint_qps=0.5,
+        recovery_cooldown=300,
+        pause_seconds=0,
     )
     await rl.acquire("videos")
     await rl.record_412("videos")
@@ -109,8 +112,10 @@ async def test_recovery_after_cooldown_doubles_qps():
     import bili_unit.fetching.rate_limit as rl_mod
 
     rl = RateLimitController(
-        global_qps=1.0, endpoint_qps=0.5,
-        recovery_cooldown=300, pause_seconds=0,
+        global_qps=1.0,
+        endpoint_qps=0.5,
+        recovery_cooldown=300,
+        pause_seconds=0,
     )
     await rl.acquire("videos")
     with patch.object(rl_mod.time, "time", return_value=100.0):
@@ -131,8 +136,10 @@ async def test_recovery_two_cooldown_periods():
     import bili_unit.fetching.rate_limit as rl_mod
 
     rl = RateLimitController(
-        global_qps=0.8, endpoint_qps=0.5,
-        recovery_cooldown=300, pause_seconds=0,
+        global_qps=0.8,
+        endpoint_qps=0.5,
+        recovery_cooldown=300,
+        pause_seconds=0,
     )
     await rl.acquire("videos")
 
@@ -165,8 +172,10 @@ async def test_recovery_412_resets_cooldown():
     import bili_unit.fetching.rate_limit as rl_mod
 
     rl = RateLimitController(
-        global_qps=1.0, endpoint_qps=0.5,
-        recovery_cooldown=300, pause_seconds=0,
+        global_qps=1.0,
+        endpoint_qps=0.5,
+        recovery_cooldown=300,
+        pause_seconds=0,
     )
     await rl.acquire("videos")
 
@@ -203,8 +212,10 @@ async def test_recovery_capped_at_original():
     import bili_unit.fetching.rate_limit as rl_mod
 
     rl = RateLimitController(
-        global_qps=1.0, endpoint_qps=0.5,
-        recovery_cooldown=300, pause_seconds=0,
+        global_qps=1.0,
+        endpoint_qps=0.5,
+        recovery_cooldown=300,
+        pause_seconds=0,
     )
     await rl.acquire("test")
     with patch.object(rl_mod.time, "time", return_value=100.0):
@@ -230,8 +241,11 @@ async def test_recovery_video_detail_independent():
     import bili_unit.fetching.rate_limit as rl_mod
 
     rl = RateLimitController(
-        global_qps=10.0, endpoint_qps=1.0, video_detail_qps=0.4,
-        recovery_cooldown=300, pause_seconds=0,
+        global_qps=10.0,
+        endpoint_qps=1.0,
+        video_detail_qps=0.4,
+        recovery_cooldown=300,
+        pause_seconds=0,
     )
     await rl.acquire("video_detail")
     with patch.object(rl_mod.time, "time", return_value=100.0):
@@ -252,8 +266,10 @@ async def test_recovery_multiple_412s_gradual_recovery():
     import bili_unit.fetching.rate_limit as rl_mod
 
     rl = RateLimitController(
-        global_qps=1.0, endpoint_qps=0.5,
-        recovery_cooldown=300, pause_seconds=0,
+        global_qps=1.0,
+        endpoint_qps=0.5,
+        recovery_cooldown=300,
+        pause_seconds=0,
     )
     await rl.acquire("test")
 

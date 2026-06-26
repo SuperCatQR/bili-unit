@@ -23,6 +23,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 
 # ---------- MockASRBackend --------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_mock_asr_backend_returns_result():
     backend = MockASRBackend(fixed_text="hello world")
@@ -44,6 +45,7 @@ async def test_mock_asr_backend_auto_language_defaults_to_zh():
 
 
 # ---------- create_asr_backend factory --------------------------------------
+
 
 def test_create_asr_backend_mock():
     assert isinstance(create_asr_backend("mock"), MockASRBackend)
@@ -67,6 +69,7 @@ def test_create_asr_backend_unknown():
 
 
 # ---------- MimoASRBackend --------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_mimo_backend_transcribe_with_fixture():
@@ -142,10 +145,7 @@ def test_mimo_backend_rejects_high_risk_refusal_text():
         "choices": [
             {
                 "message": {
-                    "content": (
-                        "The request was rejected because it was considered "
-                        "high risk"
-                    ),
+                    "content": ("The request was rejected because it was considered high risk"),
                 },
             },
         ],
@@ -226,10 +226,7 @@ def test_resolve_base_url_known_profiles():
     assert resolve_base_url("token_plan_ams") == PROFILE_BASE_URLS["token_plan_ams"]
     assert resolve_base_url("pay_as_you_go") == PROFILE_BASE_URLS["pay_as_you_go"]
     # Trailing slash on custom URL is stripped to match preset normalisation.
-    assert (
-        resolve_base_url("custom", "https://relay.example.com/v1/")
-        == "https://relay.example.com/v1"
-    )
+    assert resolve_base_url("custom", "https://relay.example.com/v1/") == "https://relay.example.com/v1"
 
 
 def test_resolve_base_url_unknown_profile_raises():
@@ -351,10 +348,12 @@ def _make_reader(answers):
 def test_init_wizard_collect_token_plan_cn():
     from bili_unit.processing.audio._init_wizard import collect_config
 
-    reader = _make_reader([
-        "1",            # profile choice → token_plan_cn
-        "tp-mykey",     # api key
-    ])
+    reader = _make_reader(
+        [
+            "1",  # profile choice → token_plan_cn
+            "tp-mykey",  # api key
+        ]
+    )
     fields = collect_config(reader=reader)
     assert fields["BILI_PROCESSING_ASR_BACKEND"] == "mimo"
     assert fields["BILI_PROCESSING_ASR_PROFILE"] == "token_plan_cn"
@@ -366,10 +365,12 @@ def test_init_wizard_collect_token_plan_cn():
 def test_init_wizard_collect_pay_as_you_go():
     from bili_unit.processing.audio._init_wizard import collect_config
 
-    reader = _make_reader([
-        "4",            # pay_as_you_go
-        "sk-test123",   # api key
-    ])
+    reader = _make_reader(
+        [
+            "4",  # pay_as_you_go
+            "sk-test123",  # api key
+        ]
+    )
     fields = collect_config(reader=reader)
     assert fields["BILI_PROCESSING_ASR_PROFILE"] == "pay_as_you_go"
     assert fields["BILI_PROCESSING_ASR_API_KEY"] == "sk-test123"
@@ -378,12 +379,14 @@ def test_init_wizard_collect_pay_as_you_go():
 def test_init_wizard_collect_custom_profile():
     from bili_unit.processing.audio._init_wizard import collect_config
 
-    reader = _make_reader([
-        "5",                                     # custom profile
-        "https://relay.example.com/v1/",         # base url (trailing slash to test strip)
-        "2",                                     # auth_style → bearer
-        "relay-key-xyz",                         # api key
-    ])
+    reader = _make_reader(
+        [
+            "5",  # custom profile
+            "https://relay.example.com/v1/",  # base url (trailing slash to test strip)
+            "2",  # auth_style → bearer
+            "relay-key-xyz",  # api key
+        ]
+    )
     fields = collect_config(reader=reader)
     assert fields["BILI_PROCESSING_ASR_PROFILE"] == "custom"
     assert fields["BILI_PROCESSING_ASR_BASE_URL"] == "https://relay.example.com/v1"
@@ -394,13 +397,15 @@ def test_init_wizard_collect_custom_profile():
 def test_init_wizard_reprompts_on_invalid_then_succeeds():
     from bili_unit.processing.audio._init_wizard import collect_config
 
-    reader = _make_reader([
-        "9",            # invalid profile (>5)
-        "abc",          # invalid (non-digit)
-        "1",            # valid → token_plan_cn
-        "",             # empty key → reprompt
-        "tp-key",       # valid key
-    ])
+    reader = _make_reader(
+        [
+            "9",  # invalid profile (>5)
+            "abc",  # invalid (non-digit)
+            "1",  # valid → token_plan_cn
+            "",  # empty key → reprompt
+            "tp-key",  # valid key
+        ]
+    )
     fields = collect_config(reader=reader)
     assert fields["BILI_PROCESSING_ASR_PROFILE"] == "token_plan_cn"
     assert fields["BILI_PROCESSING_ASR_API_KEY"] == "tp-key"
@@ -413,13 +418,16 @@ def test_init_wizard_write_env_appends_and_overwrites(tmp_path):
     # Pre-existing content: a fetching cred line + a stale ASR config the
     # wizard should overwrite.
     env_path.write_text(
-        "\n".join([
-            "BILI_SESSDATA=keep-me",
-            "BILI_PROCESSING_ASR_BACKEND=mock",
-            "BILI_PROCESSING_ASR_API_KEY=stale-key",
-            "# A comment to preserve",
-            "BILI_PROCESSING_ASR_LANGUAGE=zh",  # unmanaged ASR_* key, must survive
-        ]) + "\n",
+        "\n".join(
+            [
+                "BILI_SESSDATA=keep-me",
+                "BILI_PROCESSING_ASR_BACKEND=mock",
+                "BILI_PROCESSING_ASR_API_KEY=stale-key",
+                "# A comment to preserve",
+                "BILI_PROCESSING_ASR_LANGUAGE=zh",  # unmanaged ASR_* key, must survive
+            ]
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -535,6 +543,7 @@ async def test_init_mimo_handler_runs_probe_when_requested(monkeypatch, capsys):
 
 # ---------- ffmpeg discovery -------------------------------------------------
 
+
 def test_resolve_ffmpeg_auto_prefers_system_or_falls_back(monkeypatch):
     """When auto, system path wins; if system missing, fall back to imageio."""
     _resolve.cache_clear()
@@ -574,6 +583,7 @@ def test_is_available_auto():
 
 # ---------- compute_segment_seconds (token-budget) ---------------------------
 
+
 def test_compute_segment_seconds_short_clip_returns_none():
     """Clip already under budget — caller should not segment."""
     # 60 s * 6.5 t/s = 390 tokens, under 5400 budget.
@@ -607,6 +617,7 @@ def test_compute_segment_seconds_handles_invalid_inputs():
 
 # ---------- max_completion_tokens payload -----------------------------------
 
+
 @pytest.mark.asyncio
 async def test_mimo_backend_passes_max_completion_tokens():
     """When max_completion_tokens is set, payload must include max_tokens."""
@@ -619,11 +630,13 @@ async def test_mimo_backend_passes_max_completion_tokens():
 
     mock_resp = MagicMock()
     mock_resp.status = 200
-    mock_resp.json = AsyncMock(return_value={
-        "choices": [{"message": {"content": "ok"}}],
-        "usage": {"seconds": 1},
-        "model": "mimo-v2.5-asr",
-    })
+    mock_resp.json = AsyncMock(
+        return_value={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"seconds": 1},
+            "model": "mimo-v2.5-asr",
+        }
+    )
     mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -650,11 +663,13 @@ async def test_mimo_backend_omits_max_tokens_when_none():
 
     mock_resp = MagicMock()
     mock_resp.status = 200
-    mock_resp.json = AsyncMock(return_value={
-        "choices": [{"message": {"content": "ok"}}],
-        "usage": {"seconds": 1},
-        "model": "mimo-v2.5-asr",
-    })
+    mock_resp.json = AsyncMock(
+        return_value={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"seconds": 1},
+            "model": "mimo-v2.5-asr",
+        }
+    )
     mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -673,6 +688,7 @@ async def test_mimo_backend_omits_max_tokens_when_none():
 
 
 # ---------- convert_single decision tree -------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_convert_single_token_budget_no_split(tmp_path):
@@ -819,8 +835,14 @@ async def test_convert_single_segment_cap_still_uses_vad(tmp_path):
         Path(output_path).write_bytes(b"x" * 1024)
         return Path(output_path)
 
-    async def fake_detect(input_path, *, ffmpeg_setting, threshold,  # noqa: ARG001
-                          min_silence_sec, min_speech_sec):
+    async def fake_detect(
+        input_path,
+        *,
+        ffmpeg_setting,
+        threshold,  # noqa: ARG001
+        min_silence_sec,
+        min_speech_sec,
+    ):
         detect_calls.append({"threshold": threshold})
         return [
             (0.0, 108.0),
@@ -935,8 +957,14 @@ async def test_convert_single_uses_vad_when_token_budget_triggers(tmp_path):
         Path(output_path).write_bytes(b"x" * 1024)
         return Path(output_path)
 
-    async def fake_detect(input_path, *, ffmpeg_setting, threshold,  # noqa: ARG001
-                          min_silence_sec, min_speech_sec):
+    async def fake_detect(
+        input_path,
+        *,
+        ffmpeg_setting,
+        threshold,  # noqa: ARG001
+        min_silence_sec,
+        min_speech_sec,
+    ):
         detect_calls.append({"threshold": threshold})
         # One big silence gap from 700-720 — pick_split_points should cut at 710.
         return [(0.0, 700.0), (720.0, 1033.0)]
@@ -1078,6 +1106,7 @@ async def test_convert_single_vad_failure_falls_back_to_fixed(tmp_path):
 
 # ---------- AudioDownloader: size cap + timeout ----------------------------
 
+
 @pytest.mark.asyncio
 async def test_audio_downloader_size_cap():
     """iter_chunked yielding more bytes than max_size_bytes raises DownloadError."""
@@ -1138,18 +1167,23 @@ async def test_audio_downloader_timeout_set():
     class FakeSession:
         def __init__(self, *, timeout=None, **kw):
             captured_timeout.append(timeout)
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             pass
+
         def get(self, url, headers=None):
             resp = AsyncMock()
             resp.__aenter__ = AsyncMock(return_value=resp)
             resp.__aexit__ = AsyncMock(return_value=False)
             resp.status = 200
+
             async def _empty(size):  # noqa: ARG001
                 return
                 yield  # make it an async generator
+
             resp.content = MagicMock()
             resp.content.iter_chunked = _empty
             return resp
@@ -1167,6 +1201,7 @@ async def test_audio_downloader_timeout_set():
 
 
 # ---------- cleanup_orphan_temp_dirs ----------------------------------------
+
 
 def test_cleanup_orphan_temp_dirs_removes_lone_full_mp3(tmp_path):
     """A full.mp3 with no sibling 'segments' dir and old mtime is removed."""
@@ -1217,10 +1252,12 @@ def test_cleanup_orphan_temp_dirs_keeps_recent_or_in_progress(tmp_path):
 def test_cleanup_orphan_temp_dirs_missing_root_returns_zero(tmp_path):
     """Non-existent temp root returns 0 without raising."""
     from bili_unit.processing.audio._converter import cleanup_orphan_temp_dirs
+
     assert cleanup_orphan_temp_dirs(tmp_path / "does_not_exist") == 0
 
 
 # ---------- A2: LengthTruncatedError + per-call max_tokens override ----------
+
 
 def test_mimo_backend_raises_length_truncated_error_on_finish_reason_length():
     """``finish_reason='length'`` raises the specific ``LengthTruncatedError``.
@@ -1263,11 +1300,13 @@ async def test_mimo_backend_per_call_max_tokens_override():
 
     mock_resp = MagicMock()
     mock_resp.status = 200
-    mock_resp.json = AsyncMock(return_value={
-        "choices": [{"message": {"content": "ok"}}],
-        "usage": {"seconds": 1},
-        "model": "mimo-v2.5-asr",
-    })
+    mock_resp.json = AsyncMock(
+        return_value={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"seconds": 1},
+            "model": "mimo-v2.5-asr",
+        }
+    )
     mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -1291,6 +1330,7 @@ async def test_mimo_backend_per_call_max_tokens_override():
 
 # ---------- A2: _doubling_attempts pure helper -------------------------------
 
+
 def test_doubling_attempts_helper():
     from bili_unit.processing.runner._audio_work import _doubling_attempts
 
@@ -1306,6 +1346,7 @@ def test_doubling_attempts_helper():
 
 
 # ---------- C3: audio_failure_category ---------------------------------------
+
 
 def test_audio_failure_category_covers_each_branch():
     from bili_unit.processing import (

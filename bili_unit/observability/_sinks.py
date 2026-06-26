@@ -144,14 +144,16 @@ class JsonlSink:
         self._lock = asyncio.Lock()
 
     async def start_run(self, context: RunContext) -> None:
-        await self._append({
-            "type": "run.started",
-            "run_id": context.run_id,
-            "uid": context.uid,
-            "command": context.command,
-            "args": context.args,
-            "started_at_ms": context.started_at_ms,
-        })
+        await self._append(
+            {
+                "type": "run.started",
+                "run_id": context.run_id,
+                "uid": context.uid,
+                "command": context.command,
+                "args": context.args,
+                "started_at_ms": context.started_at_ms,
+            }
+        )
 
     async def emit(self, event: RunEvent) -> None:
         payload = {"type": "event", **event.to_dict()}
@@ -164,15 +166,17 @@ class JsonlSink:
         *,
         summary: dict[str, Any] | None = None,
     ) -> None:
-        await self._append({
-            "type": "run.completed",
-            "run_id": context.run_id,
-            "uid": context.uid,
-            "command": context.command,
-            "status": status,
-            "summary": summary or {},
-            "ended_at_ms": now_ms(),
-        })
+        await self._append(
+            {
+                "type": "run.completed",
+                "run_id": context.run_id,
+                "uid": context.uid,
+                "command": context.command,
+                "status": status,
+                "summary": summary or {},
+                "ended_at_ms": now_ms(),
+            }
+        )
 
     async def _append(self, payload: dict[str, Any]) -> None:
         async with self._lock:
@@ -237,8 +241,6 @@ class SqliteSink:
         summary: dict[str, Any] | None = None,
     ) -> None:
         await self._main.execute(
-            "UPDATE stage_run "
-            "SET status = ?, ended_at_ms = ?, summary_json = ? "
-            "WHERE run_id = ?",
+            "UPDATE stage_run SET status = ?, ended_at_ms = ?, summary_json = ? WHERE run_id = ?",
             (status, now_ms(), _dump_json(summary), context.run_id),
         )

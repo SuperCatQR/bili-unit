@@ -85,7 +85,5 @@ def create_asr_backend(backend_name: str, **kw: Any) -> ASRBackend:
             settings = get_settings()
         return create_mimo_backend(settings)
     if name == "whisper":
-        raise NotImplementedError(
-            "ASR backend 'whisper' is scheduled for a future batch."
-        )
+        raise NotImplementedError("ASR backend 'whisper' is scheduled for a future batch.")
     raise ValueError(f"unknown ASR backend: {backend_name!r}")
