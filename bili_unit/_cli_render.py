@@ -161,6 +161,12 @@ class CliRenderer:
         parts = ", ".join(f"{key}={value}" for key, value in stats.items())
         self.line(f"  {parts}")
 
+    def doctor_report(self, report: Any) -> None:
+        """Render a DoctorReport: one ``  <name>: <STATUS> (<detail>)`` line per check."""
+        for result in report.results:
+            detail = f" ({result.detail})" if result.detail else ""
+            self.line(f"  {result.name}: {result.status.value}{detail}")
+
     def attention_events(self, summary: RunSummary, *, limit: int = 5) -> None:
         events = summary.recent_attention_events[-limit:]
         if not events:

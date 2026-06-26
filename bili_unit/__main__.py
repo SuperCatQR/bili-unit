@@ -234,6 +234,20 @@ async def _handle_tui(_args: argparse.Namespace) -> None:
     await run_tui()
 
 
+async def _handle_doctor(args: argparse.Namespace) -> None:
+    """Read-only preflight: validate credential / db_dir / (opt) ASR before a run."""
+    from bili_unit.doctor import run_doctor
+
+    report = await run_doctor(
+        get_settings(),
+        uid=args.uid,
+        check_asr=args.check_asr,
+    )
+    CliRenderer().doctor_report(report)
+    if not report.ok:
+        raise SystemExit(1)
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -337,6 +351,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("tui", help="Open the local dashboard TUI")
 
+    # --- doctor ---
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Read-only preflight: check credential / db_dir / ASR before a run",
+    )
+    p_doctor.add_argument(
+        "uid",
+        type=int,
+        nargs="?",
+        default=None,
+        help="Optional uid; if given, also report whether it has an active run",
+    )
+    p_doctor.add_argument(
+        "--check-asr",
+        action="store_true",
+        help="Also probe the configured ASR backend once (network; off by default)",
+    )
+
     # --- delete-uid ---
     p_del = sub.add_parser("delete-uid", help="Delete all data for a uid")
     p_del.add_argument("uid", type=int, help="Target Bilibili user uid")
@@ -437,6 +469,7 @@ def main() -> None:
         "asr": _handle_asr,
         "delete-uid": _handle_delete_uid,
         "tui": _handle_tui,
+        "doctor": _handle_doctor,
         "login": _handle_login,
         "init-mimo": _handle_init_mimo,
     }

@@ -32,11 +32,16 @@ uv run bili-unit init-mimo --test                  # （可选）配置并探测
 写侧命令 + 删除 + 凭据：
 
 ```bash
+uv run bili-unit doctor                           # 跑前预检：凭据 / 存储目录是否就绪（只读，不写任何文件）
+uv run bili-unit doctor <uid> --check-asr          # 额外探 ASR 后端可达性 + 该 uid 是否有在跑的任务
 uv run bili-unit fetch <uid>                       # 抓取所有端点的 raw payload
 uv run bili-unit asr <uid>                         # ASR 转录该 uid 下所有视频
 uv run bili-unit tui                               # 打开本地 dashboard TUI
 uv run bili-unit delete-uid <uid> -y               # 删除某 uid 全部数据（不可逆）
 ```
+
+`doctor` 是只读预检：校验凭据是否有效（一次 GET nav，不回显登录身份）、`BILI_DB_DIR` 是否可写（不存在但父目录可写 → `WILL CREATE`，并不真建），默认不触网；加 `--check-asr` 才探一次 ASR 后端，传 `uid` 才报该 uid 是否有在跑的任务。全部通过退出码 0，任一项 `MISSING/INVALID/NOT CONFIGURED/FAIL/ERROR` 退出码 1，可作 `doctor && fetch <uid>` 前置门禁；`WARN`（有任务在跑）不计入失败。
+
 
 `tui` 是可移植的 line-mode dashboard：查看 uid、当前状态、推荐动作与最近事件；`n` 输入新 uid 并启动 fetch；`f/a` 触发带 preflight 的 fetch/asr；`d` 走确认删除。后续会在同一 `BiliWorkbench` 边界上替换为全屏交互界面。
 
