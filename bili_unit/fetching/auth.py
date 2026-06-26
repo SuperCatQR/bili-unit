@@ -3,22 +3,31 @@
 import asyncio
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from bilibili_api import Credential, login_v2
 
 from .._env import get_settings, reload_settings
 from . import AuthError
 
+if TYPE_CHECKING:
+    from .._env import BiliSettings
+
 logger = logging.getLogger("bili.fetching.auth")
 
 
-async def get_credential() -> Credential:
+async def get_credential(settings: "BiliSettings | None" = None) -> Credential:
     """Return a Credential instance from env settings.
+
+    ``settings`` lets a caller inject an explicit ``BiliSettings`` (e.g. the
+    doctor preflight, which threads its own settings through every check); when
+    omitted the process-global settings are used.
 
     Raises AuthError when mandatory fields are missing.
     Does NOT write back to .env on refresh.
     """
-    settings = get_settings()
+    if settings is None:
+        settings = get_settings()
 
     sessdata = settings.bili_sessdata.strip()
     jct = settings.bili_jct.strip()

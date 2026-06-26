@@ -15,7 +15,7 @@ from bili_unit.doctor import (
     run_doctor,
 )
 from bili_unit.fetching import AuthError
-from bili_unit.processing import ASRConfigError, ASRConnectionError
+from bili_unit.processing import ASRAPIError, ASRConfigError, ASRConnectionError
 
 
 class _Settings:
@@ -45,7 +45,7 @@ def _result(report: DoctorReport, name: str) -> CheckResult:
 # ---------------------------------------------------------------------------
 
 async def test_credential_ok_when_valid(monkeypatch, tmp_path: Path) -> None:
-    async def fake_get_credential() -> _FakeCredential:
+    async def fake_get_credential(settings=None) -> _FakeCredential:
         return _FakeCredential(valid=True)
 
     monkeypatch.setattr("bili_unit.fetching.auth.get_credential", fake_get_credential)
@@ -59,7 +59,7 @@ async def test_credential_ok_when_valid(monkeypatch, tmp_path: Path) -> None:
 
 
 async def test_credential_missing_when_no_sessdata(monkeypatch, tmp_path: Path) -> None:
-    async def fake_get_credential():
+    async def fake_get_credential(settings=None):
         raise AuthError("Missing BILI_SESSDATA in .env")
 
     monkeypatch.setattr("bili_unit.fetching.auth.get_credential", fake_get_credential)
@@ -70,7 +70,7 @@ async def test_credential_missing_when_no_sessdata(monkeypatch, tmp_path: Path) 
 
 
 async def test_credential_invalid_when_check_valid_false(monkeypatch, tmp_path: Path) -> None:
-    async def fake_get_credential() -> _FakeCredential:
+    async def fake_get_credential(settings=None) -> _FakeCredential:
         return _FakeCredential(valid=False)
 
     monkeypatch.setattr("bili_unit.fetching.auth.get_credential", fake_get_credential)
@@ -85,7 +85,7 @@ async def test_credential_error_when_check_valid_raises(monkeypatch, tmp_path: P
         async def check_valid(self) -> bool:
             raise RuntimeError("network down")
 
-    async def fake_get_credential() -> _BoomCredential:
+    async def fake_get_credential(settings=None) -> _BoomCredential:
         return _BoomCredential()
 
     monkeypatch.setattr("bili_unit.fetching.auth.get_credential", fake_get_credential)
@@ -99,12 +99,29 @@ async def test_credential_error_when_check_valid_raises(monkeypatch, tmp_path: P
     assert not report.ok
 
 
+async def test_credential_uses_injected_settings(monkeypatch, tmp_path: Path) -> None:
+    # S2 regression: the credential check must thread run_doctor's settings
+    # into get_credential, not silently fall back to the process-global ones.
+    captured: dict = {}
+
+    async def fake_get_credential(settings=None) -> _FakeCredential:
+        captured["settings"] = settings
+        return _FakeCredential(valid=True)
+
+    monkeypatch.setattr("bili_unit.fetching.auth.get_credential", fake_get_credential)
+
+    settings = _Settings(db_dir=str(tmp_path))
+    report = await run_doctor(settings)
+    assert captured["settings"] is settings
+    assert _result(report, "credential").status is CheckStatus.OK
+
+
 # ---------------------------------------------------------------------------
 # db_dir
 # ---------------------------------------------------------------------------
 
 async def _ok_credential(monkeypatch) -> None:
-    async def fake_get_credential() -> _FakeCredential:
+    async def fake_get_credential(settings=None) -> _FakeCredential:
         return _FakeCredential(valid=True)
 
     monkeypatch.setattr("bili_unit.fetching.auth.get_credential", fake_get_credential)
@@ -194,7 +211,7 @@ async def test_asr_fail_on_connection_error(monkeypatch, tmp_path: Path) -> None
     await _ok_credential(monkeypatch)
 
     async def fake_probe(*, settings):
-        raise ASRConnectionError("HTTP 401 unauthorized")
+        raise ASRConnectionError("MiMo ASR connection error: cannot connect to host")
 
     monkeypatch.setattr("bili_unit.processing.audio._init_wizard.probe_mimo_model", fake_probe)
 
@@ -203,6 +220,26 @@ async def test_asr_fail_on_connection_error(monkeypatch, tmp_path: Path) -> None
         check_asr=True,
     )
     assert _result(report, "asr_backend").status is CheckStatus.FAIL
+    assert not report.ok
+
+
+async def test_asr_fail_on_api_error_401(monkeypatch, tmp_path: Path) -> None:
+    # M1 regression: a wrong key yields a 401 → ASRAPIError (not Connection/
+    # Config). It must map to FAIL (<status>), not bubble up to ERROR.
+    await _ok_credential(monkeypatch)
+
+    async def fake_probe(*, settings):
+        raise ASRAPIError("MiMo ASR returned 401: {'error': 'invalid api key'}")
+
+    monkeypatch.setattr("bili_unit.processing.audio._init_wizard.probe_mimo_model", fake_probe)
+
+    report = await run_doctor(
+        _Settings(db_dir=str(tmp_path), backend="mimo", api_key="tp-wrong"),
+        check_asr=True,
+    )
+    asr = _result(report, "asr_backend")
+    assert asr.status is CheckStatus.FAIL
+    assert "401" in asr.detail
     assert not report.ok
 
 

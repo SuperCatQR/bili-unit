@@ -92,7 +92,7 @@ class DoctorReport:
 # orchestrator wraps every call and converts an exception into ERROR).
 # ---------------------------------------------------------------------------
 
-async def _check_credential() -> CheckResult:
+async def _check_credential(settings: BiliSettings) -> CheckResult:
     """Validate the stored credential with one read-only GET nav.
 
     MISSING  — no SESSDATA in .env (``AuthError`` from ``get_credential``).
@@ -106,7 +106,7 @@ async def _check_credential() -> CheckResult:
     from .fetching.auth import get_credential
 
     try:
-        cred = await get_credential()
+        cred = await get_credential(settings)
     except AuthError:
         return CheckResult(
             "credential",
@@ -131,6 +131,10 @@ def _check_db_dir(settings: BiliSettings) -> CheckResult:
     WILL CREATE  — does not exist yet but the nearest existing ancestor is
                    writable (doctor does NOT create it; fetch/asr will).
     FAIL         — exists but not writable, or no writable ancestor exists.
+
+    Note: on Windows ``os.access(W_OK)`` does not consult ACLs, so an OK here
+    can be a false positive on ACL-restricted dirs. Acceptable for a preflight
+    hint — the authoritative check is fetch/asr actually opening the DB.
     """
     db_dir = Path(settings.bili_db_dir)
 
@@ -165,9 +169,10 @@ async def _check_asr_backend(settings: BiliSettings) -> CheckResult:
     NOT CONFIGURED  — mimo backend selected but api_key empty (or custom
                       profile missing base_url).
     OK              — ``probe_mimo_model()`` succeeded.
-    FAIL            — probe hit a network / API error.
+    FAIL            — probe hit a network or API error (e.g. 401 wrong key,
+                      non-200, or an unexpected response shape).
     """
-    from .processing import ASRConfigError, ASRConnectionError
+    from .processing import ASRAPIError, ASRConfigError, ASRConnectionError
     from .processing.audio._init_wizard import probe_mimo_model
 
     backend = (settings.bili_processing_asr_backend or "").strip().lower()
@@ -194,6 +199,13 @@ async def _check_asr_backend(settings: BiliSettings) -> CheckResult:
             f"{exc} — run 'bili-unit init-mimo'",
         )
     except ASRConnectionError as exc:
+        return CheckResult("asr_backend", CheckStatus.FAIL, str(exc))
+    except ASRAPIError as exc:
+        # Non-200 (e.g. 401 wrong key), refusal, or unexpected response shape:
+        # the backend is reachable but the request was rejected. Spec maps this
+        # to FAIL (<http status / error>), not ERROR. LengthTruncatedError /
+        # EmptyTranscriptError subclass this too — for a tiny probe tone any of
+        # them means "configured backend did not yield a usable probe" → FAIL.
         return CheckResult("asr_backend", CheckStatus.FAIL, str(exc))
 
     model = result.model or settings.bili_processing_asr_model or "unknown"
@@ -251,7 +263,9 @@ async def run_doctor(
     """
     report = DoctorReport()
 
-    report.results.append(await _guard("credential", _check_credential))
+    report.results.append(
+        await _guard("credential", lambda: _check_credential(settings)),
+    )
     report.results.append(
         await _guard("db_dir", lambda: _as_async(_check_db_dir(settings))),
     )
