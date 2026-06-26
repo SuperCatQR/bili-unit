@@ -93,14 +93,20 @@
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-**为什么 callable/catalog 留 worker 侧**:`EndpointSpec.callable` / `extract_items` 是 Python 函数对象,
-不可序列化;且 callable 主体直接 `import bilibili_api`。主进程只需要 `EndpointSpec` 的**可序列化元数据**
+**为什么 callable/catalog 留 worker 侧**:`EndpointSpec.callable` 是 Python 函数对象,不可序列化;
+且 callable 主体直接 `import bilibili_api`(执行 SDK 调用)。主进程只需要 `EndpointSpec` 的**可序列化元数据**
 (name/kind/pagination_strategy/rate_limit_key/item_id_path(s)/source_endpoint/needs_parent_uid/credential_required/params_strategy),
 用于编排;真正的 callable 通过 op + endpoint name 在 worker 侧查表执行。
 
+**`extract_items` / `skip_item` 留主进程(不过 IPC)**:虽然它们当前与 callable 同住在
+`import bilibili_api` 的模块里(`_adapters/_video.py`、`_bilibili_adapter.py` 等),但**函数体本身不碰 SDK**
+——`_extract_bvids_from_videos` 等全是纯 dict 取值,且由主进程 runner(`runner/_item_fanout.py`)在已
+`json_safe` 的 payload 上调用。阶段 2 把这些纯提取/跳过 helper **抽到主进程不 import SDK 的模块**即可,
+**它们在主进程跑、不过 IPC**;只有"碰 SDK 的那一次调用"(callable)才过 IPC。
+
 **端点元数据清单(manifest)**:worker 启动后经 `describe_catalog` op 把 63 端点的上述可序列化字段一次性
-交给主进程,主进程据此建本地 spec 视图(callable/extract_items 字段为 None,仅编排用)。
-**主进程的 `extract_items`/分页推进仍在主进程跑**(纯 dict),不经 worker。
+交给主进程,主进程据此建本地 spec 视图(`callable` 字段为 None,仅编排用;`extract_items`/`skip_item`
+绑定主进程本地实现)。**主进程的 `extract_items`/`skip_item`/分页推进仍在主进程跑**(纯 dict),不经 worker。
 
 ---
 
@@ -109,6 +115,8 @@
 - **通道**:worker 作为主进程的子进程(`subprocess` / `asyncio.create_subprocess_exec`)。
   请求经 worker `stdin`,响应经 worker `stdout`。**`stderr` 仅用于 worker 日志**,不参与协议。
 - **帧格式**:**换行分隔 JSON**(NDJSON)——每帧一行 UTF-8 JSON,以 `\n` 结尾,帧内不含裸 `\n`。
+  **每帧必须是单行紧凑 JSON(`json.dumps(..., ensure_ascii=False)`,无 `indent`、无内嵌换行)**;payload 文本里的
+  真实换行由 `json.dumps` 自动转义为 `\\n`,因此一帧恒为一行,接收侧按 `\n` readline 即可分帧。
   (理由:实现简单、可读、调试友好;大对象不走此通道,见 §10,故无需长度前缀。)
 - **编码**:UTF-8。worker 启动必须 `PYTHONIOENCODING=utf-8` 且 stdout 不做行缓冲转换
   (Windows 下显式 `reconfigure(encoding="utf-8", newline="\n")`,避免 CRLF 污染帧)。
@@ -193,7 +201,8 @@
   ],
   "count": 63, "uid_level": 33, "item_level": 30 }
 ```
-- **不可序列化的 `callable` / `extract_items` / `skip_item` 字段不出现在 manifest**(主进程不需要,见 §3)。
+- **不可序列化的函数字段不出现在 manifest**:`callable` 留 worker 侧(主进程不需要);
+  `extract_items` / `skip_item` 虽在主进程跑,但由主进程**本地实现绑定**(见 §3),同样不经 manifest 传输。
 - 主进程**校验** `count==63 && uid_level==33 && item_level==30`,否则视为 worker 与契约不一致 → 报错。
 
 ### 6.3 `fetch_page` / `fetch_item`
@@ -225,6 +234,12 @@
 - `parent_uid` 仅当 manifest 标 `needs_parent_uid=true`(`channel_videos_season|series`、`upower_qa_detail`)时必填;
   worker 侧映射为现有 `**{"_uid": parent_uid}`。其余 item 端点忽略 `parent_uid`。
 - worker 执行 `spec.callable(item_id, <resolved cred>, **extra)`,extra 含 `timeout` 与可选 `_uid`。
+
+> **SDK 枚举参数约定**:多个 callable 把 `bilibili_api` 枚举当默认值
+> (`user.MedialistOrder`/`channel_series.ChannelOrder`/`VideoOrder`/`OrderType` 等,如 `_bilibili_adapter.py:225/595`)。
+> **IPC 只传 JSON 原语(int/str)**,枚举不过 IPC。因为 callable 整体留 worker 侧,枚举的还原也在 worker 侧:
+> worker 收到 `request_params` 里的原语后,按现有 `MedialistOrder(int)`(`_bilibili_adapter.py:244`)等逻辑还原为枚举
+> 再调 SDK。主进程/契约层**不构造、不传递任何 SDK 枚举**;省略该参数时由 worker 用 SDK 默认值。
 
 响应 `data`:`{ "raw_payload": { } }`(单 item 的原始 dict,语义同今天 `_process_single_item` 拿到的 `result`)。
 
@@ -378,6 +393,12 @@ worker 侧映射表(等价于今天 `map_bilibili_errors`,实测核对):
 > 结论:`_downloader.py` 拆为两半——`get_audio_url`(碰 SDK,逻辑搬 worker)与 `download_to_file`(纯 aiohttp,留主进程)。
 > 大字节流走 CDN→主进程的 HTTP 直连,**完全不经 worker / 不经 IPC 帧**。这也避免了 GPL 代码接触下载字节流。
 
+> **worker 侧 aiohttp 的两条例外(刻意保留)**:除上面音频字节由主进程直连 CDN 外,worker 侧自身也用到 aiohttp:
+> `_adapters/_subtitle.py:30 _fetch_subtitle_body` 在 `video_subtitle` callable 内用 `aiohttp` 直取字幕 body JSON,
+> 与 `Video.get_subtitle(cid)` 的 SDK 调用**交织**、并经 `raw_payload` 回传。字幕是**小文本**,过 IPC 没问题,
+> 所以**整个 callable(含其 aiohttp 取字幕)随 callable 留 worker 侧**,worker 包需依赖 `aiohttp`。
+> 区分:**音频字节**(数百 MB)→主进程直连 CDN、不过 IPC;**字幕 body**(小文本)→worker 内随 callable 取、经 raw_payload 过 IPC。
+
 ---
 
 ## 11. 三态验收映射(给阶段 2 + 质保)
@@ -420,7 +441,7 @@ worker 侧映射表(等价于今天 `map_bilibili_errors`,实测核对):
 | # | 问题 | 影响 | 建议处置 |
 |---|---|---|---|
 | Q1 | **法务背书**:F2"独立进程 + arm's-length"是灰色区,非绝对安全。worker 继承含 BILI_* 的环境是否削弱"独立"论证? | 决定 F2 是否真成立 | **实现合入/发版前过法务**(reporter 选 F2 时已知此前提);法务结论入 CHO-34 / 父 issue。 |
-| Q2 | **测试改造面**:`conftest.py` 今天 patch `bilibili_api.Credential` + `runner.get_credential`;37 个测试文件多处 `from bilibili_api.exceptions import ...` 直接构造 SDK 异常断言。worker 化后这些断言点要改为构造**错误包**/ patch `WorkerClient`。 | 阶段 2 改动量主要在此,非业务逻辑 | 阶段 2 提供 `FakeWorker`(内存实现 op,返回固定错误包),test 从 patch SDK 转 patch worker;**不弱化断言**。 |
+| Q2 | **测试改造面**:`conftest.py` 今天 patch `bilibili_api.Credential` + `runner.get_credential`;测试目录 **39 个文件中,`from bilibili_api.exceptions import ...` 的有 5 个、引用 `bilibili_api`(任意符号)的共 9 个**,这些点直接构造 SDK 异常/对象做断言。worker 化后这些断言点要改为构造**错误包**/ patch `WorkerClient`。 | 阶段 2 改动量主要在此,非业务逻辑;改造面比"全量测试"小得多(仅 9/39 文件触 SDK) | 阶段 2 提供 `FakeWorker`(内存实现 op,返回固定错误包),test 从 patch SDK 转 patch worker;**不弱化断言**。 |
 | Q3 | **worker 是否复用同一 event loop 抓多 uid**:今天 `fetch_uid` 每次开 `UidContext`;worker 是常驻还是每命令一个? | 性能 / 凭据池生命周期 | 建议**常驻 + 凭据 ref 池**,命令结束不杀 worker(asr/fetch 连用更快);进程退出才杀。 |
 | Q4 | **`init_http_backend` 的 curl_cffi/impersonate** 现在主进程配;worker 化后由 worker 装 `curl_cffi`(GPL 无关,worker 包的可选依赖)。 | 反爬能力归属 worker | worker 包带 `anti-detect` extra;主仓移除该 SDK 相关 optional dep。 |
 | Q5 | **`request_settings`/`select_client` 全局态**:SDK 用全局单例配置 HTTP 后端;worker 单进程内 OK,但若 Q3 选每命令一进程则每次重配。 | 与 Q3 绑定 | 随 Q3 定;常驻 worker 则 `init_http_backend` 一次即可。 |
@@ -433,10 +454,10 @@ worker 侧映射表(等价于今天 `map_bilibili_errors`,实测核对):
 # 流程状态
 
 - 当前团队:后端
-- 当前节点:整合
+- 当前节点:整合(评审退回后修订)
 - 上游输入是否充分:是(reporter 已选 F2;PRD 第 2 节 + CHO-34 决策齐备;我已 checkout 实测核对 9 模块 import 面 + 63 端点 manifest + 错误映射分支)
-- 本节点是否完成:是(阶段 1 IPC 契约文档完成:传输层 / 12 个 op / 可序列化错误包 / 凭据 / 生命周期 / 下载流式 / 三态验收 / 红线 / 待确认 6 项)
+- 本节点是否完成:是(阶段 1 IPC 契约文档完成 + 已按后端审查意见修订:§3 extract_items/skip_item 归属改为"留主进程"、§4.1 NDJSON 单行紧凑约定、§6.3 SDK 枚举参数约定、§10 字幕 aiohttp 例外、§13 Q2 测试数字改准为 9/39)
 - 是否需要 Battle:否
-- 是否需要退回:否
-- 下一个交付对象:后端审查(**先评审本 IPC 契约**;过审后才进阶段 2 worker 实现,实现再走后端审查 → 质量保障)
+- 是否需要退回:否(已消化审查的 1 阻塞 + 3 建议 + 1 疑问,回审)
+- 下一个交付对象:后端审查(复核修订;过审后才进阶段 2 worker 实现,实现再走后端审查 → 质量保障)
 - 备注:**(1)** 本文是阶段 1 唯一交付物,**契约未过审不写实现、不合并**;**(2)** Q1 法务背书是阶段 2 合入/发版的前置阻塞项,不在本节点解决;**(3)** 错误包契约直接是 CHO-32(D 统一错误分类)的落地对象,D 在本项之后做;**(4)** 主进程零 `bilibili_api` + 大字节流/明文凭据不过 IPC 是不可让步的红线。
