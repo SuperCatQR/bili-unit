@@ -155,6 +155,33 @@ async def test_db_dir_fail_when_path_is_a_file(monkeypatch, tmp_path: Path) -> N
     assert not report.ok
 
 
+async def test_db_dir_fail_when_existing_but_not_writable(monkeypatch, tmp_path: Path) -> None:
+    # Acceptance (异常态): db_dir exists but is not writable → FAIL, exit 1.
+    # os.access is patched (rather than chmod) so the branch is exercised
+    # deterministically on every platform, incl. Windows where W_OK is unreliable.
+    await _ok_credential(monkeypatch)
+    monkeypatch.setattr("bili_unit.doctor.os.access", lambda path, mode: False)
+    report = await run_doctor(_Settings(db_dir=str(tmp_path)))
+    db = _result(report, "db_dir")
+    assert db.status is CheckStatus.FAIL
+    assert "not writable" in db.detail
+    assert not report.ok
+
+
+async def test_db_dir_fail_when_absent_and_no_writable_ancestor(monkeypatch, tmp_path: Path) -> None:
+    # Acceptance (异常态): target absent and the nearest existing ancestor is
+    # not writable → FAIL (doctor still creates nothing).
+    await _ok_credential(monkeypatch)
+    monkeypatch.setattr("bili_unit.doctor.os.access", lambda path, mode: False)
+    target = tmp_path / "nested" / "bili"
+    report = await run_doctor(_Settings(db_dir=str(target)))
+    db = _result(report, "db_dir")
+    assert db.status is CheckStatus.FAIL
+    assert "parent not writable" in db.detail
+    assert not report.ok
+    assert not target.exists()
+
+
 # ---------------------------------------------------------------------------
 # asr_backend
 # ---------------------------------------------------------------------------
