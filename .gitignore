@@ -44,3 +44,4 @@ error/
 
 # Local runtime logs (e.g. ad-hoc monitoring scripts under tools/)
 logs/
+bili-worker-repo/
