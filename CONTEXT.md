@@ -2,9 +2,10 @@
 
 Bilibili 数据持久化单元。给定目标用户 uid，把 B 站读取端点的原始响应落到本地 SQLite，再对视频音频做 ASR 转录、把转写结果写进同一个文件。本项目独立可用、独立发版；跨源归一化、字段提升、检索不在仓库范围内。
 
-> **F2 进程隔离**：所有 `bilibili-api` SDK 调用已剥离到独立 GPL-3.0 组件
+> **F2 进程隔离（Stage 1 — 仓库拆分）**：`bili-worker` 已拆分为独立 GPL-3.0 组件
 > **[bili-worker](https://github.com/SuperCatQR/bili-worker)**（独立仓库、独立发版）。
-> 主进程通过 stdio NDJSON IPC 协议与 worker 子进程通信，不 import、不链接任何 GPL 代码。
+> 主进程通过 stdio NDJSON IPC 协议与 worker 子进程通信。
+> `bili_unit/fetching/` 模块的 `bilibili-api` SDK 调用将在后续 Step 中逐步迁移到 worker IPC。
 > 详见 [docs/ipc-contract-f2.md](docs/ipc-contract-f2.md)。
 
 ## Language

@@ -133,10 +133,14 @@ conn.execute("PRAGMA busy_timeout = 5000")
 
 ### F2 进程隔离：`bili-worker`
 
-为满足 GPL arm's-length 合规要求，所有 `bilibili-api` SDK 调用已剥离到独立 GPL-3.0 组件
+为满足 GPL arm's-length 合规要求，`bili-worker` 已拆分为独立 GPL-3.0 组件
 **[bili-worker](https://github.com/SuperCatQR/bili-worker)**（独立仓库、独立发版）。
 主进程通过 **stdio NDJSON IPC 协议**（见 [docs/ipc-contract-f2.md](docs/ipc-contract-f2.md)）
-与 worker 子进程通信，**不 import、不链接**任何 GPL 代码。
+与 worker 子进程通信。
+
+**当前阶段（Stage 1 — 仓库拆分）**：`bili_worker/` 目录已从主仓移除，worker 可独立 `pip install` 和独立运行。
+主进程 `bili_unit/fetching/` 模块的 `bilibili-api` SDK 调用将在后续 Step 中逐步迁移到 worker IPC
+（详见 `docs/ipc-contract-f2.md` §3 进程边界）。
 
 - **worker 仓库**：https://github.com/SuperCatQR/bili-worker
 - **依赖声明**：`pyproject.toml` 中 `bili-worker @ git+https://github.com/SuperCatQR/bili-worker.git`
