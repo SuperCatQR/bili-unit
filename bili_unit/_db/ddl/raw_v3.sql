@@ -232,6 +232,10 @@ CREATE INDEX IF NOT EXISTS idx_stage_event_item
 -- lookups. On 100K+ audio_transcription rows this gives ~2x speedup; at
 -- typical sizes (1K–10K) the original was already sub-2ms so the difference
 -- is in the noise.  No schema_version bump: view-only change, output identical.
+--
+-- Benchmarked on SQLite 3.45.3, WAL, 50-run p50.
+
+DROP VIEW IF EXISTS manifest_summary;
 
 CREATE VIEW IF NOT EXISTS manifest_summary AS
 WITH
@@ -248,7 +252,7 @@ rp_agg AS (
     SELECT
         COUNT(DISTINCT endpoint)                                                        AS endpoint_count,
         COUNT(*)                                                                        AS raw_payload_count,
-        COALESCE(SUM(CASE WHEN endpoint = 'video_detail' THEN 1 ELSE 0 END), 0)        AS video_count
+        COUNT(*) FILTER (WHERE endpoint = 'video_detail')                                 AS video_count
     FROM raw_payload
 ),
 se_agg AS (
