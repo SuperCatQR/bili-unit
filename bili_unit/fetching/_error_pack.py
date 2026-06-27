@@ -57,6 +57,13 @@ def classification_of(exc: BaseException) -> Classification:
     ``unavailable`` both to ``PERMANENT``); the 3rd state is carried for worker/main
     parity and observability, but stays consistent with ``classify_fetching_exception``
     — proven by the regression test ``test_fetching_error_pack``.
+
+    NOTE (Step 6, ``resolve_audio_url`` — contract §6.4/§7.2): the audio-download
+    failure (``processing.DownloadError``) is **not** a ``FetchingError`` and must map
+    to ``permanent``. It must NOT be routed through this default (which would yield
+    ``retryable`` and waste the retry budget). The worker side serialises it explicitly
+    with ``classification="permanent"`` (see ``bili_worker.errors.download_error_pack``);
+    do not rely on the default below for download errors.
     """
     if isinstance(exc, ResourceUnavailableError):
         return "unavailable"
