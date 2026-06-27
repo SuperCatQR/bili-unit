@@ -131,6 +131,17 @@ conn.execute("PRAGMA busy_timeout = 5000")
 
 本项目以 **GPL-3.0-only** 许可发行（见 [LICENSE](LICENSE)）。
 
-抓取层基于 [bilibili-api-python](https://github.com/Nemo2011/bilibili-api)（GPL-3.0），其传染条款下本仓库及其衍生作品须保持同等许可。上游项目与文档入口见 [docs/upstream.md](docs/upstream.md)。
+### F2 进程隔离：`bili-worker`
+
+为满足 GPL arm's-length 合规要求，所有 `bilibili-api` SDK 调用已剥离到独立 GPL-3.0 组件
+**[bili-worker](https://github.com/SuperCatQR/bili-worker)**（独立仓库、独立发版）。
+主进程通过 **stdio NDJSON IPC 协议**（见 [docs/ipc-contract-f2.md](docs/ipc-contract-f2.md)）
+与 worker 子进程通信，**不 import、不链接**任何 GPL 代码。
+
+- **worker 仓库**：https://github.com/SuperCatQR/bili-worker
+- **依赖声明**：`pyproject.toml` 中 `bili-worker @ git+https://github.com/SuperCatQR/bili-worker.git`
+- **IPC 协议**：[docs/ipc-contract-f2.md](docs/ipc-contract-f2.md)
+
+抓取层基于 [bilibili-api-python](https://github.com/Nemo2011/bilibili-api)（GPL-3.0），其传染条款下 worker 组件须保持同等许可。上游项目与文档入口见 [docs/upstream.md](docs/upstream.md)。
 
 ASR 后端默认对接 [小米 MiMo ASR](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/Speech-Recognition)（OpenAI-compatible chat completions 接口），可配置走 Token Plan / pay-as-you-go / 自托管中转。VAD 用 [pysilero-vad](https://github.com/rhasspy/pysilero-vad)。
