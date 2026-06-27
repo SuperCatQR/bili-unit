@@ -147,16 +147,34 @@ async def convert_m4s_to_mp3(
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        try:
+            with contextlib.suppress(ProcessLookupError):
+                await proc.wait()
+        except Exception as _cleanup_exc:
+            logger.warning(
+                "ffmpeg_cleanup_wait_failed",
+                extra={
+                    "path": str(inp),
+                    "error": f"{type(_cleanup_exc).__name__}: {_cleanup_exc}",
+                },
+            )
         raise ConvertError(
             f"ffmpeg conversion timed out after {_FFMPEG_TIMEOUT}s: {inp}"
         ) from None
     except BaseException:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        try:
+            with contextlib.suppress(ProcessLookupError):
+                await proc.wait()
+        except Exception as _cleanup_exc:
+            logger.warning(
+                "ffmpeg_cleanup_wait_failed",
+                extra={
+                    "path": str(inp),
+                    "error": f"{type(_cleanup_exc).__name__}: {_cleanup_exc}",
+                },
+            )
         raise
 
     if proc.returncode != 0:
@@ -225,16 +243,34 @@ async def convert_and_segment(
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        try:
+            with contextlib.suppress(ProcessLookupError):
+                await proc.wait()
+        except Exception as _cleanup_exc:
+            logger.warning(
+                "ffmpeg_cleanup_wait_failed",
+                extra={
+                    "path": str(inp),
+                    "error": f"{type(_cleanup_exc).__name__}: {_cleanup_exc}",
+                },
+            )
         raise ConvertError(
             f"ffmpeg segmentation timed out after {_FFMPEG_TIMEOUT}s: {inp}"
         ) from None
     except BaseException:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        try:
+            with contextlib.suppress(ProcessLookupError):
+                await proc.wait()
+        except Exception as _cleanup_exc:
+            logger.warning(
+                "ffmpeg_cleanup_wait_failed",
+                extra={
+                    "path": str(inp),
+                    "error": f"{type(_cleanup_exc).__name__}: {_cleanup_exc}",
+                },
+            )
         raise
 
     if proc.returncode != 0:
@@ -307,8 +343,17 @@ async def convert_at_points(
         except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+            try:
+                with contextlib.suppress(ProcessLookupError):
+                    await proc.wait()
+            except Exception as _cleanup_exc:
+                logger.warning(
+                    "ffmpeg_cleanup_wait_failed",
+                    extra={
+                        "path": str(inp),
+                        "error": f"{type(_cleanup_exc).__name__}: {_cleanup_exc}",
+                    },
+                )
             raise ConvertError(
                 f"ffmpeg trim timed out after {_FFMPEG_TIMEOUT}s "
                 f"({start_s:.1f}-{end_s:.1f}): {inp}"
@@ -316,8 +361,17 @@ async def convert_at_points(
         except BaseException:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+            try:
+                with contextlib.suppress(ProcessLookupError):
+                    await proc.wait()
+            except Exception as _cleanup_exc:
+                logger.warning(
+                    "ffmpeg_cleanup_wait_failed",
+                    extra={
+                        "path": str(inp),
+                        "error": f"{type(_cleanup_exc).__name__}: {_cleanup_exc}",
+                    },
+                )
             raise
         if proc.returncode != 0:
             raise ConvertError(

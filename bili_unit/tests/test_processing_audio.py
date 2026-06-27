@@ -1329,3 +1329,101 @@ def test_audio_failure_category_covers_each_branch():
     assert audio_failure_category(ASRAPIError("malformed JSON")) == "parse_error"
     # Anything else → unknown.
     assert audio_failure_category(RuntimeError("boom")) == "unknown"
+
+
+# ---------- B: ffmpeg cleanup narrow exception + warning ---------------------
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_cleanup_permission_error_logs_warning(caplog):
+    """Non-ProcessLookupError during cleanup → warning logged, exception re-raised."""
+    import asyncio
+    import contextlib
+    import os
+
+    from bili_unit.processing import ConvertError
+    from bili_unit.processing.audio._converter import convert_m4s_to_mp3
+
+    in_path = Path(_FIXTURES) / "silence_1s.m4s"
+    out_path = Path(_FIXTURES) / "tmp_out.mp3"
+
+    class FakeProc:
+        returncode = None
+
+        async def communicate(self):
+            raise asyncio.TimeoutError("simulated timeout")
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            raise PermissionError("test: denied")
+
+    with (
+        patch(
+            "bili_unit.processing.audio._ffmpeg.resolve_ffmpeg", return_value="ffmpeg"
+        ),
+        patch.object(
+            asyncio, "create_subprocess_exec", return_value=FakeProc()
+        ),
+    ):
+        try:
+            await convert_m4s_to_mp3(in_path, out_path, ffmpeg_setting="auto")
+        except ConvertError:
+            # ConvertError is expected after the cleanup warning is logged.
+            pass
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(out_path)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    cleanup_logs = [r for r in warnings if "ffmpeg_cleanup_wait_failed" in r.message]
+    assert len(cleanup_logs) >= 1
+    # Verify the PermissionError detail is captured in the log record's extra
+    # dict as "PermissionError: test: denied".
+    record = cleanup_logs[0]
+    assert "PermissionError" in record.__dict__["error"]
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_cleanup_process_already_gone_is_silent(caplog):
+    """ProcessLookupError on wait() is silently suppressed, no warning."""
+    import asyncio
+    import contextlib
+    import os
+
+    from bili_unit.processing import ConvertError
+    from bili_unit.processing.audio._converter import convert_m4s_to_mp3
+
+    in_path = Path(_FIXTURES) / "silence_1s.m4s"
+    out_path = Path(_FIXTURES) / "tmp_out.mp3"
+
+    class DeadProc:
+        returncode = None
+
+        async def communicate(self):
+            raise asyncio.TimeoutError("simulated timeout")
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            raise ProcessLookupError("process already gone")
+
+    with (
+        patch(
+            "bili_unit.processing.audio._ffmpeg.resolve_ffmpeg", return_value="ffmpeg"
+        ),
+        patch.object(
+            asyncio, "create_subprocess_exec", return_value=DeadProc()
+        ),
+    ):
+        try:
+            await convert_m4s_to_mp3(in_path, out_path, ffmpeg_setting="auto")
+        except ConvertError:
+            pass
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(out_path)
+
+    assert "ffmpeg_cleanup_wait_failed" not in caplog.text
