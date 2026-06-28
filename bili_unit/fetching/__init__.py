@@ -97,7 +97,11 @@ class TaskResult:
 # Assembly root — wires env → settings → rate limit → Command
 # ---------------------------------------------------------------------------
 
-async def assemble(settings: "BiliSettings | None" = None) -> "Command":
+async def assemble(
+    settings: "BiliSettings | None" = None,
+    *,
+    use_worker: bool = False,
+) -> "Command":
     """Read env, init HTTP backend, wire dependencies, return a Command.
 
     Phase 3 contract: returns a single ``Command``. The store layer is now
@@ -108,6 +112,10 @@ async def assemble(settings: "BiliSettings | None" = None) -> "Command":
         settings: pre-built ``BiliSettings`` to use. ``None`` (default) lazy-loads
             from .env via :func:`bili_unit._env.get_settings` — keeps the historical
             CLI behaviour intact.
+        use_worker: If True, spawn a bili-worker subprocess and route fetch_page /
+            fetch_item / resolve_audio_url through IPC. The worker must be installed
+            (``bili-worker`` console script). Default False keeps the in-process
+            bilibili_api path for backward compatibility.
     """
     from .._env import get_settings
     from ._bilibili_adapter import init_http_backend
@@ -124,4 +132,15 @@ async def assemble(settings: "BiliSettings | None" = None) -> "Command":
         recovery_cooldown=s.bili_fetching_recovery_cooldown,
     )
     stale_ms = int(s.bili_fetching_stale_running_threshold_seconds * 1000)
-    return Command(s, rl, stale_running_threshold_ms=stale_ms)
+
+    worker = None
+    if use_worker:
+        from .worker_client import WorkerClient
+        worker = WorkerClient()
+        await worker.start(
+            http_backend=s.bili_fetching_http_backend,
+            impersonate=s.bili_fetching_impersonate,
+        )
+
+    cmd = Command(s, rl, stale_running_threshold_ms=stale_ms, worker=worker)
+    return cmd

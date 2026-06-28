@@ -1,6 +1,7 @@
 # command — fetching write-side entry point.
 
 import logging
+from typing import Any
 
 from .._db import UidContext
 from .._env import BiliSettings
@@ -30,11 +31,13 @@ class Command:
         *,
         stale_running_threshold_ms: int = 15 * 60 * 1000,
         fetch_fn: FetchEndpointFn | None = None,
+        worker: Any | None = None,
     ) -> None:
         self._settings = settings
         self._rl = rate_limit
         self._stale_running_threshold_ms = stale_running_threshold_ms
         self._fetch_fn = fetch_fn
+        self._worker = worker
 
     async def fetch_uid(
         self, uid: int, endpoints: list[str] | None = None, mode: str = "incremental",
@@ -76,5 +79,7 @@ class Command:
         return {}
 
     async def close(self) -> None:
-        """No-op: no per-stage stores to close any more."""
+        """Shut down the worker if one was spawned."""
+        if self._worker is not None:
+            await self._worker.shutdown()
         return None
