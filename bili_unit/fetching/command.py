@@ -68,6 +68,7 @@ class Command:
                 fetch_fn=self._fetch_fn,
                 reporter=RunReporter(run_context, SqliteSink(ctx.conn)),
                 progress_factory=default_progress_factory,
+                worker=self._worker,
             )
             result = await runner.run_or_resume(uid, endpoints, mode=mode)
         finally:

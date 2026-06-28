@@ -134,13 +134,31 @@ async def assemble(
     stale_ms = int(s.bili_fetching_stale_running_threshold_seconds * 1000)
 
     worker = None
+    fetch_fn = None
     if use_worker:
         from .worker_client import WorkerClient
+        from ._bilibili_adapter import FetchPageResult
         worker = WorkerClient()
         await worker.start(
             http_backend=s.bili_fetching_http_backend,
             impersonate=s.bili_fetching_impersonate,
         )
 
-    cmd = Command(s, rl, stale_running_threshold_ms=stale_ms, worker=worker)
+        async def _worker_fetch_page(
+            uid: int, spec, credential, params, timeout: float = 30.0,
+        ) -> FetchPageResult:
+            """Route fetch_endpoint calls through the worker subprocess."""
+            data = await worker.fetch_page(
+                uid, spec.name, worker.credential_ref, params, timeout=timeout,
+            )
+            return FetchPageResult(
+                uid=uid,
+                endpoint=spec.name,
+                raw_payload=data["raw_payload"],
+                is_last_page=data.get("is_last_page", True),
+                next_request=data.get("next_request"),
+            )
+        fetch_fn = _worker_fetch_page
+
+    cmd = Command(s, rl, stale_running_threshold_ms=stale_ms, fetch_fn=fetch_fn, worker=worker)
     return cmd
