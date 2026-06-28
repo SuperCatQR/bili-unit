@@ -129,12 +129,12 @@ conn.execute("PRAGMA busy_timeout = 5000")
 
 ## 许可与依赖
 
-本项目以 **GPL-3.0-only** 许可发行（见 [LICENSE](LICENSE)）。
+本项目以 **MIT** 许可发行（见 [LICENSE](LICENSE)）。自 v0.2.0 起由 GPL-3.0-only 变更为 MIT；v0.1.x 及之前版本仍适用原 GPL-3.0-only 许可。
 
 ### F2 进程隔离：`bili-worker`
 
-为满足 GPL arm's-length 合规要求，`bili-worker` 已拆分为独立 GPL-3.0 组件
-**[bili-worker](https://github.com/SuperCatQR/bili-worker)**（独立仓库、独立发版）。
+为满足 arm's-length 合规要求，`bili-worker` 已拆分为独立组件
+**[bili-worker](https://github.com/SuperCatQR/bili-worker)**（独立仓库、独立发版，同为 MIT 许可）。
 主进程通过 **stdio NDJSON IPC 协议**（见 [docs/ipc-contract-f2.md](docs/ipc-contract-f2.md)）
 与 worker 子进程通信。
 
