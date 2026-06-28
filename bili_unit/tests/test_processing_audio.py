@@ -1351,7 +1351,7 @@ async def test_ffmpeg_cleanup_permission_error_logs_warning(caplog):
         returncode = None
 
         async def communicate(self):
-            raise asyncio.TimeoutError("simulated timeout")
+            raise TimeoutError("simulated timeout")
 
         def kill(self):
             pass
@@ -1402,7 +1402,7 @@ async def test_ffmpeg_cleanup_process_already_gone_is_silent(caplog):
         returncode = None
 
         async def communicate(self):
-            raise asyncio.TimeoutError("simulated timeout")
+            raise TimeoutError("simulated timeout")
 
         def kill(self):
             pass

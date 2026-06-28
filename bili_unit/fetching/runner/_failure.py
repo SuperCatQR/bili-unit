@@ -31,13 +31,31 @@ class FetchFailureState:
         return self.count
 
 
-def classify_fetching_exception(exc: Exception) -> RetryClassification:
-    """Classify fetching exceptions for RetryDriver."""
+def classify_error(
+    exc: Exception,
+    endpoint: str | None = None,
+) -> RetryClassification:
+    """Single entry point for fetching error classification.
+
+    ``endpoint`` is reserved for future per-endpoint classification rules.
+    Currently unused — all endpoints share the same classification semantics.
+
+    Returns ``RETRYABLE`` for transient fetching errors (5xx, 412, network
+    errors), ``PERMANENT`` for errors that will never succeed on retry
+    (auth, invalid args, resource-unavailable business codes).
+    """
+    # ponytail: when a future endpoint needs different classification,
+    # branch on ``endpoint`` here — no new classify functions, no copy-paste.
     if isinstance(exc, (AuthError, InvalidRequestError, ResourceUnavailableError)):
         return RetryClassification.PERMANENT
     if isinstance(exc, FetchingError):
         return RetryClassification.RETRYABLE
     return RetryClassification.PERMANENT
+
+
+def classify_fetching_exception(exc: Exception) -> RetryClassification:
+    """Classify fetching exceptions for RetryDriver (delegates to :func:`classify_error`)."""
+    return classify_error(exc)
 
 
 async def record_endpoint_failure(
@@ -280,6 +298,7 @@ def _log_unavailable(
 
 __all__ = [
     "FetchFailureState",
+    "classify_error",
     "classify_fetching_exception",
     "record_endpoint_failure",
     "record_unexpected_endpoint_failure",
