@@ -463,6 +463,32 @@ class _ItemFanoutMixin:
         retry_delays = settings.get_fetching_retry_delays()
         retry_state = {"count": 0}
 
+        worker = getattr(self, "_worker", None)
+        if worker is not None:
+            # --- Worker path: route item fetch through IPC ---
+            extra_kw: dict = {"timeout": settings.bili_fetching_request_timeout}
+            if spec.needs_parent_uid:
+                extra_kw["_uid"] = uid
+            data = await worker.fetch_item(
+                item_id, spec.name, worker.credential_ref, extra_kw,
+            )
+            result = data["raw_payload"]
+            await self._store.save_raw_payload(ep_name, item_id, result)
+            logger.info(
+                "item_endpoint_item_saved",
+                extra={"uid": uid, "endpoint": ep_name, "item_id": item_id},
+            )
+            reporter = getattr(self, "_reporter", None)
+            if reporter is not None:
+                await reporter.emit(
+                    "fetch.item.saved",
+                    stage="fetching",
+                    endpoint=ep_name,
+                    item_type=ep_name,
+                    item_id=item_id,
+                )
+            return _ItemFanoutResult.SUCCESS
+
         async def _do_fetch():
             await self._rl.acquire(spec.rate_limit_key)
             extra_kw: dict = {"timeout": settings.bili_fetching_request_timeout}
