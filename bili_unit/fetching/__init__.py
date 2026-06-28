@@ -136,8 +136,8 @@ async def assemble(
     worker = None
     fetch_fn = None
     if use_worker:
-        from .worker_client import WorkerClient
         from ._bilibili_adapter import FetchPageResult
+        from .worker_client import WorkerClient
         worker = WorkerClient()
         await worker.start(
             http_backend=s.bili_fetching_http_backend,

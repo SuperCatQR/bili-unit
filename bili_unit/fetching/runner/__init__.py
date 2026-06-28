@@ -177,7 +177,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                 )
                 continue
 
-            if spec.credential_required and credential is None:
+            if spec.credential_required and credential is None and self._worker is None:
                 err_id = await self._store.record_error(
                     endpoint=ep_name,
                     error_type="AuthError",
@@ -210,7 +210,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                             src_spec = get_endpoint(spec.source_endpoint)
                             specs_by_name[spec.source_endpoint] = src_spec
                         if src_spec is not None:
-                            if src_spec.credential_required and credential is None:
+                            if src_spec.credential_required and credential is None and self._worker is None:
                                 err_id = await self._store.record_error(
                                     endpoint=spec.source_endpoint,
                                     error_type="AuthError",
