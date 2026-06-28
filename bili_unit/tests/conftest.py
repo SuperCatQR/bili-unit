@@ -5,6 +5,7 @@
 #   * pytest-asyncio loop policy (default_loop_scope = 'function' — set in pyproject)
 #   * a global retry-sleep mock (keeps retry-bearing tests fast)
 #   * a global credential mock (so no .env is needed)
+#   * a global WorkerClient mock (prevents accidental subprocess spawn)
 
 from unittest.mock import AsyncMock, patch
 
@@ -37,5 +38,25 @@ async def _mock_get_credential():
     with patch(
         "bili_unit.fetching.runner.get_credential",
         new=AsyncMock(return_value=_FAKE_CRED),
+    ):
+        yield
+
+
+# ---------------------------------------------------------------------------
+# WorkerClient mock — prevents accidental subprocess spawn during tests.
+# Tests that need real WorkerClient behaviour use FakeWorker from
+# bili_unit.tests.fake_worker instead.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _mock_worker_client():
+    """Prevent WorkerClient from spawning a real bili-worker subprocess."""
+    with (
+        patch("bili_unit.fetching.worker_client.WorkerClient.start", new=AsyncMock()),
+        patch("bili_unit.fetching.worker_client.WorkerClient.shutdown", new=AsyncMock()),
+        patch("bili_unit.fetching.worker_client.WorkerClient.fetch_page", new=AsyncMock()),
+        patch("bili_unit.fetching.worker_client.WorkerClient.fetch_item", new=AsyncMock()),
+        patch("bili_unit.fetching.worker_client.WorkerClient.resolve_audio_url", new=AsyncMock()),
     ):
         yield
