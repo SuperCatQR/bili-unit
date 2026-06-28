@@ -3,7 +3,7 @@ name = "bili-unit"
 version = "0.1.0"
 description = "Independent Bilibili user data persistence unit with fetching, parsing, and processing workflows."
 requires-python = ">=3.12"
-license = "GPL-3.0-only"
+license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
 authors = [{ name = "ChosenEcho" }]
