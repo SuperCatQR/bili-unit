@@ -1,8 +1,6 @@
-# Auto-split from _endpoint_catalog; endpoint facts stay unchanged.
+# F2: bilibili_api SDK enums imported via _bilibili_adapter (single SDK import boundary).
 
 from __future__ import annotations
-
-from bilibili_api import user
 
 from .._bilibili_adapter import (
     _extract_qa_ids_from_upower_qa,
@@ -12,6 +10,7 @@ from .._bilibili_adapter import (
     _user_method,
     _wrap_list_result,
     fetch_upower_qa_detail_item,
+    user,
 )
 from .._endpoint_spec import EndpointSpec
 

@@ -183,6 +183,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiolimiter" },
+    { name = "bili-worker" },
     { name = "bilibili-api-python" },
     { name = "imageio-ffmpeg" },
     { name = "pydantic" },
@@ -210,6 +211,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "aiolimiter", specifier = ">=1.1.0" },
+    { name = "bili-worker", git = "https://github.com/SuperCatQR/bili-worker.git" },
     { name = "bilibili-api-python", specifier = "~=17.0" },
     { name = "curl-cffi", marker = "extra == 'anti-detect'", specifier = ">=0.7.0" },
     { name = "imageio-ffmpeg", specifier = ">=0.5.1" },
@@ -228,6 +230,16 @@ dev = [
     { name = "pytest-mock", specifier = ">=3.12.0" },
     { name = "pytest-xdist", specifier = ">=3.6.0" },
     { name = "ruff", specifier = ">=0.11.0" },
+]
+
+[[package]]
+name = "bili-worker"
+version = "0.1.0"
+source = { git = "https://github.com/SuperCatQR/bili-worker.git#4c01d82ec9b029b0fff155c00414a19d5d43d60d" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "bilibili-api-python" },
+    { name = "python-dotenv" },
 ]
 
 [[package]]

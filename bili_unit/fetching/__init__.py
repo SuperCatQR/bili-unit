@@ -100,7 +100,7 @@ class TaskResult:
 async def assemble(
     settings: "BiliSettings | None" = None,
     *,
-    use_worker: bool = False,
+    use_worker: bool = True,
 ) -> "Command":
     """Read env, init HTTP backend, wire dependencies, return a Command.
 
@@ -108,22 +108,24 @@ async def assemble(
     request-scoped — Command opens its own ``UidContext`` + ``FetchingStore``
     inside each ``fetch_uid`` call.
 
+    F2 (Stage 2 Step 3+): by default spawns a bili-worker subprocess and routes
+    fetch_page / fetch_item through IPC. The worker must be installed
+    (``bili-worker`` console script). Pass ``use_worker=False`` for the legacy
+    in-process bilibili_api path (backward compatibility for tests).
+
     Args:
         settings: pre-built ``BiliSettings`` to use. ``None`` (default) lazy-loads
-            from .env via :func:`bili_unit._env.get_settings` — keeps the historical
-            CLI behaviour intact.
-        use_worker: If True, spawn a bili-worker subprocess and route fetch_page /
-            fetch_item / resolve_audio_url through IPC. The worker must be installed
-            (``bili-worker`` console script). Default False keeps the in-process
-            bilibili_api path for backward compatibility.
+            from .env via :func:`bili_unit._env.get_settings`.
+        use_worker: If True (default), spawn a bili-worker subprocess for SDK calls.
     """
     from .._env import get_settings
-    from ._bilibili_adapter import init_http_backend
     from .command import Command
     from .rate_limit import RateLimitController
 
     s = settings if settings is not None else get_settings()
-    init_http_backend(s.bili_fetching_http_backend, s.bili_fetching_impersonate)
+    # Worker handles HTTP backend init (contract §6.3).
+    # The main process no longer calls init_http_backend directly
+    # when the worker path is active.
 
     rl = RateLimitController(
         global_qps=s.bili_fetching_global_qps,

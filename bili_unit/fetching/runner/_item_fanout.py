@@ -463,9 +463,18 @@ class _ItemFanoutMixin:
         retry_delays = settings.get_fetching_retry_delays()
         retry_state = {"count": 0}
 
+        # F2: when an item_fn is injected (via WorkerClient), use it instead of
+        # spec.callable. The worker does the SDK call; the main process just
+        # sends the IPC request and gets back raw_payload.
+        item_fn = getattr(self, "_item_fn", None)
+
         async def _do_fetch():
             await self._rl.acquire(spec.rate_limit_key)
-            extra_kw: dict = {"timeout": settings.bili_fetching_request_timeout}
+            timeout = settings.bili_fetching_request_timeout
+            if item_fn is not None:
+                parent_uid = uid if spec.needs_parent_uid else None
+                return await item_fn(item_id, spec, credential, parent_uid=parent_uid, timeout=timeout)
+            extra_kw: dict = {"timeout": timeout}
             if spec.needs_parent_uid:
                 extra_kw["_uid"] = uid
             return await spec.callable(item_id, credential, **extra_kw)

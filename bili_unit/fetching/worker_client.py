@@ -131,7 +131,7 @@ class WorkerClient:
         """Kill the worker process and cancel the reader task."""
         if self._reader_task is not None:
             self._reader_task.cancel()
-            with __import__("contextlib").suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._reader_task
             self._reader_task = None
 

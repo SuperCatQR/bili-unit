@@ -1,14 +1,15 @@
-# Auto-split from _endpoint_catalog; endpoint facts stay unchanged.
+# F2: bilibili_api SDK enums imported via _bilibili_adapter (single SDK import boundary).
+# When the worker catalog fully replaces endpoint callables, this module's
+# callable-definition role shrinks to metadata-only — the enums won't be needed.
 
 from __future__ import annotations
-
-from bilibili_api import user
 
 from .._bilibili_adapter import (
     _user_method,
     _wrap_scalar_result,
     fetch_user_channels,
     fetch_user_media_list,
+    user,
 )
 from .._endpoint_spec import EndpointSpec
 

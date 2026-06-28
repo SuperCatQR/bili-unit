@@ -52,6 +52,7 @@ from ._run_scope import (
 logger = logging.getLogger("bili.fetching.runner")
 
 FetchEndpointFn = Callable[..., Awaitable[Any]]
+FetchItemFn = Callable[..., Awaitable[Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         settings: BiliSettings,
         stale_running_threshold_ms: int = 15 * 60 * 1000,
         fetch_fn: FetchEndpointFn | None = None,
+        item_fn: FetchItemFn | None = None,
         reporter: RunReporter | None = None,
         progress_factory: ProgressFactory | None = None,
     ) -> None:
@@ -73,6 +75,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         self._rl = rate_limit
         self._settings = settings
         self._fetch_fn = fetch_fn if fetch_fn is not None else _real_fetch_endpoint
+        self._item_fn = item_fn
         self._reporter = reporter
         self._progress_factory = progress_factory or default_progress_factory
         self._run_planner = FetchRunPlanner(
