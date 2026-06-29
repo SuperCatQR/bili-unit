@@ -2,15 +2,33 @@
 
 from __future__ import annotations
 
-from bilibili_api import user
-
 from .._bilibili_adapter import (
+    _new_user,
     _user_method,
     _wrap_scalar_result,
     fetch_user_channels,
     fetch_user_media_list,
 )
 from .._endpoint_spec import EndpointSpec
+
+# Enum default values are baked in as their raw SDK values so this module can be
+# imported in the main process without touching ``bilibili_api`` (F2 IPC §8:
+# main process must remain zero-import).  The values below mirror
+# ``bilibili_api.user.<Enum>.<Member>.value``:
+#   user.VideoOrder.PUBDATE       -> "pubdate"
+#   user.ArticleOrder.PUBDATE     -> "publish_time"
+#   user.BangumiType.BANGUMI      -> 1
+#   user.BangumiFollowStatus.ALL  -> 0
+#   user.OpusType.ALL             -> "all"
+#   user.AudioOrder.PUBDATE       -> 1
+#   user.MedialistOrder.PUBDATE   -> 1
+_VIDEO_ORDER_PUBDATE = "pubdate"
+_ARTICLE_ORDER_PUBDATE = "publish_time"
+_BANGUMI_TYPE_BANGUMI = 1
+_BANGUMI_FOLLOW_STATUS_ALL = 0
+_OPUS_TYPE_ALL = "all"
+_AUDIO_ORDER_PUBDATE = 1
+_MEDIALIST_ORDER_PUBDATE = 1
 
 
 def user_endpoints() -> list[EndpointSpec]:
@@ -25,7 +43,7 @@ def user_endpoints() -> list[EndpointSpec]:
         ),
         EndpointSpec(
             name="videos",
-            callable=_user_method("get_videos", pn=1, ps=30, tid=0, keyword="", order=user.VideoOrder.PUBDATE),
+            callable=_user_method("get_videos", pn=1, ps=30, tid=0, keyword="", order=_VIDEO_ORDER_PUBDATE),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 30},
             pagination_strategy="page",
@@ -37,7 +55,7 @@ def user_endpoints() -> list[EndpointSpec]:
             name="access_id",
             callable=lambda uid, cred=None, **kw: (
                 _wrap_scalar_result(
-                    user.User(uid, credential=cred).get_access_id(),
+                    _new_user(uid, credential=cred).get_access_id(),
                     key="access_id",
                 )
             ),
@@ -71,7 +89,7 @@ def user_endpoints() -> list[EndpointSpec]:
         # --- T1: articles ---
         EndpointSpec(
             name="articles",
-            callable=_user_method("get_articles", pn=1, ps=30, order=user.ArticleOrder.PUBDATE),
+            callable=_user_method("get_articles", pn=1, ps=30, order=_ARTICLE_ORDER_PUBDATE),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 30},
             pagination_strategy="page",
@@ -82,7 +100,7 @@ def user_endpoints() -> list[EndpointSpec]:
         # --- T1: subscribed_bangumi ---
         EndpointSpec(
             name="subscribed_bangumi",
-            callable=_user_method("get_subscribed_bangumi", pn=1, ps=15, type_=user.BangumiType.BANGUMI, follow_status=user.BangumiFollowStatus.ALL),
+            callable=_user_method("get_subscribed_bangumi", pn=1, ps=15, type_=_BANGUMI_TYPE_BANGUMI, follow_status=_BANGUMI_FOLLOW_STATUS_ALL),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 15},
             pagination_strategy="page",
@@ -93,7 +111,7 @@ def user_endpoints() -> list[EndpointSpec]:
         # --- T1: opus ---
         EndpointSpec(
             name="opus",
-            callable=_user_method("get_opus", type_=user.OpusType.ALL, offset=""),
+            callable=_user_method("get_opus", type_=_OPUS_TYPE_ALL, offset=""),
             credential_required=False,
             params_strategy={"offset": ""},
             pagination_strategy="cursor",
@@ -115,7 +133,7 @@ def user_endpoints() -> list[EndpointSpec]:
         # --- extension: audios ---
         EndpointSpec(
             name="audios",
-            callable=_user_method("get_audios", pn=1, ps=30, order=user.AudioOrder.PUBDATE),
+            callable=_user_method("get_audios", pn=1, ps=30, order=_AUDIO_ORDER_PUBDATE),
             credential_required=False,
             params_strategy={"pn": 1, "ps": 30},
             pagination_strategy="page",
@@ -160,7 +178,7 @@ def user_endpoints() -> list[EndpointSpec]:
                 "ps": 100,
                 "direction": True,
                 "desc": True,
-                "sort_field": int(user.MedialistOrder.PUBDATE.value),
+                "sort_field": _MEDIALIST_ORDER_PUBDATE,
                 "tid": 0,
                 "with_current": False,
             },

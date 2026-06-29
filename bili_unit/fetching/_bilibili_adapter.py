@@ -1,20 +1,23 @@
-﻿# _bilibili_adapter — bilibili-api-python calls for fetching.
+# _bilibili_adapter — bilibili-api-python calls for fetching.
+#
+# F2 IPC §8: the main process must remain zero-``import bilibili_api``.  Every
+# SDK symbol is resolved lazily via the module-level ``__getattr__`` (PEP 562)
+# the first time it is referenced — so merely importing this module
+# (transitively, via the runner / endpoint catalog) does not load
+# ``bilibili_api``.  The SDK is only touched once a real fetch runs (inside the
+# worker process, or the in-process path which intentionally needs the SDK).
+#
+# Tests that ``patch("bili_unit.fetching._bilibili_adapter.Video")`` (and
+# ``Article`` / ``Opus`` / ``ArticleList`` / ``user`` / ``Video``) keep working
+# because ``__getattr__`` materialises the real attribute on first access; the
+# patcher then swaps it, and the functions below read the (possibly-patched)
+# module global.
 
 import asyncio
 import logging
 from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Any
-
-from bilibili_api import Credential, request_settings, select_client, user
-from bilibili_api.article import Article, ArticleList
-from bilibili_api.channel_series import ChannelOrder
-from bilibili_api.exceptions import (
-    ApiException,
-    InitialStateException,
-)
-from bilibili_api.opus import Opus
-from bilibili_api.video import Video
+from typing import TYPE_CHECKING, Any
 
 from . import RequestError, ResourceUnavailableError
 from ._adapter_core import (
@@ -48,15 +51,91 @@ from ._adapters._video import (
 )
 from ._endpoint_spec import EndpointSpec
 
+if TYPE_CHECKING:
+    # These mirror the symbols resolved lazily by ``__getattr__`` / ``_sdk``.
+    # Imported only for static type checkers / IDE resolution; never executed
+    # at runtime (F2 IPC §8: main process zero SDK import).
+    from bilibili_api import Credential, request_settings, select_client, user  # noqa: F401
+    from bilibili_api.article import Article, ArticleList  # noqa: F401
+    from bilibili_api.channel_series import ChannelOrder  # noqa: F401
+    from bilibili_api.exceptions import ApiException, InitialStateException  # noqa: F401
+    from bilibili_api.opus import Opus  # noqa: F401
+    from bilibili_api.video import Video  # noqa: F401
+
 logger = logging.getLogger("bili.fetching.adapter")
 
 _PERMANENT_BUSINESS_CODES = _CORE_PERMANENT_BUSINESS_CODES
 _extract_bvids_from_videos = _video_adapter._extract_bvids_from_videos
 
+# Raw default for ``fetch_user_media_list.sort_field`` — mirrors
+# ``int(user.MedialistOrder.PUBDATE.value)`` (== 1) without importing the SDK
+# (F2 IPC §8: main process zero SDK import).
+_MEDIALIST_ORDER_PUBDATE_DEFAULT = 1
+
+
+# ---------------------------------------------------------------------------
+# Lazy SDK symbol binding (PEP 562 module __getattr__)
+# ---------------------------------------------------------------------------
+#
+# Each SDK name is imported on first reference and cached as a module
+# attribute, so subsequent access (including ``unittest.mock.patch`` reads) is
+# a plain dict lookup.  This keeps import-time SDK loading at zero while
+# preserving the module-level attribute names that tests and
+# ``_sync_video_adapter_patch_target`` rely on.
+
+_LAZY_SDK_IMPORTS: dict[str, tuple[str, str]] = {
+    "Credential": ("bilibili_api", "Credential"),
+    "request_settings": ("bilibili_api", "request_settings"),
+    "select_client": ("bilibili_api", "select_client"),
+    "user": ("bilibili_api", "user"),
+    "Video": ("bilibili_api.video", "Video"),
+    "Article": ("bilibili_api.article", "Article"),
+    "ArticleList": ("bilibili_api.article", "ArticleList"),
+    "Opus": ("bilibili_api.opus", "Opus"),
+    "ChannelOrder": ("bilibili_api.channel_series", "ChannelOrder"),
+    "ApiException": ("bilibili_api.exceptions", "ApiException"),
+    "InitialStateException": (
+        "bilibili_api.exceptions",
+        "InitialStateException",
+    ),
+}
+
+
+def __getattr__(name: str) -> Any:
+    import importlib
+
+    spec = _LAZY_SDK_IMPORTS.get(name)
+    if spec is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr = spec
+    value = getattr(importlib.import_module(module_name), attr)
+    globals()[name] = value
+    return value
+
+
+def _sdk(name: str) -> Any:
+    """Resolve a lazily-bound SDK symbol for use inside a function body.
+
+    Module-level ``__getattr__`` (PEP 562) only fires for attribute access on
+    the module object — it does **not** fire when a function in this module
+    references the name via ``LOAD_GLOBAL``.  Functions therefore call this
+    helper to materialise the symbol into ``globals()`` on first use (or return
+    the already-cached value, including a ``unittest.mock.patch`` override).
+    """
+    value = globals().get(name)
+    if value is None:
+        value = __getattr__(name)
+    return value
+
 
 def _sync_video_adapter_patch_target() -> None:
-    """Keep legacy ``_bilibili_adapter.Video`` patch target effective."""
-    _video_adapter.Video = Video
+    """Keep legacy ``_bilibili_adapter.Video`` patch target effective.
+
+    Tests (and the in-process path) ``patch`` this module's ``Video``; mirror
+    that binding onto ``_video_adapter`` so the video fan-out callables — which
+    read ``_video_adapter.Video`` — pick up the (possibly-mocked) class.
+    """
+    _video_adapter.Video = _sdk("Video")
 
 
 async def _call_video_adapter(name: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -180,9 +259,20 @@ async def _wrap_list_result(coro: Awaitable) -> dict:
     return _normalise_api_result(await coro, key="list")
 
 
+def _new_user(uid: int, credential: "Credential | None" = None):
+    """Construct a ``bilibili_api.user.User`` lazily.
+
+    ``user`` is resolved through :func:`_sdk` so importing this module does
+    not load ``bilibili_api`` (F2 IPC §8).  Tests that patch
+    ``bili_unit.fetching._bilibili_adapter.user.User`` keep working because the
+    ``user`` attribute resolves to the real SDK module (or its patched form).
+    """
+    return _sdk("user").User(uid, credential=credential)
+
+
 async def fetch_user_channels(
     uid: int,
-    cred: Credential | None = None,
+    cred: "Credential | None" = None,
     timeout: float = 30.0,
     **_kw: Any,
 ) -> dict[str, Any]:
@@ -197,7 +287,7 @@ async def fetch_user_channels(
     that the runner mistakes for a transient failure and burns the full
     retry budget on.
     """
-    u = user.User(uid, credential=cred)
+    u = _new_user(uid, credential=cred)
     async with _map_bilibili_errors("channels"):
         channels = await asyncio.wait_for(u.get_channels(), timeout=timeout)
 
@@ -220,9 +310,9 @@ async def fetch_user_channels(
 
 async def fetch_user_media_list(
     uid: int,
-    cred: Credential | None = None,
+    cred: "Credential | None" = None,
     timeout: float = 30.0,
-    sort_field: int | user.MedialistOrder = user.MedialistOrder.PUBDATE,
+    sort_field: int | Any = _MEDIALIST_ORDER_PUBDATE_DEFAULT,
     **kw: Any,
 ) -> dict[str, Any]:
     """Fetch one page of the user's "video sets" (media list).
@@ -241,7 +331,7 @@ async def fetch_user_media_list(
     """
     if isinstance(sort_field, int):
         try:
-            sort_enum = user.MedialistOrder(sort_field)
+            sort_enum = _sdk("user").MedialistOrder(sort_field)
         except ValueError as exc:
             raise RequestError(
                 f"media_list: invalid sort_field {sort_field!r}: {exc}",
@@ -249,7 +339,7 @@ async def fetch_user_media_list(
     else:
         sort_enum = sort_field
 
-    u = user.User(uid, credential=cred)
+    u = _new_user(uid, credential=cred)
     async with _map_bilibili_errors("media_list"):
         return await asyncio.wait_for(
             u.get_media_list(sort_field=sort_enum, **kw),
@@ -274,7 +364,7 @@ def _extract_qa_ids_from_upower_qa(raw_payload: dict) -> list[str]:
 
 async def fetch_upower_qa_detail_item(
     qa_id: str,
-    credential: Credential | None,
+    credential: "Credential | None",
     timeout: float = 30.0,
     **kw: Any,
 ) -> dict[str, Any]:
@@ -285,16 +375,13 @@ async def fetch_upower_qa_detail_item(
     except (KeyError, TypeError, ValueError) as exc:
         raise RequestError(f"upower_qa_detail[{qa_id}]: invalid input: {exc}") from exc
 
-    u = user.User(uid, credential=credential)
+    u = _new_user(uid, credential=credential)
     async with _map_bilibili_errors(f"upower_qa_detail[{qa_id}]"):
         result = await asyncio.wait_for(
             u.get_upower_qa_detail(qa_id_int),
             timeout=timeout,
         )
     return _normalise_api_result(result, key="detail")
-
-
-# ---------------------------------------------------------------------------
 
 
 
@@ -325,7 +412,7 @@ def _extract_cvids_from_articles(raw_payload: dict) -> list[str]:
 
 async def fetch_article_detail_item(
     cvid: str,
-    credential: Credential | None,
+    credential: "Credential | None",
     timeout: float = 30.0,
     **_kw: Any,
 ) -> dict[str, Any]:
@@ -346,6 +433,9 @@ async def fetch_article_detail_item(
         cvid_int = int(cvid)
     except (TypeError, ValueError) as exc:
         raise RequestError(f"article_detail[{cvid}]: invalid cvid: {exc}") from exc
+
+    Article = _sdk("Article")
+    InitialStateException = _sdk("InitialStateException")
 
     a = Article(cvid_int, credential=credential)
 
@@ -414,7 +504,7 @@ def _extract_opus_ids_from_opus(raw_payload: dict) -> list[str]:
 
 async def fetch_opus_detail_item(
     opus_id: str,
-    credential: Credential | None,
+    credential: "Credential | None",
     timeout: float = 30.0,
     **_kw: Any,
 ) -> dict[str, Any]:
@@ -435,6 +525,9 @@ async def fetch_opus_detail_item(
         opus_id_int = int(opus_id)
     except (TypeError, ValueError) as exc:
         raise RequestError(f"opus_detail[{opus_id}]: invalid opus_id: {exc}") from exc
+
+    Opus = _sdk("Opus")
+    ApiException = _sdk("ApiException")
 
     o = Opus(opus_id_int, credential=credential)
 
@@ -506,7 +599,7 @@ def _extract_rlids_from_article_list(raw_payload: dict) -> list[str]:
 
 async def fetch_article_list_detail_item(
     rlid: str,
-    credential: Credential | None,
+    credential: "Credential | None",
     timeout: float = 30.0,
     **_kw: Any,
 ) -> dict[str, Any]:
@@ -529,6 +622,8 @@ async def fetch_article_list_detail_item(
         raise RequestError(
             f"article_list_detail[{rlid}]: invalid rlid: {exc}",
         ) from exc
+
+    ArticleList = _sdk("ArticleList")
 
     al = ArticleList(rlid_int, credential=credential)
 
@@ -574,7 +669,7 @@ async def _paginate_channel_videos(
     kind: str,
     uid: int,
     sid: int,
-    credential: Credential | None,
+    credential: "Credential | None",
     timeout: float = 30.0,
     ps: int = 100,
     **_kw: Any,
@@ -584,7 +679,7 @@ async def _paginate_channel_videos(
     ``kind`` is ``"season"`` or ``"series"``.
     Returns ``{"archives": [...], "page": {"count": N}}`` with all pages merged.
     """
-    u = user.User(uid, credential=credential)
+    u = _new_user(uid, credential=credential)
     all_archives: list[Any] = []
     pn = 1
     while True:
@@ -592,14 +687,14 @@ async def _paginate_channel_videos(
             if kind == "season":
                 data = await asyncio.wait_for(
                     u.get_channel_videos_season(
-                        sid=sid, sort=ChannelOrder.DEFAULT, pn=pn, ps=ps,
+                        sid=sid, sort=_sdk("ChannelOrder").DEFAULT, pn=pn, ps=ps,
                     ),
                     timeout=timeout,
                 )
             else:
                 data = await asyncio.wait_for(
                     u.get_channel_videos_series(
-                        sid=sid, sort=ChannelOrder.DEFAULT, pn=pn, ps=ps,
+                        sid=sid, sort=_sdk("ChannelOrder").DEFAULT, pn=pn, ps=ps,
                     ),
                     timeout=timeout,
                 )
@@ -622,10 +717,14 @@ def _user_method(name: str, **defaults: Any):
     Most uid-level endpoints follow the same shape:
     ``user.User(uid, credential=cred).{method}(**kw_merged_with_defaults)``.
     This helper removes ~3 lines of boilerplate per endpoint.
+
+    ``user`` is resolved lazily via the module ``__getattr__`` so this module
+    can be imported in the main process without loading ``bilibili_api``
+    (F2 IPC §8).
     """
     def _fn(uid, cred=None, **kw):
         merged = {**defaults, **kw}
-        return getattr(user.User(uid, credential=cred), name)(**merged)
+        return getattr(_sdk("user").User(uid, credential=cred), name)(**merged)
     return _fn
 
 
@@ -639,8 +738,8 @@ def init_http_backend(backend: str = "aiohttp", impersonate: str = "chrome131") 
         import curl_cffi  # noqa: F401
 
         if backend == "curl_cffi":
-            select_client("curl_cffi")
-            request_settings.set("impersonate", impersonate)
+            _sdk("select_client")("curl_cffi")
+            _sdk("request_settings").set("impersonate", impersonate)
             logger.info("HTTP backend: curl_cffi (impersonate=%s)", impersonate)
             return
     except ImportError:
@@ -650,7 +749,7 @@ def init_http_backend(backend: str = "aiohttp", impersonate: str = "chrome131") 
             )
 
     # default / fallback
-    select_client("aiohttp")
+    _sdk("select_client")("aiohttp")
     logger.info("HTTP backend: aiohttp")
 
 
@@ -670,7 +769,7 @@ class FetchPageResult:
 async def fetch_endpoint(
     uid: int,
     spec: EndpointSpec,
-    credential: Credential | None,
+    credential: "Credential | None",
     request_params: dict[str, Any],
     timeout: float = 30.0,
 ) -> FetchPageResult:

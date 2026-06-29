@@ -12,7 +12,6 @@ import logging
 from typing import TYPE_CHECKING
 
 import aiohttp
-from bilibili_api.video import AudioQuality, Video, VideoDownloadURLDataDetecter
 
 from .. import DownloadError
 
@@ -62,6 +61,8 @@ class AudioDownloader:
         Raises:
             DownloadError: when no audio stream is found or the API fails.
         """
+        from bilibili_api.video import Video, VideoDownloadURLDataDetecter
+
         video = Video(bvid=bvid, credential=self._credential)
         try:
             data = await video.get_download_url(page_index=page_index)
@@ -147,6 +148,8 @@ class AudioDownloader:
 
 def _resolve_quality(quality: str):
     """Map a quality string like ``"64K"`` to ``AudioQuality._64K``."""
+    from bilibili_api.video import AudioQuality
+
     mapping = {
         "64K": AudioQuality._64K,
         "132K": AudioQuality._132K,

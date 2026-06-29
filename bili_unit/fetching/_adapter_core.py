@@ -6,15 +6,6 @@ import contextlib
 from enum import Enum
 from typing import Any
 
-from bilibili_api.exceptions import (
-    ApiException,
-    ArgsException,
-    CredentialNoBiliJctException,
-    CredentialNoSessdataException,
-    NetworkException,
-    ResponseCodeException,
-)
-
 from . import (
     AuthError,
     Http5xxError,
@@ -35,7 +26,21 @@ async def map_bilibili_errors(
     *,
     passthrough: tuple[type[BaseException], ...] = (),
 ):
-    """Map bilibili-api exceptions onto fetching-layer exceptions."""
+    """Map bilibili-api exceptions onto fetching-layer exceptions.
+
+    The SDK exception classes are imported lazily here so that merely importing
+    this module does not load ``bilibili_api`` (F2 IPC §8: main process zero
+    SDK import).  They are only needed once a real fetch runs.
+    """
+    from bilibili_api.exceptions import (
+        ApiException,
+        ArgsException,
+        CredentialNoBiliJctException,
+        CredentialNoSessdataException,
+        NetworkException,
+        ResponseCodeException,
+    )
+
     try:
         yield
     except TimeoutError as exc:

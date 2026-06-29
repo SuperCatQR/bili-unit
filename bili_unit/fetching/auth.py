@@ -1,22 +1,24 @@
 # auth — obtain / validate / provide bilibili-api-python Credential.
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bilibili_api import Credential, login_v2
-
 from .._env import get_settings, reload_settings
 from . import AuthError
 
 if TYPE_CHECKING:
+    from bilibili_api import Credential
+
     from .._env import BiliSettings
 
 logger = logging.getLogger("bili.fetching.auth")
 
 
-async def get_credential(settings: "BiliSettings | None" = None) -> Credential:
+async def get_credential(settings: BiliSettings | None = None) -> Credential:
     """Return a Credential instance from env settings.
 
     ``settings`` lets a caller inject an explicit ``BiliSettings`` (e.g. the
@@ -26,6 +28,8 @@ async def get_credential(settings: "BiliSettings | None" = None) -> Credential:
     Raises AuthError when mandatory fields are missing.
     Does NOT write back to .env on refresh.
     """
+    from bilibili_api import Credential
+
     if settings is None:
         settings = get_settings()
 
@@ -69,6 +73,8 @@ async def qr_login() -> Credential:
     Generates a QR code, prints it to terminal, polls until user scans & confirms.
     Returns a Credential on success, raises AuthError on timeout/failure.
     """
+    from bilibili_api import login_v2
+
     qr = login_v2.QrCodeLogin(platform=login_v2.QrCodeLoginChannel.WEB)
     await qr.generate_qrcode()
 
