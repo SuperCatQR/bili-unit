@@ -155,7 +155,7 @@ async def assemble(
                 uid=uid,
                 endpoint=spec.name,
                 raw_payload=data["raw_payload"],
-                is_last_page=data.get("is_last_page", True),
+                is_last_page=data.get("is_last_page", False),
                 next_request=data.get("next_request"),
             )
         fetch_fn = _worker_fetch_page
