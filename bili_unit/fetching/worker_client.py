@@ -313,7 +313,13 @@ class WorkerClient:
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """Send an op to the worker and wait for the response."""
-        if not self._started or self._process is None:
+        # Gate on the live process, not ``_started``: the startup sequence
+        # (handshake/describe_catalog/init_http_backend/credential_open) runs
+        # through ``_send_op`` *before* ``start()`` sets ``_started`` (L101), so
+        # gating on ``_started`` here would self-lock startup and make
+        # ``start()`` fail unconditionally. ``_cleanup`` nulls ``_process``, so
+        # this still rejects ops before spawn and after shutdown/crash.
+        if self._process is None:
             raise WorkerNotStartedError("WorkerClient not started")
 
         req_id = self._next_id
