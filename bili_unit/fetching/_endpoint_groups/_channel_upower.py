@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
-from bilibili_api import user
-
 from .._bilibili_adapter import (
     _extract_qa_ids_from_upower_qa,
     _extract_season_ids,
     _extract_series_ids,
+    _new_user,
     _paginate_channel_videos,
     _user_method,
     _wrap_list_result,
     fetch_upower_qa_detail_item,
 )
 from .._endpoint_spec import EndpointSpec
+
+# Enum default values baked in as raw SDK values so this module imports without
+# touching ``bilibili_api`` (F2 IPC §8: main process zero-import).  Mirrors:
+#   user.OrderType.desc          -> "desc"
+#   user.ArticleListOrder.LATEST -> 0
+#   user.AlbumType.ALL           -> "all"
+_ORDER_TYPE_DESC = "desc"
+_ARTICLE_LIST_ORDER_LATEST = 0
+_ALBUM_TYPE_ALL = "all"
 
 
 def channel_and_upower_endpoints() -> list[EndpointSpec]:
@@ -79,7 +87,7 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         ),
         EndpointSpec(
             name="followings",
-            callable=_user_method("get_followings", pn=1, ps=100, attention=False, order=user.OrderType.desc),
+            callable=_user_method("get_followings", pn=1, ps=100, attention=False, order=_ORDER_TYPE_DESC),
             credential_required=True,
             params_strategy={"pn": 1, "ps": 100},
             pagination_strategy="page",
@@ -118,7 +126,7 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
             name="masterpiece",
             callable=lambda uid, cred=None, **kw: (
                 _wrap_list_result(
-                    user.User(uid, credential=cred).get_masterpiece()
+                    _new_user(uid, credential=cred).get_masterpiece()
                 )
             ),
             credential_required=False,
@@ -127,7 +135,7 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         ),
         EndpointSpec(
             name="article_list",
-            callable=_user_method("get_article_list", order=user.ArticleListOrder.LATEST),
+            callable=_user_method("get_article_list", order=_ARTICLE_LIST_ORDER_LATEST),
             credential_required=False,
             pagination_strategy="none",
             rate_limit_key="article_list",
@@ -164,8 +172,8 @@ def channel_and_upower_endpoints() -> list[EndpointSpec]:
         EndpointSpec(
             name="album",
             callable=lambda uid, cred=None, **kw: (
-                user.User(uid, credential=cred).get_album(
-                    biz=kw.get("biz", user.AlbumType.ALL),
+                _new_user(uid, credential=cred).get_album(
+                    biz=kw.get("biz", _ALBUM_TYPE_ALL),
                     page_num=kw.get("pn", 1),
                     page_size=kw.get("ps", 30),
                 )

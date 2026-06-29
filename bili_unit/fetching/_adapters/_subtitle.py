@@ -1,13 +1,20 @@
-"""Subtitle-domain bilibili-api wrappers for fetching."""
+"""Subtitle-domain bilibili-api wrappers for fetching.
+
+F2 IPC §8: this module imports without loading ``bilibili_api`` in the main
+process.  ``Video`` (and ``Credential`` for type hints) are resolved lazily via
+the module ``__getattr__`` (PEP 562) on first reference.  Tests that
+``patch("bili_unit.fetching._adapters._subtitle.Video")`` keep working because
+``__getattr__`` materialises the real attribute on first access; the patcher
+then swaps it, and ``fetch_video_subtitle_item`` reads the (possibly-patched)
+module global.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from bilibili_api import Credential
-from bilibili_api.video import Video
 
 from .._adapter_core import (
     json_safe as _json_safe,
@@ -17,7 +24,29 @@ from .._adapter_core import (
 )
 from ._video import _video_pages
 
+if TYPE_CHECKING:
+    from bilibili_api import Credential
+    from bilibili_api.video import Video  # noqa: F401  (mirrors _resolve_video)
+
 _SUBTITLE_FETCH_TIMEOUT = 10.0
+
+
+def __getattr__(name: str) -> Any:
+    if name == "Video":
+        from bilibili_api.video import Video as _Video
+
+        globals()["Video"] = _Video
+        return _Video
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _resolve_video() -> Any:
+    """Return the ``Video`` class, honouring a ``patch`` of this module's
+    ``Video`` attribute; import lazily on first standalone use (F2 IPC §8)."""
+    cls = globals().get("Video")
+    if cls is None:
+        cls = __getattr__("Video")
+    return cls
 
 
 def _normalise_subtitle_url(url: str) -> str:
@@ -97,7 +126,7 @@ async def fetch_video_subtitle_item(
     leaving sibling langs and other pages unaffected.  An entirely-missing
     subtitle index for a page yields ``content: []``.
     """
-    v = Video(bvid, credential=credential)
+    v = _resolve_video()(bvid, credential=credential)
     pages = await _video_pages(v, bvid, timeout)
 
     rows: list[dict[str, Any]] = []

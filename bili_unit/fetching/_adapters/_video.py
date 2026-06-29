@@ -1,12 +1,18 @@
-"""Video-domain bilibili-api wrappers for fetching."""
+"""Video-domain bilibili-api wrappers for fetching.
+
+F2 IPC §8: this module must import without loading ``bilibili_api`` in the main
+process.  ``Video`` (and ``Credential`` for type hints) are resolved lazily via
+the module ``__getattr__`` (PEP 562) on first reference.  Tests that
+``patch("bili_unit.fetching._bilibili_adapter.Video")`` keep working because
+:func:`bili_unit.fetching._bilibili_adapter._sync_video_adapter_patch_target`
+mirrors that (possibly-mocked) class onto this module's ``Video`` attribute
+before each call routed through ``_call_video_adapter``.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-
-from bilibili_api import Credential
-from bilibili_api.video import Video
+from typing import TYPE_CHECKING, Any
 
 from .._adapter_core import (
     extract_list_items as _extract_list_items,
@@ -23,6 +29,38 @@ from .._adapter_core import (
 from .._adapter_core import (
     normalise_api_result as _normalise_api_result,
 )
+
+if TYPE_CHECKING:
+    from bilibili_api import Credential
+    from bilibili_api.video import Video
+
+
+def __getattr__(name: str) -> Any:
+    if name == "Video":
+        from bilibili_api.video import Video as _Video
+
+        globals()["Video"] = _Video
+        return _Video
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _resolve_video() -> Any:
+    """Return the ``Video`` class the callables should use.
+
+    ``Video`` is bound lazily so importing this module does not load
+    ``bilibili_api`` (F2 IPC §8).  When a call is routed through the adapter's
+    ``_call_video_adapter`` (or a test ``patch``-es
+    ``bili_unit.fetching._bilibili_adapter.Video`` and the adapter mirrors it
+    here via ``_sync_video_adapter_patch_target``), the bound (possibly-mocked)
+    class lives in this module's ``globals()`` and is returned.  Otherwise the
+    real SDK class is imported on first standalone use.  Reads go through
+    ``globals()`` rather than bare ``LOAD_GLOBAL`` of ``Video`` so that a
+    ``patch``-supplied binding is honoured even on the standalone path.
+    """
+    cls = globals().get("Video")
+    if cls is None:
+        cls = __getattr__("Video")
+    return cls
 
 
 def _extract_bvids_from_videos(raw_payload: dict) -> list[str]:
@@ -44,7 +82,7 @@ async def fetch_video_detail_item(
     **_kw: Any,
 ) -> dict[str, Any]:
     """Fetch get_info + get_tags for a single bvid."""
-    v = Video(bvid, credential=credential)
+    v = _resolve_video()(bvid, credential=credential)
     async with _map_bilibili_errors(f"video_detail[{bvid}]: get_info"):
         info = await asyncio.wait_for(v.get_info(), timeout=timeout)
 
@@ -79,7 +117,7 @@ def _video_item_method(
         timeout: float = 30.0,
         **_kw: Any,
     ) -> dict[str, Any]:
-        v = Video(bvid, credential=credential)
+        v = _resolve_video()(bvid, credential=credential)
         key = result_key or method_name
         kwargs = dict(default_kwargs or {})
 
@@ -180,7 +218,7 @@ async def fetch_video_public_notes_item(
     **_kw: Any,
 ) -> dict[str, Any]:
     """Fetch all public note pages for a bvid."""
-    v = Video(bvid, credential=credential)
+    v = _resolve_video()(bvid, credential=credential)
     pages: list[dict[str, Any]] = []
     pn = 1
     while True:
