@@ -68,6 +68,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         fetch_fn: FetchEndpointFn | None = None,
         reporter: RunReporter | None = None,
         progress_factory: ProgressFactory | None = None,
+        worker: Any | None = None,
     ) -> None:
         self._store = store
         self._rl = rate_limit
@@ -75,6 +76,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
         self._fetch_fn = fetch_fn if fetch_fn is not None else _real_fetch_endpoint
         self._reporter = reporter
         self._progress_factory = progress_factory or default_progress_factory
+        self._worker = worker  # bili-worker WorkerClient, None for in-process path
         self._run_planner = FetchRunPlanner(
             store,
             stale_running_threshold_ms=stale_running_threshold_ms,
@@ -144,7 +146,11 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                 spec.source_endpoint,
                 get_endpoint(spec.source_endpoint),
             )
-        credential = await self._resolve_credential(uid, specs_by_name)
+        # When worker handles credentials, skip main-process credential loading
+        if self._worker is not None:
+            credential = None  # worker manages credentials via credential_open
+        else:
+            credential = await self._resolve_credential(uid, specs_by_name)
 
         # ---- Phase 1: uid-level endpoints (parallel) ----
         uid_tasks = []
@@ -171,7 +177,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                 )
                 continue
 
-            if spec.credential_required and credential is None:
+            if spec.credential_required and credential is None and self._worker is None:
                 err_id = await self._store.record_error(
                     endpoint=ep_name,
                     error_type="AuthError",
@@ -204,7 +210,7 @@ class Runner(_EndpointMixin, _ItemFanoutMixin):
                             src_spec = get_endpoint(spec.source_endpoint)
                             specs_by_name[spec.source_endpoint] = src_spec
                         if src_spec is not None:
-                            if src_spec.credential_required and credential is None:
+                            if src_spec.credential_required and credential is None and self._worker is None:
                                 err_id = await self._store.record_error(
                                     endpoint=spec.source_endpoint,
                                     error_type="AuthError",

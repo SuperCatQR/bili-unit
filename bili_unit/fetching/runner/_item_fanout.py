@@ -463,11 +463,25 @@ class _ItemFanoutMixin:
         retry_delays = settings.get_fetching_retry_delays()
         retry_state = {"count": 0}
 
+        worker = getattr(self, "_worker", None)
+
         async def _do_fetch():
             await self._rl.acquire(spec.rate_limit_key)
             extra_kw: dict = {"timeout": settings.bili_fetching_request_timeout}
             if spec.needs_parent_uid:
                 extra_kw["_uid"] = uid
+            if worker is not None:
+                # Worker path: route item fetch through IPC, unwrap the
+                # ``{"raw_payload": ...}`` envelope. Worker-side business errors
+                # arrive re-raised as FetchingError subclasses (via the error
+                # pack), so they flow through the same RetryDriver +
+                # _on_attempt_failed + three-state classification as the
+                # in-process path below — keeping retry/limit/PERMANENT vs
+                # UNAVAILABLE vs FAILED behaviour identical across both paths.
+                env = await worker.fetch_item(
+                    item_id, spec.name, worker.credential_ref, extra_kw,
+                )
+                return env["raw_payload"]
             return await spec.callable(item_id, credential, **extra_kw)
 
         async def _on_attempt_failed(
