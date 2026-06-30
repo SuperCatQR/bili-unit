@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .._env import BiliSettings
@@ -97,6 +97,43 @@ class TaskResult:
 # Assembly root — wires env → settings → rate limit → Command
 # ---------------------------------------------------------------------------
 
+def _infer_page_pagination(
+    spec: Any,
+    raw_payload: dict[str, Any],
+    request_params: dict[str, Any],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Fallback for older workers that return only ``{raw_payload}``.
+
+    The preferred contract is worker-side ``is_last_page`` + ``next_request``.
+    Until the Git dependency is advanced to a worker build with that envelope,
+    infer page-strategy cursors from the same response metadata the worker will
+    use, so real ``videos`` and other page endpoints do not stop after page 1.
+    """
+    from ._adapter_core import extract_list_items, extract_total_count, resolve_dot_path
+
+    total_count = extract_total_count(raw_payload)
+    page_info = raw_payload.get("page")
+    if isinstance(page_info, dict):
+        total_count = total_count or page_info.get("count", 0)
+    if total_count == 0 and "totalSize" in raw_payload:
+        total_count = raw_payload.get("totalSize", 0)
+    if total_count == 0:
+        items_lists_page = resolve_dot_path(raw_payload, "items_lists.page")
+        if isinstance(items_lists_page, dict):
+            total_count = items_lists_page.get("total", 0)
+    if total_count == 0 and isinstance(raw_payload.get("count"), int):
+        total_count = raw_payload["count"]
+    if total_count == 0 and isinstance(raw_payload.get("total_count"), int):
+        total_count = raw_payload["total_count"]
+
+    items = extract_list_items(raw_payload, getattr(spec, "items_path", None))
+    current_pn = request_params.get("pn", 1)
+    ps = request_params.get("ps", 30)
+    if not items or (total_count > 0 and current_pn * ps >= total_count):
+        return True, None
+    return False, {**request_params, "pn": current_pn + 1, "ps": ps}
+
+
 async def assemble(
     settings: "BiliSettings | None" = None,
     *,
@@ -151,12 +188,22 @@ async def assemble(
             data = await worker.fetch_page(
                 uid, spec.name, worker.credential_ref, params, timeout=timeout,
             )
+            raw_payload = data["raw_payload"]
+            is_last_page = data.get("is_last_page")
+            next_request = data.get("next_request")
+            if (
+                next_request is None
+                and is_last_page in (None, False)
+                and spec.pagination_strategy == "page"
+                and isinstance(raw_payload, dict)
+            ):
+                is_last_page, next_request = _infer_page_pagination(spec, raw_payload, params)
             return FetchPageResult(
                 uid=uid,
                 endpoint=spec.name,
-                raw_payload=data["raw_payload"],
-                is_last_page=data.get("is_last_page", False),
-                next_request=data.get("next_request"),
+                raw_payload=raw_payload,
+                is_last_page=bool(is_last_page),
+                next_request=next_request,
             )
         fetch_fn = _worker_fetch_page
 
